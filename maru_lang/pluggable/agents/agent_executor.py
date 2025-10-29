@@ -5,8 +5,6 @@ import asyncio
 from typing import Dict, Any, List, Optional, Type
 from maru_lang.pluggable.agents.base import BaseAgent
 from maru_lang.models.agents import AgentResult, AgentSelection, ExecutionResult, ExecutionContext
-from maru_lang.dependencies.langfuse import LangfuseContext
-from maru_lang.tracing import safe_observe
 from maru_lang.pluggable.agents.agent_factory import AgentFactory
 
 
@@ -64,12 +62,10 @@ class AgentExecutor:
 
         return True
 
-    @safe_observe(name="agent_executor_execute", as_type="generation")
     async def execute(
         self,
         selection: AgentSelection,
-        execution_context: ExecutionContext,
-        context: Optional[LangfuseContext] = None
+        execution_context: ExecutionContext
     ) -> ExecutionResult:
         """
         Execute selected agents according to strategy
@@ -78,7 +74,6 @@ class AgentExecutor:
             selection: Agent selection result
             execution_context: Context data for agents (question, user, etc.)
             strategy: Execution strategy ("sequential", "parallel", "conditional")
-            context: Langfuse context for tracing
 
         Returns:
             ExecutionResult with all agent outputs
@@ -119,12 +114,6 @@ class AgentExecutor:
             print(f"[DEBUG AgentExecutor] Error: {e}")
             errors[agent_name] = str(e)
 
-        # Update context if provided
-        if context:
-            context.update_metadata(
-                executed_agents=executed_order,
-                errors=errors
-            )
         return ExecutionResult(
             agent_results=agent_results,
             execution_order=executed_order,

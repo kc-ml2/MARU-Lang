@@ -7,7 +7,6 @@ from fastapi_pagination import add_pagination
 
 from maru_lang.core.relation_db import get_register_orm
 from maru_lang.dependencies.llm import get_llm_manager
-from maru_lang.tracing import get_tracing_status
 from maru_lang.configs.manager import get_config_manager
 from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.chat import router as chat_router
@@ -128,10 +127,6 @@ class MaruLangApp(FastAPI):
 
             # Store config manager in app state for access in endpoints
             self.state.config_manager = config_manager
-
-            # 4. Check tracing status
-            tracing_status = get_tracing_status()
-            print(f"📈 Tracing: {tracing_status['status']}")
 
             print("=" * 60)
             print("✨ Application startup complete!")

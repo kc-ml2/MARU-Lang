@@ -3,8 +3,6 @@ import json
 from typing import Dict, Any, Optional, List
 from maru_lang.pluggable.agents.base import BaseAgent, AgentResult
 from maru_lang.configs.manager import get_config_manager
-from maru_lang.dependencies.langfuse import LangfuseContext
-from maru_lang.tracing import safe_observe
 
 
 class GroupClassifierAgent(BaseAgent):
@@ -38,12 +36,10 @@ class GroupClassifierAgent(BaseAgent):
         rag_groups = getattr(rag_loader, "all_groups", {}) or {}
         self.available_groups = dict(rag_groups)
 
-    @safe_observe(name="group_classifier_agent", as_type="generation")
     async def execute(
         self,
         question: str,
         metadata: Optional[Dict[str, Any]] = {},
-        context: Optional[LangfuseContext] = None,
         **kwargs
     ) -> AgentResult:
         """

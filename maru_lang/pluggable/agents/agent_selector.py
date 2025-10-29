@@ -7,8 +7,6 @@ import yaml
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from maru_lang.models.agents import AgentSelection
-from maru_lang.dependencies.langfuse import LangfuseContext
-from maru_lang.tracing import safe_observe
 from maru_lang.configs.manager import get_config_manager
 from maru_lang.models.chat import ChatHistory
 from maru_lang.dependencies.llm import get_llm_manager, LLMServerClient
@@ -93,12 +91,10 @@ class AgentSelector:
         config["available_agents"] = available_agents
         return config
 
-    @safe_observe(name="agent_selector_select", as_type="generation")
     async def select_agents(
         self,
         question: str,
-        chat_history: ChatHistory,
-        context: Optional[LangfuseContext] = None,
+        chat_history: ChatHistory
     ) -> AgentSelection:
         """
         Select appropriate agents based on question analysis
@@ -107,7 +103,6 @@ class AgentSelector:
         Args:
             question: User's question
             chat_history: Previous conversation history
-            context: Langfuse context for tracing
 
         Returns:
             AgentSelection with selected agents and execution plan
