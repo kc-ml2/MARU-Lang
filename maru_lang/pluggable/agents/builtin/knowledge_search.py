@@ -24,11 +24,12 @@ class KnowledgeSearchAgent(BaseAgent):
         super().__init__(**kwargs)
         self.retriever = None
         self.web_search_enabled = True
-
+        
         # Preprocessing agents (will be initialized in _setup)
         self.group_classifier = None
         self.intent_extractor = None
         self.keyword_extractor = None
+        self.groups_configured = True
 
     async def _setup(self) -> None:
         """Initialize knowledge search capabilities"""
@@ -45,14 +46,26 @@ class KnowledgeSearchAgent(BaseAgent):
 
         # Initialize preprocessing agents
         config_manager = get_config_manager()
+        config_manager.ensure_loaded()
         factory = AgentFactory()
+
+        # Determine whether any groups are configured; if not, disable group classifier
+        rag_loader = getattr(config_manager, "rag_loader", None)
+        if rag_loader is not None:
+            if not getattr(rag_loader, "all_groups", None):
+                rag_loader.reload()
+            self.groups_configured = bool(getattr(rag_loader, "all_groups", {}))
+        else:
+            self.groups_configured = False
 
         # Create and initialize group_classifier
         group_classifier_config = config_manager.get_agent('group_classifier')
-        if group_classifier_config:
+        if self.groups_configured and group_classifier_config:
             self.group_classifier = factory.create_agent('group_classifier', group_classifier_config)
             if self.group_classifier:
                 await self.group_classifier.initialize()
+        elif not self.groups_configured:
+            print("⚠️  No groups defined in RAG config; group_classifier will be skipped")
 
         # Create and initialize intent_extractor
         intent_extractor_config = config_manager.get_agent('intent_extractor')
@@ -118,15 +131,18 @@ class KnowledgeSearchAgent(BaseAgent):
                     print(f"⚠️  No groups from group_classifier, using forced_groups: {forced_groups}")
                 elif self.search_all_on_empty:
                     # 강제 제한 없고 search_all_on_empty 활성화 시 전체 검색
-                    print(f"⚠️  No groups from group_classifier, search_all_on_empty is enabled")
+                    print("⚠️  No groups from group_classifier, search_all_on_empty is enabled")
                     search_groups = []
+
+            group_weights = preprocessing_info.get('group_weights', {})
 
             if self.retriever and (search_groups or (self.search_all_on_empty and not forced_groups)):
                 internal_results = await self._search_internal_documents(
                     preprocessing_info.get('search_query', question),
                     search_groups,
                     max_internal_results,
-                    preprocessing_info.get('search_keywords', question)
+                    preprocessing_info.get('search_keywords', question),
+                    group_weights
                 )
 
             # Step 4: Determine if web search is needed
@@ -239,12 +255,42 @@ class KnowledgeSearchAgent(BaseAgent):
         # Extract group classification results (only from preprocessing)
         search_groups = []
         group_confidence = 0.0
+        group_confidences = {}
+        group_weights = {}
         group_agent_result = preprocessing_results.get('group_classifier')
         if group_agent_result and group_agent_result.success and group_agent_result.data:
             group_data = group_agent_result.data
             search_groups = group_data.get('selected_groups', [])
             group_confidence = group_data.get('confidence', 0.0)
+            group_confidences = group_data.get('group_confidences', {})
 
+            # Convert group confidences to weights aligned with selected_groups
+            if search_groups:
+                selected_confidences = [group_confidences.get(group, 0.0) for group in search_groups]
+                total_selected_confidence = sum(selected_confidences)
+
+                if total_selected_confidence > 0:
+                    group_weights = {
+                        group: confidence / total_selected_confidence
+                        for group, confidence in zip(search_groups, selected_confidences)
+                    }
+                else:
+                    # 모든 선택된 그룹의 confidence가 0이면 그룹 선택이 없는 것으로 판단
+                    print("⚠️  Group confidences sum to 0; treating as no group selection")
+                    search_groups = []
+                    group_weights = {}
+            elif group_confidences:
+                total_confidence = sum(group_confidences.values())
+                if total_confidence > 0:
+                    group_weights = {
+                        group: confidence / total_confidence
+                        for group, confidence in group_confidences.items()
+                    }
+
+            print(
+                f"[GroupClassifier] groups={search_groups}, confidence={group_confidence}, "
+                f"group_confidences={group_confidences}, group_weights={group_weights}"
+            )
         # Extract intent extraction results
         search_query = original_question
         intent_confidence = 1.0
@@ -270,6 +316,8 @@ class KnowledgeSearchAgent(BaseAgent):
             "search_query": search_query,
             "search_keywords": search_keywords,
             "group_confidence": group_confidence,
+            "group_confidences": group_confidences,
+            "group_weights": group_weights,
             "intent_confidence": intent_confidence,
             "keyword_count": keyword_count
         }
@@ -279,24 +327,24 @@ class KnowledgeSearchAgent(BaseAgent):
         question: str,
         document_groups: List[str],
         max_results: int,
-        keywords: Optional[str] = None
+        keywords: Optional[str] = None,
+        group_weights: Optional[Dict[str, float]] = None
     ) -> List[RetrieveDocument]:
-        """Search internal documents using Retriever"""
-        print(f"⚠️  document_groups: {document_groups}")
-        # 빈 그룹 리스트 체크
+        """Search internal documents and policies"""
+        if not self.retriever:
+            print("⚠️  Retriever is not initialized; skipping internal search")
+            return []
+
+        # No groups specified
         if not document_groups:
-            print("⚠️  No document groups specified, searching all documents")
             if self.search_all_on_empty:
                 print("⚠️  No document groups specified, searching all documents")
-                # 전체 검색 (document_groups=None)
                 try:
-                    # 새 Retriever는 동기 메서드 (await 불필요)
+                    print("[DEBUG] Running full search with no document_groups")
                     results = self.retriever.search(
                         query=question,
                         k=max_results,
-                        # method="ensemble",  # 기본: ensemble (vector + BM25 + semantic weight)
                         document_groups=None,
-                        # embedding_model은 config에서 자동 로드됨
                     )
                     return results
                 except Exception as e:
@@ -306,24 +354,122 @@ class KnowledgeSearchAgent(BaseAgent):
                 print("⚠️  No document groups specified, skipping internal search")
                 return []
 
-        # 그룹과 그 자식 그룹들까지 모두 포함 (inclusion 계층 구조 적용)
-        all_groups = await get_all_descendant_group_names(document_groups)
-        if not all_groups:
-            print("⚠️  No valid groups after expansion")
-            return []
-
         try:
-            # 새 Retriever로 검색 (ensemble + reranking)
-            results = self.retriever.search(
-                query=question,
-                k=max_results,
-                # method="ensemble",  # vector + BM25 + semantic weight 자동 조정
-                document_groups=all_groups,
-                # use_reranking은 config에서 자동 결정됨
-                # embedding_model은 config에서 자동 로드됨
-            )
-            return results
+            results: List[RetrieveDocument] = []
+            weight_map = group_weights or {}
 
+            print(f"[DEBUG] search groups before descendant expansion: {document_groups}")
+
+            if document_groups:
+                # Ensure groups match VectorDB metadata naming (docs_ prefix)
+                prefixed_groups = []
+                for group in document_groups:
+                    if group.startswith("docs_"):
+                        prefixed_groups.append(group)
+                    else:
+                        prefixed_groups.append(f"docs_{group}")
+                document_groups = prefixed_groups
+                print(f"[DEBUG] prefixed document_groups: {document_groups}")
+
+                active_groups: List[tuple[str, float]] = []
+                for group in document_groups:
+                    weight = float(weight_map.get(group, 0.0))
+                    if weight > 0:
+                        active_groups.append((group, weight))
+
+                if not active_groups:
+                    uniform_weight = 1.0 / len(document_groups)
+                    active_groups = [(group, uniform_weight) for group in document_groups]
+                print(f"[DEBUG] active_groups (initial weights): {active_groups}")
+
+                weight_sum = sum(weight for _, weight in active_groups)
+                if weight_sum <= 0:
+                    uniform_weight = 1.0 / len(document_groups)
+                    active_groups = [(group, uniform_weight) for group in document_groups]
+                    weight_sum = 1.0
+                print(f"[DEBUG] weight_sum: {weight_sum}")
+
+                normalized_groups = [
+                    (group, weight / weight_sum) for group, weight in active_groups
+                ]
+                print(f"[DEBUG] normalized_groups: {normalized_groups}")
+
+                allocations: List[tuple[str, int]] = []
+                remaining_results = max_results
+
+                for index, (group_name, weight) in enumerate(normalized_groups):
+                    if remaining_results <= 0:
+                        break
+
+                    if index == len(normalized_groups) - 1:
+                        allocation = remaining_results
+                    else:
+                        allocation = int(round(max_results * weight))
+                        if weight > 0 and allocation == 0 and remaining_results > 0:
+                            allocation = 1
+                        allocation = min(allocation, remaining_results)
+
+                    if allocation <= 0:
+                        continue
+
+                    allocations.append((group_name, allocation))
+                    remaining_results -= allocation
+                print(f"[DEBUG] allocations: {allocations}, remaining_results: {remaining_results}")
+
+                if remaining_results > 0 and allocations:
+                    last_group, last_allocation = allocations[-1]
+                    allocations[-1] = (last_group, last_allocation + remaining_results)
+                    print(f"[DEBUG] allocations adjusted with remaining: {allocations}")
+
+                seen_ids = set()
+
+                for group_name, allocation in allocations:
+                    if allocation <= 0:
+                        continue
+
+                    descendant_groups = await get_all_descendant_group_names([group_name])
+                    target_groups = descendant_groups or [group_name]
+                    target_groups = [
+                        tg if tg.startswith("docs_") else f"docs_{tg}"
+                        for tg in target_groups
+                    ]
+                    print(f"[DEBUG] searching group '{group_name}' with allocation {allocation} and descendants {target_groups}")
+
+                    try:
+                        group_results = self.retriever.search(
+                            query=question,
+                            k=allocation,
+                            document_groups=target_groups or None,
+                        )
+                        print(f"[DEBUG] retrieved {len(group_results)} docs for group '{group_name}'")
+                    except Exception as inner_error:
+                        print(f"❌ Internal search failed for group '{group_name}': {inner_error}")
+                        continue
+
+                    for doc in group_results:
+                        if doc.id in seen_ids:
+                            continue
+                        seen_ids.add(doc.id)
+                        doc.metadata.setdefault("group", group_name)
+                        results.append(doc)
+
+            if not results:
+                combined_groups = await get_all_descendant_group_names(document_groups)
+                target_groups = combined_groups or document_groups
+                target_groups = [
+                    tg if tg.startswith("docs_") else f"docs_{tg}"
+                    for tg in target_groups
+                ]
+                print(f"[DEBUG] fallback search with target_groups={target_groups}")
+
+                results = self.retriever.search(
+                    query=question,
+                    k=max_results,
+                    document_groups=target_groups or None,
+                )
+                print(f"[DEBUG] fallback retrieved {len(results)} docs")
+
+            return results
         except Exception as e:
             print(f"❌ Internal document search failed: {e}")
             return []

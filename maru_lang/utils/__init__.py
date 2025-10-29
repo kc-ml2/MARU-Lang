@@ -1,15 +1,15 @@
 """
-통합 유틸리티 모듈
+Unified utility module.
 
-이 모듈은 프로젝트 전반에서 사용되는 범용 유틸리티 기능들을 제공합니다.
+This package exposes shared utility functions used across the project.
 
-하위 모듈:
-- security: 보안/암호화 관련 유틸리티 (JWT, AES 암호화 등)
+Submodules:
+- security: Security and encryption utilities (JWT, AES, etc.)
 
 """
 
 
-# Security 유틸리티들
+# Security utilities
 from .security import (
     generate_anonymized_key,
     create_jwt_token,
@@ -21,7 +21,7 @@ from .security import (
 
 __all__ = [
     
-    # Security 함수들
+    # Security helpers
     "generate_anonymized_key",
     "create_jwt_token",
     "decode_token",

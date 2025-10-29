@@ -12,16 +12,16 @@ class LLMServerClient:
         self,
         config: Union[LLMConfig, dict]
     ):
-        # dict로 받은 경우 LLMConfig로 변환
+        # Convert dictionaries into LLMConfig instances for compatibility
         if isinstance(config, dict):
             self.config = LLMConfig(**config)
         else:
             self.config = config
-        # HTTP 클라이언트를 재사용하여 연결 오버헤드 감소
+        # Reuse the HTTP client to minimize connection overhead
         self._http_client = None
 
     async def _get_http_client(self) -> httpx.AsyncClient:
-        """재사용 가능한 HTTP 클라이언트를 반환합니다."""
+        """Return a reusable HTTP client instance."""
         if self._http_client is None or self._http_client.is_closed:
             headers = self.config.headers.copy() if self.config.headers else {}
             if self.config.api_key:
@@ -29,14 +29,14 @@ class LLMServerClient:
 
             self._http_client = httpx.AsyncClient(
                 timeout=httpx.Timeout(
-                    connect=5.0,    # 연결 타임아웃
-                    read=self.config.timeout,      # 읽기 타임아웃
-                    write=5.0,      # 쓰기 타임아웃
-                    pool=5.0        # 풀 타임아웃
+                    connect=5.0,    # Connection timeout
+                    read=self.config.timeout,      # Read timeout
+                    write=5.0,      # Write timeout
+                    pool=5.0        # Pool timeout
                 ),
                 limits=httpx.Limits(
-                    max_connections=20,          # 더 많은 동시 연결 허용
-                    max_keepalive_connections=10  # 더 많은 keepalive 연결
+                    max_connections=20,          # Allow more concurrent connections
+                    max_keepalive_connections=10  # Allow additional keepalive connections
                 ),
                 headers=headers
             )
@@ -52,36 +52,35 @@ class LLMServerClient:
         timeout: float = 30.0,
         **kwargs
     ):
-        """LLM 요청을 처리합니다.
+        """Send a request to the LLM server.
 
         Args:
-            system_prompt: 시스템 프롬프트 (messages가 없을 때 사용)
-            user_prompt: 사용자 프롬프트 (messages가 없을 때 사용)
-            messages: 직접 전달할 메시지 리스트
-            stream: 스트리밍 여부
-            timeout: 타임아웃 설정
-            **kwargs: 추가 파라미터 (temperature, max_tokens 등)
+            system_prompt: System prompt used when ``messages`` is omitted.
+            user_prompt: User prompt used when ``messages`` is omitted.
+            messages: Explicit message list to send to the LLM.
+            stream: Whether to request streaming responses.
+            timeout: Per-request timeout.
+            **kwargs: Additional parameters such as ``temperature`` or ``max_tokens``.
         """
-        # 메시지 구성
+        # Compose messages when none are provided
         if messages is None:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
 
-        # Mock 서버 처리
+        # Handle mock:// URLs by echoing the latest user message
         if self.config.url.startswith("mock://"):
-            # 사용자의 마지막 메시지를 그대로 반환
             user_message = messages[-1]["content"] if messages else ""
             return f"Echo: {user_message}"
 
-        # 페이로드 구성 - config의 기본 설정과 kwargs를 합침
+        # Build request payload by combining config defaults and overrides
         payload = {
             "stream": stream,
             "messages": messages,
             "model": self.config.model_name,
-            **self.config.config,  # 기본 설정 (temperature, max_tokens 등)
-            **kwargs  # 오버라이드
+            **self.config.config,  # Default configuration (temperature, max_tokens, etc.)
+            **kwargs  # Overrides
         }
         endpoint = self._build_endpoint(self.config.chat_completions_path)
 
@@ -119,20 +118,20 @@ class LLMServerClient:
             content = message.get("content", "")
             reasoning_content = message.get("reasoning_content", "")
             
-            # content가 None이면 reasoning_content 사용, 둘 다 없으면 예외 발생
+            # Fall back to reasoning_content when content is empty, otherwise fail
             if content is not None and content.strip():
                 result = content
             elif reasoning_content is not None and reasoning_content.strip():
                 result = reasoning_content
             else:
-                raise Exception("LLM 서버에서 응답을 생성하지 못했습니다.")
+                raise Exception("The LLM server returned an empty response.")
             
             return result
             
         except httpx.TimeoutException:
-            raise Exception("요청이 너무 오래 걸려서 중단했어요.")
+            raise Exception("The request took too long and was cancelled.")
         except Exception as e:
-            raise Exception(f"요청 중 오류가 발생했어요: {str(e)}")
+            raise Exception(f"An error occurred while processing the request: {str(e)}")
 
     async def request_with_tools(
         self,
@@ -144,34 +143,34 @@ class LLMServerClient:
         timeout: float = 30.0,
         **kwargs
     ):
-        """LLM 도구 요청을 처리합니다.
+        """Send a request that allows tool usage.
 
         Args:
-            system_prompt: 시스템 프롬프트 (messages가 없을 때 사용)
-            user_prompt: 사용자 프롬프트 (messages가 없을 때 사용)
-            messages: 직접 전달할 메시지 리스트
-            tools: 사용할 도구 정의
-            tool_choice: 도구 선택 설정 ("auto", "none", or specific tool)
-            timeout: 타임아웃 설정
-            **kwargs: 추가 파라미터
+            system_prompt: System prompt used when ``messages`` is omitted.
+            user_prompt: User prompt used when ``messages`` is omitted.
+            messages: Explicit message list to send to the LLM.
+            tools: Tool definitions available to the LLM.
+            tool_choice: Tool selection mode ("auto", "none", or a specific tool name).
+            timeout: Per-request timeout.
+            **kwargs: Additional parameters for the request.
 
         Returns:
-            Dict with 'content' and 'tool_calls' if tools were called
+            Dict with ``content`` and ``tool_calls`` keys when tools are used.
         """
-        # 메시지 구성
+        # Compose messages when none are provided
         if messages is None:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
 
-        # 페이로드 구성
+        # Build payload
         payload = {
             "stream": False,
             "messages": messages,
             "model": self.config.model_name,
-            **self.config.config,  # 기본 설정
-            **kwargs  # 오버라이드
+            **self.config.config,
+            **kwargs
         }
 
         if tools:
@@ -228,15 +227,15 @@ class LLMServerClient:
             return result
 
         except httpx.TimeoutException:
-            raise Exception("요청이 너무 오래 걸려서 중단했어요.")
+            raise Exception("The request took too long and was cancelled.")
         except Exception as e:
-            raise Exception(f"요청 중 오류가 발생했어요: {str(e)}")
+            raise Exception(f"An error occurred while processing the request: {str(e)}")
 
     async def health_check(
         self,
         health_check_timeout: int = 5,
     ) -> bool:
-        # Mock 서버는 항상 healthy
+        # Mock servers are always considered healthy
         if self.config.url.startswith("mock://"):
             return True
 
@@ -247,7 +246,7 @@ class LLMServerClient:
             if health_options.get("enabled") is False:
                 return True
 
-            # OpenAI API는 /v1/models 엔드포인트 사용
+            # The OpenAI API uses /v1/models for health checks
             if "api.openai.com" in self.config.url:
                 if self.config.health_check_endpoint in ["/health", "/models", "", None]:
                     health_endpoint = "/v1/models"
@@ -282,7 +281,7 @@ class LLMServerClient:
         return f"{base_url}{normalized_path}"
 
     async def close(self):
-        """HTTP 클라이언트를 안전하게 종료합니다."""
+        """Close the HTTP client safely."""
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
 
@@ -295,16 +294,16 @@ class LLMServerClient:
         return hash(self.config.name)
 
     def __del__(self):
-        """객체가 삭제될 때 HTTP 클라이언트도 정리합니다."""
+        """Ensure the HTTP client is closed when the object is deleted."""
         if hasattr(self, '_http_client') and self._http_client and not self._http_client.is_closed:
-            # 백그라운드에서 정리 (동기적 컨텍스트에서 호출될 수 있음)
+            # Attempt to close the client in the background (may run in a sync context)
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(self._http_client.aclose())
             except RuntimeError:
-                # 이벤트 루프가 없는 경우 - 동기적으로 정리 시도
+                # If there is no running loop, close synchronously
                 try:
                     asyncio.run(self._http_client.aclose())
                 except Exception:
-                    # 정리 실패시 무시
+                    # Ignore cleanup failures during interpreter shutdown
                     pass

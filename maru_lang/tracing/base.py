@@ -1,5 +1,5 @@
 """
-Langfuse 트레이싱 유틸리티
+Langfuse tracing utilities.
 """
 from typing import Any, Dict, Optional
 from .langfuse import get_langfuse_wrapper, observe
@@ -7,20 +7,22 @@ from .langfuse import get_langfuse_wrapper, observe
 
 def safe_observe(name: Optional[str] = None, **kwargs):
     """
-    안전한 observe 데코레이터 - 기존 @observe 스타일 유지
-    
-    사용법:
+    A defensive version of ``@observe`` that becomes a no-op when Langfuse is
+    unavailable.
+
+    Example::
+
         @safe_observe(name="function_name", as_type="generation")
         def my_function():
-            pass
+            ...
     """
     def decorator(func):
         langfuse_wrapper = get_langfuse_wrapper()
         if not langfuse_wrapper.is_available:
-            # Langfuse가 비활성화되어 있으면 원본 함수 반환
+            # Return the original function when Langfuse is disabled
             return func
         
-        # Langfuse가 활성화되어 있으면 실제 observe 데코레이터 적용
+        # Apply the actual observe decorator when Langfuse is enabled
         actual_name = name or func.__name__
         return observe(name=actual_name, **kwargs)(func)
     
@@ -28,13 +30,13 @@ def safe_observe(name: Optional[str] = None, **kwargs):
 
 
 def safe_span_update(span: Any, data: Dict[str, Any]) -> bool:
-    """안전한 span 업데이트"""
+    """Update a span safely when Langfuse is configured."""
     langfuse_wrapper = get_langfuse_wrapper()
     if not span or not langfuse_wrapper.is_available:
         return False
         
     try:
-        # None 값들을 안전한 값으로 변환
+        # Sanitize any None values before updating
         safe_data = _sanitize_data(data)
         span.update_trace(**safe_data)
         return True
@@ -44,7 +46,7 @@ def safe_span_update(span: Any, data: Dict[str, Any]) -> bool:
 
 
 def _sanitize_data(data: Dict[str, Any]) -> Dict[str, Any]:
-    """데이터 정화 - None 값들을 안전한 값으로 변환"""
+    """Normalize trace data by replacing ``None`` values."""
     safe_data = {}
     
     for key, value in data.items():
@@ -66,7 +68,7 @@ def _sanitize_data(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _sanitize_item(item: Any) -> Any:
-    """개별 아이템 정화"""
+    """Normalize each item inside nested data structures."""
     if item is None:
         return "null"
     elif isinstance(item, dict):
@@ -76,7 +78,7 @@ def _sanitize_item(item: Any) -> Any:
 
 
 def get_tracing_status() -> Dict[str, Any]:
-    """트레이싱 상태 반환"""
+    """Return the current tracing status."""
     langfuse_wrapper = get_langfuse_wrapper()
     return {
         "enabled": langfuse_wrapper.is_available,

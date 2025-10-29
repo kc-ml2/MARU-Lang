@@ -5,9 +5,7 @@ from typing import Optional, Any, Callable, Dict
 
 
 class LangfuseWrapper:
-    """
-    Langfuse가 없으면 데코레이터가 아무 동작도 하지 않음
-    """
+    """Provide Langfuse integration while failing gracefully when unavailable."""
 
     def __init__(self):
         self.langfuse = None
@@ -17,9 +15,9 @@ class LangfuseWrapper:
         self._initialize_langfuse()
 
     def _initialize_langfuse(self):
-        """Langfuse 초기화 시도"""
+        """Attempt to initialize Langfuse."""
         try:
-            # 설정값 검증
+            # Validate configuration values
             if not settings.LANGFUSE_PUBLIC_KEY or not settings.LANGFUSE_SECRET_KEY:
                 print("⚠️  Langfuse keys not configured. Tracing disabled.")
                 return
@@ -33,7 +31,7 @@ class LangfuseWrapper:
                 "LANGFUSE_DEBUG": "False"
             })
 
-            # Langfuse 초기화
+            # Initialize Langfuse
             self.langfuse = get_client()
             self.observe_decorator = observe
             self.is_available = True
@@ -48,21 +46,21 @@ class LangfuseWrapper:
 
     def observe(self, name: Optional[str] = None, **kwargs) -> Callable:
         """
-        Langfuse observe 데코레이터의 옵셔널 래퍼
+        Optional wrapper for the Langfuse ``observe`` decorator.
 
         Args:
-            name: 관찰할 함수/메서드의 이름
-            **kwargs: observe 데코레이터에 전달할 추가 인자들
+            name: Name of the function or method to observe.
+            **kwargs: Additional arguments forwarded to ``observe``.
 
         Returns:
-            실제 데코레이터 함수
+            The actual decorator function.
         """
         def decorator(func: Callable) -> Callable:
             if self.is_available and self.observe_decorator:
-                # Langfuse가 사용 가능하면 실제 observe 데코레이터 적용
+                # Apply the true Langfuse decorator when available
                 return self.observe_decorator(name=name or func.__name__, **kwargs)(func)
             else:
-                # Langfuse가 없으면 원본 함수 그대로 반환
+                # Otherwise return the original function unchanged
                 @functools.wraps(func)
                 def wrapper(*args, **kwargs):
                     return func(*args, **kwargs)
@@ -71,13 +69,13 @@ class LangfuseWrapper:
         return decorator
 
     def flush(self):
-        """Langfuse flush (있을 경우에만)"""
+        """Flush Langfuse spans when available."""
         if self.is_available and self.langfuse:
             self.langfuse.flush()
 
 
 class DummyContext:
-    """Langfuse가 없을 때 사용하는 더미 컨텍스트 매니저"""
+    """Dummy context manager used when Langfuse is unavailable."""
 
     def __enter__(self):
         return self
@@ -92,12 +90,12 @@ class DummyContext:
         pass
 
 
-# 편의를 위한 함수들
+# Convenience helpers
 _langfuse_wrapper = None
 
 
 def get_langfuse_wrapper() -> LangfuseWrapper:
-    """LangfuseWrapper 인스턴스를 반환"""
+    """Return the shared LangfuseWrapper instance."""
     global _langfuse_wrapper
     if _langfuse_wrapper is None:
         _langfuse_wrapper = LangfuseWrapper()
@@ -106,18 +104,19 @@ def get_langfuse_wrapper() -> LangfuseWrapper:
 
 def observe(name: Optional[str] = None, **kwargs) -> Callable:
     """
-    옵셔널 Langfuse observe 데코레이터
+    Optional Langfuse observe decorator.
 
-    사용법:
+    Example::
+
         @observe(name="my_function")
         def my_function():
-            pass
+            ...
     """
     return get_langfuse_wrapper().observe(name=name, **kwargs)
 
 
 def flush():
-    """Langfuse flush (사용 가능할 때만)"""
+    """Flush Langfuse spans when the integration is available."""
     get_langfuse_wrapper().flush()
 
 

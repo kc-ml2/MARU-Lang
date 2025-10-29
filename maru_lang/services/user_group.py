@@ -1,5 +1,5 @@
 """
-User Group 관련 서비스 함수들
+Service helpers related to user groups and their permissions.
 """
 from typing import List, Optional
 from tortoise.exceptions import DoesNotExist
@@ -17,13 +17,13 @@ from maru_lang.core.relation_db.models.documents import (
 
 async def get_or_create_user_group(name: str) -> UserGroup:
     """
-    UserGroup을 이름으로 조회하거나 생성합니다.
+    Retrieve a user group by name, creating it if necessary.
 
     Args:
-        name: 그룹 이름 (소문자로 변환됨)
+        name: Group name (case-insensitive; stored as lowercase).
 
     Returns:
-        UserGroup 인스턴스
+        The fetched or newly created ``UserGroup`` instance.
     """
     name = name.lower()
     user_group, _ = await UserGroup.get_or_create(name=name)
@@ -32,13 +32,13 @@ async def get_or_create_user_group(name: str) -> UserGroup:
 
 async def get_all_descendant_user_group_ids(group_ids: List[int]) -> set[int]:
     """
-    UserGroup 계층 구조를 따라 하위 그룹 ID들을 모두 반환 (자기 자신 포함)
+    Traverse the user-group hierarchy and return every descendant ID, including the originals.
 
     Args:
-        group_ids: 상위 그룹 ID 리스트
+        group_ids: List of parent group IDs.
 
     Returns:
-        모든 하위 그룹을 포함한 ID set
+        A set containing all descendant group IDs.
     """
     seen = set(group_ids)
     queue = list(group_ids)
@@ -56,13 +56,13 @@ async def get_all_descendant_user_group_ids(group_ids: List[int]) -> set[int]:
 
 async def get_all_descendant_document_group_ids(group_ids: List[int]) -> set[int]:
     """
-    DocumentGroup 계층 구조를 따라 하위 그룹 ID들을 모두 반환 (자기 자신 포함)
+    Traverse the document-group hierarchy and return every descendant ID, including the originals.
 
     Args:
-        group_ids: 상위 그룹 ID 리스트
+        group_ids: List of parent document group IDs.
 
     Returns:
-        모든 하위 그룹을 포함한 ID set
+        A set containing all descendant document group IDs.
     """
     seen = set(group_ids)
     queue = list(group_ids)
@@ -85,37 +85,38 @@ async def link_user_groups_to_document_groups(
     link_descendants: bool = False,
 ) -> dict:
     """
-    UserGroup들을 DocumentGroup들과 연결하여 권한을 부여합니다.
+    Grant permissions by linking user groups to document groups.
 
     Args:
-        user_group_names: 연결할 UserGroup 이름 리스트
-        document_group_names: 연결할 DocumentGroup 이름 리스트
-        actions: 부여할 권한 액션 리스트 (기본값: [READ, WRITE])
-        link_descendants: True일 경우 모든 하위 DocumentGroup도 연결
+        user_group_names: Names of user groups to connect.
+        document_group_names: Names of document groups to connect.
+        actions: Permission actions to grant (defaults to ``[READ, WRITE]``).
+        link_descendants: When ``True``, include all descendant document groups.
 
     Returns:
-        연결 결과 딕셔너리:
-        {
-            "user_groups": 처리된 UserGroup 수,
-            "document_groups": 처리된 DocumentGroup 수,
-            "permissions_created": 생성된 권한 수,
-            "missing_user_groups": 존재하지 않는 UserGroup 이름들,
-            "missing_document_groups": 존재하지 않는 DocumentGroup 이름들
-        }
+        Dictionary summarizing the operation::
+
+            {
+                "user_groups": count of processed user groups,
+                "document_groups": count of processed document groups,
+                "permissions_created": number of new permissions created,
+                "missing_user_groups": names that were not found,
+                "missing_document_groups": names that were not found,
+            }
     """
     if actions is None:
         actions = [PermissionAction.READ, PermissionAction.WRITE]
 
-    # 소문자로 변환
+    # Normalize names to lowercase to avoid case-sensitivity issues
     user_group_names = [name.lower() for name in user_group_names]
     document_group_names = [name.lower() for name in document_group_names]
 
-    # UserGroup 조회
+    # Fetch existing user groups
     user_groups = await UserGroup.filter(name__in=user_group_names).all()
     found_user_group_names = {ug.name for ug in user_groups}
     missing_user_groups = [name for name in user_group_names if name not in found_user_group_names]
 
-    # DocumentGroup 조회
+    # Fetch existing document groups
     document_groups = await DocumentGroup.filter(name__in=document_group_names).all()
     found_document_group_names = {dg.name for dg in document_groups}
     missing_document_groups = [name for name in document_group_names if name not in found_document_group_names]
@@ -140,15 +141,15 @@ async def link_user_groups_to_document_groups(
             "error": "No valid document groups found"
         }
 
-    # DocumentGroup ID 목록 준비
+    # Prepare document-group ID list
     document_group_ids = [dg.id for dg in document_groups]
 
-    # link_descendants가 True인 경우 하위 그룹도 포함
+    # Optionally include descendant groups
     if link_descendants:
         all_document_group_ids = await get_all_descendant_document_group_ids(document_group_ids)
         document_groups = await DocumentGroup.filter(id__in=all_document_group_ids).all()
 
-    # 권한 생성
+    # Create group permissions
     permissions_created = 0
     for user_group in user_groups:
         for document_group in document_groups:
@@ -172,13 +173,13 @@ async def link_user_groups_to_document_groups(
 
 async def validate_user_groups_exist(user_group_names: List[str]) -> tuple[List[str], List[str]]:
     """
-    UserGroup 이름들이 존재하는지 확인합니다.
+    Check whether the provided user group names exist.
 
     Args:
-        user_group_names: 확인할 UserGroup 이름 리스트
+        user_group_names: Names of user groups to validate.
 
     Returns:
-        (존재하는 그룹들, 존재하지 않는 그룹들) 튜플
+        A tuple ``(existing_groups, missing_groups)``.
     """
     user_group_names = [name.lower() for name in user_group_names]
     existing_groups = await UserGroup.filter(name__in=user_group_names).values_list("name", flat=True)
@@ -190,13 +191,13 @@ async def validate_user_groups_exist(user_group_names: List[str]) -> tuple[List[
 
 async def create_user_groups_if_not_exist(user_group_names: List[str]) -> List[UserGroup]:
     """
-    UserGroup들을 생성합니다 (존재하지 않는 경우에만).
+    Ensure that the given user groups exist, creating any missing ones.
 
     Args:
-        user_group_names: 생성할 UserGroup 이름 리스트
+        user_group_names: Names of user groups to create or fetch.
 
     Returns:
-        생성되거나 조회된 UserGroup 인스턴스 리스트
+        List of ``UserGroup`` instances that now exist.
     """
     user_groups = []
     for name in user_group_names:
@@ -208,13 +209,13 @@ async def create_user_groups_if_not_exist(user_group_names: List[str]) -> List[U
 
 async def get_document_groups_by_names(document_group_names: List[str]) -> List[DocumentGroup]:
     """
-    이름으로 DocumentGroup들을 조회합니다.
+    Retrieve document groups matching the given names.
 
     Args:
-        document_group_names: DocumentGroup 이름 리스트
+        document_group_names: Names of document groups to fetch.
 
     Returns:
-        DocumentGroup 인스턴스 리스트
+        List of matching ``DocumentGroup`` instances.
     """
     document_group_names = [name.lower() for name in document_group_names]
     return await DocumentGroup.filter(name__in=document_group_names).all()

@@ -22,12 +22,12 @@ app = typer.Typer()
 @app.command()
 def serve(
     app_module: str = typer.Argument("main:app",
-                                     help="앱 모듈 경로 (기본: main:app)"),
-    host: str = typer.Option(None, help="서버 host"),
-    port: int = typer.Option(None, help="서버 port"),
-    reload: bool = typer.Option(None, help="코드 변경 감지 reload"),
-    log_level: str = typer.Option(None, help="로그 레벨"),
-    workers: int = typer.Option(1, help="서버 워커 수"),
+                                     help="Application module path (default: main:app)"),
+    host: str = typer.Option(None, help="Server host"),
+    port: int = typer.Option(None, help="Server port"),
+    reload: bool = typer.Option(None, help="Enable hot-reload when code changes"),
+    log_level: str = typer.Option(None, help="Log level"),
+    workers: int = typer.Option(1, help="Number of server workers"),
 ):
     """Start the chatbot FastAPI server (default: maru_app/main.py)"""
 
@@ -43,29 +43,29 @@ def serve(
     if os.path.exists(maru_app_path) and maru_app_path not in sys.path:
         sys.path.insert(0, maru_app_path)
 
-    # CLI 인자로 오버라이드
+    # Override defaults with CLI arguments when provided
     host = host or settings.HOST
     port = port or settings.PROT
     reload = reload if reload is not None else settings.RELOAD
     log_level = log_level or settings.LOG_LEVEL
 
-    # reload와 workers 충돌 체크
+    # Prevent using reload with multiple workers
     if workers > 1 and reload:
-        typer.echo("⚠️  경고: reload 모드에서는 멀티 워커를 사용할 수 없습니다.")
-        typer.echo("   개발 시: --reload 사용 (단일 워커, 코드 변경 감지)")
-        typer.echo("   프로덕션 시: --workers N 사용 (멀티 워커, reload 비활성화)")
-        typer.echo("   → workers를 1로 조정하고 reload 모드로 실행합니다.")
+        typer.echo("⚠️  Warning: reload mode cannot be combined with multiple workers.")
+        typer.echo("   Development: use --reload (single worker with code reloading)")
+        typer.echo("   Production: use --workers N (multiple workers, reload disabled)")
+        typer.echo("   → Adjusting workers to 1 and running in reload mode.")
         workers = 1
 
-    # 앱 모듈 경로 확인
+    # Validate module path format
     if ":" not in app_module:
         typer.echo(
-            f"❌ Error: App module must be in format 'module:variable' (예: main:app)")
+            "❌ Error: App module must be in format 'module:variable' (e.g., main:app)")
         raise typer.Exit(1)
 
     module_part, var_part = app_module.split(":", 1)
 
-    # 모듈 파일 존재 여부 확인 (현재 디렉토리 -> maru_app 순서로 탐색)
+    # Check whether the module file exists (current directory first, then maru_app)
     module_file = Path(f"{module_part.replace('.', '/')}.py")
     maru_app_file = Path(f"maru_app/{module_part.replace('.', '/')}.py")
 
@@ -74,20 +74,20 @@ def serve(
     if module_file.exists():
         typer.echo(f"🎯 Running app: {app_module}")
     elif maru_app_file.exists():
-        # maru_app에서 찾은 경우 모듈 경로 수정
+        # If found under maru_app, adjust module path accordingly
         target_app_module = f"maru_app.{module_part}:{var_part}"
         typer.echo(f"🎯 Running app from maru_app: {target_app_module}")
     else:
         typer.echo(
-            f"⚠️  Warning: Module file not found in current directory or maru_app/")
+            "⚠️  Warning: Module file not found in the current directory or maru_app/")
         typer.echo(f"   Attempting to run: {app_module}")
 
     typer.echo(
         f"🚀 Running on {host}:{port} (workers={workers}, reload={reload})")
 
     if workers > 1:
-        # 멀티 워커는 subprocess로 uvicorn CLI 실행
-        typer.echo("🔧 프로덕션 모드: 멀티 워커로 실행")
+        # Execute uvicorn CLI in a subprocess for multi-worker mode
+        typer.echo("🔧 Production mode: running with multiple workers")
 
         # Set PYTHONPATH to include current directory
         # env = os.environ.copy()
@@ -104,16 +104,15 @@ def serve(
             "--workers", str(workers),
             "--log-level", log_level,
         ]
-        typer.echo(f"   실행 명령어: {' '.join(cmd)}")
+        typer.echo(f"   Command: {' '.join(cmd)}")
         subprocess.run(cmd)
 
         # subprocess.run(cmd, env=env)
     else:
-        # 단일 워커는 기존 방식
         if reload:
-            typer.echo("🔧 개발 모드: 단일 워커 + 코드 변경 감지")
+            typer.echo("🔧 Development mode: single worker with code reloading")
         else:
-            typer.echo("🔧 단일 워커 모드: 코드 변경 감지 비활성화")
+            typer.echo("🔧 Single worker mode: reload disabled")
 
         uvicorn.run(
             target_app_module,
@@ -126,26 +125,26 @@ def serve(
 
 @app.command()
 def ingest(
-    path: Path = typer.Argument(..., help="문서가 들어있는 폴더 경로"),
+    path: Path = typer.Argument(..., help="Folder path that contains documents"),
     user_groups: Optional[List[str]] = typer.Option(
-        None, "--user-group", "-ug", help="문서 그룹에 접근 권한을 부여할 사용자 그룹 (여러 개 지정 가능)"),
+        None, "--user-group", "-ug", help="User groups that should receive access permission (multiple values allowed)"),
     batch_size: int = typer.Option(
-        1000, "--batch-size", "-b", help="배치당 최대 메모리 크기 (MB, 기본: 1000MB)"),
+        1000, "--batch-size", "-b", help="Maximum memory per batch in MB (default: 1000 MB)"),
 ):
-    """폴더 내 모든 문서를 파싱하여 청킹 및 DB 저장"""
+    """Parse every document in the folder, chunk it, and store it in the database."""
     group = path.name
 
     if not path.exists() or not path.is_dir():
-        typer.echo(f"❌ {path} 폴더가 존재하지 않습니다.")
+        typer.echo(f"❌ {path} does not exist." )
         raise typer.Exit(1)
 
-    # group 정규식 검사 ( / 이런 특수문자 포함 불가)
+    # Validate group name (disallow characters such as /)
     if not re.match(r'^[a-zA-Z0-9_]+$', group):
-        typer.echo(f"❌ {group} 그룹은 영문, 숫자, 언더스코어(_)만 사용 가능합니다.")
+        typer.echo(f"❌ Group '{group}' may only contain letters, numbers, and underscores.")
         raise typer.Exit(1)
 
     typer.echo(
-        f"🚀 Ingesting {path} with group {group}")
+        f"🚀 Ingesting {path} into group {group}")
 
     run_with_orm_context(
         ingest_function,
@@ -157,13 +156,13 @@ def ingest(
 
 @app.command()
 def remove(
-    group: str = typer.Argument(..., help="삭제할 DocumentGroup 이름"),
+    group: str = typer.Argument(..., help="DocumentGroup name to delete"),
     force: bool = typer.Option(
-        False, "--force", "-f", help="확인 없이 강제 삭제"
+        False, "--force", "-f", help="Delete without confirmation"
     ),
 ):
-    """DocumentGroup과 모든 관련 데이터 삭제 (문서, 임베딩, VDB)"""
-    typer.echo(f"🗑️  Removing DocumentGroup: {group}")
+    """Delete a DocumentGroup and all associated data (documents, embeddings, VDB)."""
+    typer.echo(f"🗑️  Removing document group: {group}")
 
     run_with_orm_context(remove_function, group, force)
 
@@ -184,15 +183,15 @@ def chat(
     # Check if installation is complete
     _check_maru_app_installation()
 
-    # 그룹 파싱
+    # Parse group selections
     if groups == "all":
-        # 모든 그룹 검색
-        parsed_groups = ["__all__"]  # None은 모든 그룹을 의미
+        # Search across every group
+        parsed_groups = ["__all__"]  # Indicates all groups
     else:
-        # 쉼표로 구분된 그룹들
+        # Split comma-separated group names
         parsed_groups = [g.strip() for g in groups.split(",")]
 
-    # ORM 컨텍스트와 함께 실행 (문서 검색 등을 위해 DB 접근 필요)
+    # Run with ORM context (required for document search)
     run_with_orm_context(chat_session, parsed_groups, max_turns)
 
 
@@ -242,20 +241,20 @@ def install(
 def status(
     verbose: bool = typer.Option(
         False, "--verbose", "-v",
-        help="자세한 정보 출력 (그룹별 통계 등)"
+        help="Show detailed information (e.g., per-group statistics)"
     ),
 ):
-    """RDB와 VectorDB의 현재 상태 확인"""
+    """Display the current status of the relational DB and vector DB."""
     run_with_orm_context(show_status, verbose)
 
 
 @app.command()
 def tree(
     name: Optional[str] = typer.Argument(
-        None, help="DocumentGroup 이름 (없으면 루트 그룹들만 표시)"),
-    depth: int = typer.Option(2, "--depth", "-d", help="표시할 최대 깊이 (기본: 2)"),
+        None, help="DocumentGroup name (shows only root groups when omitted)"),
+    depth: int = typer.Option(2, "--depth", "-d", help="Maximum depth to display (default: 2)"),
 ):
-    """DocumentGroup 계층 구조 조회"""
+    """Show the DocumentGroup hierarchy."""
     run_with_orm_context(show_group_tree_command, name, depth)
 
 def _check_maru_app_installation() -> bool:
@@ -283,7 +282,7 @@ def _check_maru_app_installation() -> bool:
         typer.echo("")
         typer.echo(
             "💡 Please run the following command to initialize your project:")
-        typer.echo("   chatbot install")
+        typer.echo("   maru install")
         typer.echo("")
         raise typer.Exit(1)
 

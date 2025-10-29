@@ -9,30 +9,31 @@ import uuid
 
 def new_ulid() -> str:
     """
-    시간순 정렬 가능한 ID 생성
-    - uuid.uuid7 사용 가능하면 사용 (Python 3.12+)
-    - 아니면 ULID 형식 직접 구현
+    Generate a time-sortable identifier.
+
+    - Use ``uuid.uuid7`` when available (Python 3.12+).
+    - Otherwise, fall back to a ULID-style implementation.
     """
-    # uuid7이 사용 가능한지 런타임에 체크
+    # Detect uuid7 support at runtime
     if hasattr(uuid, 'uuid7'):
         return str(uuid.uuid7())
 
-    # ULID 구현 (fallback)
-    # 형식: 26자 (타임스탬프 10자 + 랜덤 16자)
+    # ULID fallback implementation
+    # Format: 26 characters (10 timestamp + 16 randomness)
     timestamp_ms = int(time.time() * 1000)
     randomness = random.getrandbits(80)
 
-    # Crockford's Base32 알파벳
+    # Crockford's Base32 alphabet
     alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-    # 타임스탬프 인코딩 (10자)
+    # Encode timestamp (10 characters)
     ts_encoded = ""
     ts = timestamp_ms
     for _ in range(10):
         ts_encoded = alphabet[ts & 0x1F] + ts_encoded
         ts >>= 5
 
-    # 랜덤 부분 인코딩 (16자)
+    # Encode randomness (16 characters)
     rand_encoded = ""
     rand = randomness
     for _ in range(16):
@@ -48,19 +49,20 @@ def canonicalize_text(s: str) -> str:
 
 def make_source_fingerprint_for_file(filename: str, size: int, mtime_ns: int) -> str:
     """
-    파일 내용 변경 감지를 위한 fingerprint 생성
+    Generate a fingerprint that captures changes to file contents.
 
     Args:
-        filename: 파일 이름 (경로 제외)
-        size: 파일 크기 (bytes)
-        mtime_ns: 수정 시간 (nanoseconds)
+        filename: File name without the path component.
+        size: File size in bytes.
+        mtime_ns: Modification time in nanoseconds.
 
     Returns:
-        str: SHA256 해시 (32자)
+        str: 32-character SHA256 hash.
 
     Note:
-        경로(path)는 포함하지 않음 - 폴더 이동에 강건하게 하기 위함
-        Document는 file_path로 식별하고, fingerprint는 내용 변경만 감지
+        The filesystem path is excluded so the fingerprint remains stable when
+        files move between directories. Documents are identified by
+        ``file_path`` while the fingerprint captures content changes only.
     """
     raw = f"{filename.lower()}|{size}|{mtime_ns}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]  # 128bit

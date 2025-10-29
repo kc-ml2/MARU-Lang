@@ -41,28 +41,28 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 벡터 데이터베이스
+# Vector database backends
 vector-db = [
     "chromadb>=0.4.0",
     "pymilvus[model]>=2.3.0",
 ]
 
-# 이메일 기능
+# Email integration
 email = [
-    "O365>=2.0.0",  # 대소문자 정리
+    "O365>=2.0.0",  # Ensure proper casing
 ]
 
-# 트레이싱/관찰가능성
+# Tracing / observability
 observability = [
     "langfuse>=2.0.0",
 ]
 
-# 한국어 NLP
+# Korean NLP
 nlp-ko = [
     "konlpy>=0.6.0",
 ]
 
-# 개발/테스트
+# Development / testing
 dev = [
     "aerich[toml]>=0.7.0",
     "pytest>=7.0.0",
@@ -71,7 +71,7 @@ dev = [
     "notebook>=6.5.0",
 ]
 
-# 모든 기능 (자기참조 제거, 수동 합집합)
+# Bundle of all optional features (manual union without self-reference)
 all = [
     "chromadb>=0.4.0",
     "pymilvus[model]>=2.3.0",
@@ -107,8 +107,8 @@ filterwarnings = [
     "ignore::UserWarning",
 ]
 markers = [
-    "slow: 실행이 오래 걸리는 테스트",
-    "integration: 통합 테스트",
+    "slow: long-running tests",
+    "integration: integration tests",
 ]
 
 [tool.coverage.run]

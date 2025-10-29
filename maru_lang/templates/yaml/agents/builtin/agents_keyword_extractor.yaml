@@ -1,72 +1,72 @@
 # Keyword Extractor Agent Configuration
-# BM25 검색에 최적화된 키워드를 추출하는 에이전트
+# Extracts keywords optimized for BM25 search
 
 name: keyword_extractor
-description: "BM25 검색에 최적화된 핵심 키워드를 추출하는 에이전트"
+description: "Extracts core keywords optimized for BM25 retrieval"
 type: builtin
 enabled: true
 version: "1.0.0"
 
-# 우선순위 (내부 도구로만 사용)
+# Priority (used primarily as an internal helper)
 priority: 85
 
-# LLM 설정
+# LLM configuration
 target_llm_config:
   server_name: "openai"
   override_params:
-    temperature: 0.1      # 일관된 키워드 추출
-    max_tokens: 50        # 키워드만 간단히
-    timeout: 8.0          # 빠른 처리
+    temperature: 0.1      # Keep output consistent
+    max_tokens: 50        # Short responses containing keywords only
+    timeout: 8.0          # Fast turnaround
 
   fallback_strategy: "any_available"
 
-# 프롬프트 설정
+# Prompt configuration
 prompts:
   system_prompt: |
-    당신은 BM25 키워드 검색에 최적화된 핵심 키워드를 추출하는 전문가입니다.
+    You are an expert at extracting keywords optimized for BM25 search.
 
-    주요 역할:
-    - 질문에서 가장 중요한 명사와 핵심 개념만 추출
-    - BM25 알고리즘에 효과적인 키워드 선별
-    - 불용어와 의미없는 단어 제거
-    - 동의어나 유사어도 고려한 키워드 선택
+    Core responsibilities:
+    - Extract only the most important nouns and concepts from the question.
+    - Select keywords that work well with the BM25 algorithm.
+    - Remove stopwords and terms with little value.
+    - Consider synonyms and closely related phrases.
 
-    원칙:
-    1. 가장 중요한 명사와 핵심 개념만 추출
-    2. 불용어(조사, 어미, 의문사) 완전 제거
-    3. 동의어나 유사어도 함께 고려
-    4. 3-7개의 핵심 키워드로 압축
-    5. 키워드들을 공백으로 구분하여 나열
-    6. 검색에 도움이 되는 구체적인 용어 우선
+    Principles:
+    1. Focus on the most critical nouns and key concepts.
+    2. Remove all stopwords (particles, endings, interrogatives, etc.).
+    3. Include synonyms or related terms when helpful.
+    4. Compress the output into 3–7 essential keywords.
+    5. Separate keywords with spaces.
+    6. Prioritize specific terms that improve search quality.
 
   user_prompt_template: |
-    다음 질문에서 BM25 검색에 최적화된 핵심 키워드들을 추출해주세요.
+    Extract the BM25-optimized core keywords for the following question.
 
-    질문: {question}
+    Question: {question}
 
-    위 질문에서 BM25 검색에 가장 효과적인 핵심 키워드들만을 공백으로 구분하여 추출해주세요.
-    키워드만 반환하고 부가 설명은 불필요합니다.
+    Return only the most effective keywords for BM25 search, separated by spaces.
+    Provide the keywords only—no additional commentary.
 
-    예시:
-    - 질문: "우리 회사 휴가 신청 절차가 어떻게 되나요?"
-    - 키워드: "회사 휴가 신청 절차 방법"
+    Example:
+    - Question: "How do I apply for vacation at our company?"
+    - Keywords: "company vacation application procedure process"
 
-# 구현 클래스 (사용자 공간의 Python 파일)
+# Implementation (builtin agent)
 implementation: builtin.keyword_extractor.KeywordExtractorAgent
 
-# 에이전트 설정
+# Agent configuration
 config:
   timeout: 8
   retry_count: 1
 
-  # 키워드 추출 설정
+  # Keyword extraction options
   extraction_config:
-    min_keywords: 3         # 최소 키워드 개수
-    max_keywords: 7         # 최대 키워드 개수
-    filter_stopwords: true  # 불용어 필터링
-    include_synonyms: true  # 동의어 고려
+    min_keywords: 3         # Minimum number of keywords
+    max_keywords: 7         # Maximum number of keywords
+    filter_stopwords: true  # Filter stopwords
+    include_synonyms: true  # Consider synonyms
 
-    # 불용어 목록 (한국어)
+    # Stopword list (Korean)
     stopwords:
       - "어떻게"
       - "무엇"
