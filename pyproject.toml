@@ -52,11 +52,6 @@ email = [
     "O365>=2.0.0",  # Ensure proper casing
 ]
 
-# Tracing / observability
-observability = [
-    "langfuse>=2.0.0",
-]
-
 # Korean NLP
 nlp-ko = [
     "konlpy>=0.6.0",
@@ -76,7 +71,6 @@ all = [
     "chromadb>=0.4.0",
     "pymilvus[model]>=2.3.0",
     "O365>=2.0.0",
-    "langfuse>=2.0.0",
     "konlpy>=0.6.0",
 ]
 

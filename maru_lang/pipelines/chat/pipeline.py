@@ -9,7 +9,6 @@ from maru_lang.pipelines.base import BasePipeline, PipelineComplete
 from maru_lang.models.agents import ChatResult, ChatStep, ChatProcess, ExecutionContext, AgentSelection
 from maru_lang.pluggable.agents.agent_selector import AgentSelector
 from maru_lang.pluggable.agents.agent_executor import AgentExecutor
-from maru_lang.dependencies.langfuse import LangfuseContext
 from maru_lang.models.chat import ChatHistory
 
 
@@ -41,13 +40,11 @@ class ChatPipeline(BasePipeline):
             question = self._question
             chat_history = self._chat_history
             forced_groups = self._forced_groups
-            context = self._context
 
             # Step 1: Select agents
             selection = await self.agent_selector.select_agents(
                 question=question,
-                chat_history=chat_history,
-                context=context,
+                chat_history=chat_history
             )
 
             await self.queue.put(ChatProcess(
@@ -67,8 +64,7 @@ class ChatPipeline(BasePipeline):
 
                     execution_result = await self.agent_executor.execute(
                         selection=selection,
-                        execution_context=execution_context,
-                        context=context
+                        execution_context=execution_context
                     )
                 except Exception as e:
                     print(f"[ERROR ChatPipeline] Error: {e}")
@@ -87,8 +83,7 @@ class ChatPipeline(BasePipeline):
                     question=question,
                     execution_result=execution_result,
                     selection=selection,
-                    chat_history=chat_history,
-                    context=context
+                    chat_history=chat_history
                 )
             except Exception as e:
                 print(f"[ERROR ChatPipeline] Response agent failed: {e}")
@@ -114,8 +109,7 @@ class ChatPipeline(BasePipeline):
         self,
         question: str,
         chat_history: ChatHistory,
-        forced_groups: List[str],
-        context: Optional[LangfuseContext] = None
+        forced_groups: List[str]
     ) -> AsyncGenerator[ChatProcess, None]:
         """
         Process chat request with streaming (legacy compatibility wrapper)
@@ -127,7 +121,6 @@ class ChatPipeline(BasePipeline):
         self._question = question
         self._chat_history = chat_history
         self._forced_groups = forced_groups
-        self._context = context
 
         # BasePipeline.run()을 사용
         async for item in self.run():
@@ -143,8 +136,7 @@ class ChatPipeline(BasePipeline):
         question: str,
         execution_result,
         selection,
-        chat_history: ChatHistory,
-        context: Optional[LangfuseContext] = None
+        chat_history: ChatHistory
     ) -> str:
         """
         Call response_agent to format final response based on execution result
@@ -158,7 +150,6 @@ class ChatPipeline(BasePipeline):
             execution_result: 에이전트 실행 결과 (None, errors, agent_results 등 모든 상황 포함)
             selection: AgentSelection result
             chat_history: Chat history
-            context: Langfuse context for tracing
 
         Returns:
             Formatted final response string
