@@ -1,0 +1,91 @@
+# Filesystem MCP Client Agent Configuration
+# 파일 시스템 접근을 위한 MCP 클라이언트 예제
+
+name: filesystem_mcp
+description: "파일 시스템 MCP - 파일 읽기/쓰기/검색 도구"
+type: mcp_client
+enabled: true
+version: "1.0.0"
+
+# 에이전트 우선순위
+priority: 3
+
+# 에이전트 선택 조건
+selection_criteria:
+  keywords:
+    - "파일"
+    - "디렉토리"
+    - "폴더"
+    - "읽기"
+    - "쓰기"
+    - "검색"
+  patterns:
+    - ".*파일.*읽.*"
+    - ".*파일.*쓰.*"
+    - ".*디렉토리.*"
+    - ".*폴더.*목록.*"
+
+# LLM 서버 설정 (MCP 도구 사용에 적합한 설정)
+target_llm_config:
+  server_name: "openai"  # 도구 사용에 적합한 모델
+
+  override_params:
+    temperature: 0.2  # 파일 작업은 정확해야 하므로 낮은 온도
+    max_tokens: 2000
+    top_p: 0.8
+
+  fallback_strategy: "error"  # MCP 에이전트는 LLM 필수
+
+# MCP 서버 연결 설정
+mcp_config:
+  # Anthropic의 공식 filesystem MCP 서버 사용 예제
+  command: ["npx", "@modelcontextprotocol/server-filesystem"]
+  args: ["/Users/shared/safe_directory"]  # 접근 허용할 디렉토리 경로
+  env:
+    NODE_ENV: "production"
+  timeout: 30
+
+# 프롬프트 설정
+prompts:
+  system_prompt: |
+    당신은 파일 시스템 작업을 도와주는 어시스턴트입니다.
+    MCP 도구를 사용하여 파일 읽기, 쓰기, 검색 등을 수행합니다.
+
+    사용 가능한 도구:
+    - read_file: 파일 내용 읽기
+    - write_file: 파일 쓰기 또는 생성
+    - list_directory: 디렉토리 내용 나열
+    - search_files: 파일 검색
+
+  user_prompt_template: |
+    {question}
+
+# 에이전트 실행 설정
+config:
+  timeout: 60  # 파일 작업은 시간이 걸릴 수 있음
+  retry_count: 2
+  max_context_length: 8000  # 파일 내용이 길 수 있음
+
+# 보안 설정
+security:
+  # 접근 가능한 디렉토리 제한
+  allowed_paths:
+    - "/Users/shared/safe_directory"
+  # 금지된 파일 패턴
+  forbidden_patterns:
+    - "*.env"
+    - "*.key"
+    - "*.pem"
+
+# 예제 사용법
+examples:
+  - "safe_directory에 있는 파일 목록 보여줘"
+  - "README.md 파일 내용을 읽어줘"
+  - "test.txt 파일에 'Hello World' 써줘"
+  - "*.py 파일들을 검색해줘"
+
+# 참고사항
+# 1. MCP 서버 설치 필요:
+#    npm install -g @modelcontextprotocol/server-filesystem
+# 2. args에 지정된 디렉토리만 접근 가능
+# 3. 보안을 위해 제한된 디렉토리만 허용하도록 설정

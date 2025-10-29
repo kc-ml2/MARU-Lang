@@ -1,0 +1,49 @@
+# OpenAI API Server Configuration
+# OpenAI API 서버 설정
+
+name: openai
+description: "OpenAI API 서버"
+url: https://api.openai.com
+model_name: gpt-4o-mini
+api_key: ${OPENAI_API_KEY}  # 환경변수 사용 권장
+timeout: 30
+enabled: true
+
+# 기본 모델 파라미터
+config:
+  temperature: 0.7
+  max_tokens: 2000
+  top_p: 1.0
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+
+# 추가 HTTP 헤더
+headers:
+  Content-Type: application/json
+  # User-Agent: "MyApp/1.0"
+
+# 헬스 체크 설정 (선택사항)
+health_check:
+  enabled: true
+  endpoint: "/models"  # OpenAI는 /models 엔드포인트로 체크
+  interval: 300  # 5분마다 체크
+
+# 비용 관리 (선택사항)
+cost_tracking:
+  enabled: false
+  # input_cost_per_1k_tokens: 0.0015   # GPT-4o-mini 입력 토큰 비용
+  # output_cost_per_1k_tokens: 0.006   # GPT-4o-mini 출력 토큰 비용
+
+# 사용 제한 (선택사항)
+limits:
+  max_requests_per_minute: 60
+  max_tokens_per_request: 4000
+
+# 재시도 설정
+retry:
+  max_attempts: 3
+  backoff_factor: 2
+  max_delay: 60
+
+# 로깅 레벨
+log_level: INFO

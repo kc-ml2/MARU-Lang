@@ -1,0 +1,22 @@
+# Embedder Configuration
+# 임베딩 모델 및 디바이스 설정
+
+# 기본 임베딩 모델
+default_model: BAAI/bge-m3
+
+# 디바이스 (null이면 자동 선택: cuda > mps > cpu)
+device: null
+
+# 사용 가능한 모델 목록 (참고용)
+models:
+  - name: BAAI/bge-m3
+    dimension: 1024
+    description: "다국어 지원 임베딩 모델 (한국어 포함)"
+
+  - name: intfloat/multilingual-e5-large
+    dimension: 1024
+    description: "다국어 지원 대형 임베딩 모델"
+
+  - name: sentence-transformers/all-MiniLM-L6-v2
+    dimension: 384
+    description: "빠르고 가벼운 영어 전용 모델"

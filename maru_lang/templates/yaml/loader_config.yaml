@@ -1,0 +1,44 @@
+# Loader Configuration
+# 파일 확장자별로 사용할 loader(parser)와 chunker를 매핑합니다.
+
+# 확장자 매핑이 없을 때 사용할 기본 loader/chunker
+default_loader: txt
+default_chunker: paragraph
+
+# 확장자별 매핑 (특수한 경우만 명시)
+extensions:
+  .txt:
+    loader: txt
+    chunker: paragraph
+
+  .md:
+    loader: markdown
+    chunker: paragraph
+
+  .pdf:
+    loader: pdf
+    chunker: paragraph
+
+  .docx:
+    loader: docx
+    chunker: paragraph
+
+  .html:
+    loader: html
+    chunker: paragraph
+
+  .htm:
+    loader: html
+    chunker: paragraph
+
+  .py:
+    loader: txt
+    chunker: paragraph
+
+  .js:
+    loader: txt
+    chunker: paragraph
+
+  .ts:
+    loader: txt
+    chunker: paragraph

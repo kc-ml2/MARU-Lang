@@ -1,3 +1,5 @@
+.DS_Store
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -60,6 +62,17 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+
+# SQLite databases
+*.sqlite
+*.sqlite3
+*.db
+*.db3
+*.s3db
+*.sl3
+*-shm
+*-wal
+*-journal
 
 # Flask stuff:
 instance/

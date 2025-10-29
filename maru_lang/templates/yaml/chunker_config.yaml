@@ -1,0 +1,33 @@
+# Chunker Configuration
+# 각 chunker의 생성자 파라미터를 설정합니다.
+#
+# 사용 가능한 기본 chunker:
+#   - paragraph: 문단 단위로 청킹 (빈 줄 기준)
+#   - sentence: 문장 단위로 청킹하고 병합
+#   - fixed_size: 고정 크기로 청킹 (오버랩 지원)
+#
+# 사용자 정의 chunker를 chunkers/ 디렉토리에 추가할 수 있습니다.
+
+# Chunker별 설정
+chunkers:
+  # 문단 단위 chunker
+  paragraph:
+    max_chunk_size: 500
+
+  # 문장 단위 chunker
+  sentence:
+    max_chunk_size: 500
+
+  # 고정 크기 chunker
+  fixed_size:
+    chunk_size: 500
+    overlap: 200
+
+# 사용자 정의 chunker 예시:
+# chunkers:
+#   header:  # 마크다운 헤더 기반 chunker
+#     max_level: 3
+#
+#   page:    # PDF 페이지 기반 chunker
+#     combine_small_pages: true
+#     min_page_chars: 100

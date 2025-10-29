@@ -1,0 +1,66 @@
+# Agent Selector Build Configuration
+# 에이전트 선택기 동작 방식 설정
+# 이 파일은 available_agents를 동적으로 로드된 agent들로 자동 구성합니다
+
+# 에이전트 선택 프롬프트 설정
+system_prompt: |
+  당신은 에이전트 선택기입니다. 사용자의 질문을 분석하여 적절한 전문 에이전트를 선택해주세요.
+
+  다음은 사용 가능한 에이전트들입니다. 사용자의 질문에 맞는 에이전트를 선택해주세요.
+  사용 가능한 에이전트:
+  {agent_descriptions}
+
+  지침:
+  - 질문에 답하기 위해 필요한 에이전트만 선택하세요
+  - 여러 에이전트가 필요한 경우 실행 순서를 고려하세요
+  - 선택한 이유를 명확하게 설명하세요
+
+  중요: execution_order에는 agent 이름만 사용하세요.
+  예: ["tech_prophet", "calculator"] (O)
+  예: ["use_tech_prophet", "use_calculator"] (X)
+
+# 사용자 프롬프트 템플릿
+user_prompt: |
+  질문: {question}
+
+  대화 기록:
+  {history_text}
+
+  사용자의 질문을 우선으로 필요한 agent를 선택합니다. 필요하다면 대화 기록을 참고하세요.
+  해당 대화 기록에서 가장 최신 메세지가 대화 맥락의 가장 중요한 정보를 담고 있습니다. 위 정보를 바탕으로 필요한 전문 에이전트들을 선택해주세요.
+  만약 대화 기록에 필요한 정보가 없다면 대화 기록을 참고하지 않고 질문에 맞는 에이전트를 선택해주세요.
+
+# LLM 파라미터 설정
+parameters:
+  temperature: 0.1 # 낮은 temperature로 일관된 선택
+  timeout: 15.0 # 타임아웃 (초)
+  max_tokens: 1000 # 최대 토큰 수
+
+# 선택 정책 설정 (선택사항)
+selection_policy:
+  max_agents: 3 # 최대 선택 가능한 에이전트 수
+  require_reasoning: true # 선택 이유 필수
+  allow_parallel: true # 병렬 실행 허용
+
+# 에이전트별 활성화 설정 (선택사항)
+# 로드된 agent들 중 특정 agent를 비활성화하려면 여기에 설정
+agent_overrides:
+  # document_search: false  # Built-in RAG agent 비활성화 예시
+  # custom_agent: false     # 사용자 정의 agent 비활성화 예시
+
+# Fallback 설정 - 에이전트를 찾지 못했을 때의 동작
+fallback_config:
+  # 'llm_generate': LLM이 직접 답변 생성
+  # 'static_message': 설정된 메시지 반환
+  mode: "llm_generate"
+
+  # static_message 모드일 때 사용할 메시지
+  static_message: "무엇을 도와드릴까요? 질문을 더 구체적으로 해주세요."
+
+  # llm_generate 모드일 때 사용할 설정
+  llm_generate:
+    system_prompt: |
+      당신은 도움이 되는 AI 어시스턴트입니다.
+      사용자의 질문에 친절하고 정확하게 답변해주세요.
+    temperature: 0.7
+    max_tokens: 500
