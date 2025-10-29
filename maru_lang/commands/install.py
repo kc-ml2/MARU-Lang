@@ -55,7 +55,7 @@ def create_config_directories(base_path: Path, force: bool = False) -> bool:
             # Create sample files based on directory
             if dir_name == "llms":
                 # Create sample LLM config files with .sample extension
-                for sample_file in ["openai.yaml.sample", "vllm.yaml.sample"]:
+                for sample_file in ["openai.yaml.sample", "local.yaml.sample"]:
                     sample_path = dir_path / sample_file
                     if not sample_path.exists() or force:
                         base_name = sample_file.replace('.yaml.sample', '')
@@ -200,6 +200,12 @@ def get_readme_content(dir_name: str) -> str:
         "chunkers": "chunkers.md",
         "embedders": "embedders.md"
     }
+
+    if not template_dir.exists():
+        console.print(
+            "[yellow]⚠️ Warning: README template directory is missing. Skipping README content.[/yellow]"
+        )
+        return ""
 
     if dir_name in template_map:
         template_file = template_dir / template_map[dir_name]
@@ -362,7 +368,7 @@ def get_sample_content(content_type: str) -> str:
         template_dir = Path(__file__).parent.parent / "templates" / "yaml"
         template_map = {
             "llms_openai": "openai.yaml",
-            "llms_vllm": "vllm.yaml",
+            "llms_local": "local.yaml",
             "rag_config": "rag_config.yaml",
             "agents_build_selector": "agents_build_selector.yaml",
         }
@@ -387,7 +393,10 @@ def get_main_readme_content() -> str:
     template_file = Path(__file__).parent.parent / "templates" / "readme" / "main.md"
     if template_file.exists():
         return template_file.read_text()
-    raise FileNotFoundError(f"main.md not found in {template_file}")
+    console.print(
+        "[yellow]⚠️ Warning: main README template not found. Generating minimal README.[/yellow]"
+    )
+    return "# README\n\nThis file was generated automatically by the install command.\n"
 
 
 def install_configs(
@@ -423,8 +432,8 @@ def install_configs(
             "1. Copy the sample.yaml.example files and rename to .yaml")
         console.print(
             "2. Configure your LLM servers, prompts, groups, and tools")
-        console.print("3. Run 'chatbot status' to check your setup")
-        console.print("4. Start the server with 'chatbot serve'")
+        console.print("3. Run 'maru status' to check your setup")
+        console.print("4. Start the server with 'maru serve'")
         console.print(
             "\n💡 The main.py file has been created in maru_app/ for you to customize!")
     else:
