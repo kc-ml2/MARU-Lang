@@ -83,10 +83,12 @@ class LLMServerClient:
             **self.config.config,  # 기본 설정 (temperature, max_tokens 등)
             **kwargs  # 오버라이드
         }
+        endpoint = self._build_endpoint(self.config.chat_completions_path)
+
         try:
             client = await self._get_http_client()
             response = await client.post(
-                f"{self.config.url}/v1/chat/completions",
+                endpoint,
                 json=payload,
                 timeout=timeout if timeout != 30.0 else self.config.timeout
             )
@@ -103,8 +105,10 @@ class LLMServerClient:
 
             try:
                 data = response.json()
-            except Exception as e:
-                raise Exception(f"Invalid JSON response: {response_text[:200]}...")
+            except Exception as exc:
+                raise Exception(
+                    f"Invalid JSON response: {response_text[:200]}... ({exc})"
+                )
             
             if "choices" not in data or len(data["choices"]) == 0:
                 raise Exception("choices field not found")
@@ -174,10 +178,12 @@ class LLMServerClient:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
 
+        endpoint = self._build_endpoint(self.config.chat_completions_path)
+
         try:
             client = await self._get_http_client()
             response = await client.post(
-                f"{self.config.url}/v1/chat/completions",
+                endpoint,
                 json=payload,
                 timeout=timeout if timeout != 30.0 else self.config.timeout
             )
@@ -194,8 +200,10 @@ class LLMServerClient:
 
             try:
                 data = response.json()
-            except Exception as e:
-                raise Exception(f"Invalid JSON response: {response_text[:200]}...")
+            except Exception as exc:
+                raise Exception(
+                    f"Invalid JSON response: {response_text[:200]}... ({exc})"
+                )
 
             if "choices" not in data or len(data["choices"]) == 0:
                 raise Exception("choices field not found")
@@ -235,17 +243,21 @@ class LLMServerClient:
         try:
             client = await self._get_http_client()
 
+            health_options = self.config.health_check or {}
+            if health_options.get("enabled") is False:
+                return True
+
             # OpenAI API는 /v1/models 엔드포인트 사용
             if "api.openai.com" in self.config.url:
-                if self.config.health_check_endpoint in ["/health", "/models"]:
+                if self.config.health_check_endpoint in ["/health", "/models", "", None]:
                     health_endpoint = "/v1/models"
                 else:
                     health_endpoint = self.config.health_check_endpoint
             else:
-                health_endpoint = self.config.health_check_endpoint
+                health_endpoint = self.config.health_check_endpoint or "/health"
 
             response = await client.get(
-                f"{self.config.url}{health_endpoint}",
+                self._build_endpoint(health_endpoint),
                 timeout=health_check_timeout)
 
             if response.status_code == 200:
@@ -256,6 +268,18 @@ class LLMServerClient:
         except Exception as e:
             print(f"Health check error for {self.config.name}: {str(e)}")
             return False
+
+    def _build_endpoint(self, path: str) -> str:
+        """Construct request endpoint from base URL and path"""
+        if not path:
+            return self.config.url
+
+        if path.startswith("http://") or path.startswith("https://"):
+            return path
+
+        base_url = self.config.url.rstrip('/')
+        normalized_path = path if path.startswith('/') else f"/{path}"
+        return f"{base_url}{normalized_path}"
 
     async def close(self):
         """HTTP 클라이언트를 안전하게 종료합니다."""
@@ -281,6 +305,6 @@ class LLMServerClient:
                 # 이벤트 루프가 없는 경우 - 동기적으로 정리 시도
                 try:
                     asyncio.run(self._http_client.aclose())
-                except:
+                except Exception:
                     # 정리 실패시 무시
                     pass

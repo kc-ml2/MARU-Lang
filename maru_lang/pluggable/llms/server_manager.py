@@ -28,7 +28,7 @@ class LLMServerManager:
         self.config_manager.ensure_loaded()
 
         # LLM 설정만 가져오기
-        llm_configs = self.config_manager.llm_loader.list_all()
+        llm_configs = list(self.config_manager.llm_loader.get_all().values())
 
         if not llm_configs:
             logging.error(

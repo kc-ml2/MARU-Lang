@@ -17,6 +17,7 @@ class LLMConfig:
     enabled: bool = True
     max_retries: int = 3
     health_check_endpoint: str = "/health"
+    chat_completions_path: str = "/v1/chat/completions"
     headers: Dict[str, str] = field(default_factory=dict)
     config: Dict[str, Any] = field(default_factory=dict)
     health_check: Dict[str, Any] = field(default_factory=dict)
