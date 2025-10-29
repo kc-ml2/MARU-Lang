@@ -44,16 +44,16 @@ async def create_conversation(
         enhanced_question=enhanced_question,
     )
 
-    # 중복 제거를 위한 set
+    # Use a set to avoid creating duplicate references
     seen_doc_ids = set()
 
     for reference in references:
-        # metadata에서 document_id 가져오기
+        # Extract document_id from metadata
         doc_id = reference.metadata.get("document_id")
         if not doc_id or doc_id in seen_doc_ids:
             continue
 
-        # Document 존재 확인
+        # Ensure the document still exists
         document = await Document.get_or_none(id=doc_id)
         if document:
             await ConversationReference.create(

@@ -1,45 +1,45 @@
 # Reranker Configuration
-# Reranker 모델 및 사용 여부 설정
+# Configure reranker usage and behavior
 
-# Reranker 사용 여부
+# Enable or disable the reranker
 enabled: true
 
-# Reranking 방식
-# - "model": 임베딩 모델 기반 reranking (빠름, 낮은 비용)
-# - "agent": Agent 기반 reranking (LLM 활용, 높은 정확도)
+# Reranking method
+# - "model": embedding-model-based reranking (fast, low cost)
+# - "agent": agent-based reranking (LLM-powered, higher accuracy)
 method: model
 
 # ============================================================
-# Method: "model" - 임베딩 모델 기반 reranking
+# Method: "model" - embedding-model-based reranking
 # ============================================================
 
-# 기본 reranker 모델
+# Default reranker model
 default_model: BAAI/bge-reranker-v2-m3
 
-# 사용 가능한 모델 목록 (참고용)
+# Available models (reference)
 models:
   - name: BAAI/bge-reranker-v2-m3
-    description: "다국어 지원 reranker (한국어 포함)"
+    description: "Multilingual reranker (includes Korean support)"
 
   - name: BAAI/bge-reranker-large
-    description: "영어 전용 대형 reranker"
+    description: "Large English-only reranker"
 
   - name: cross-encoder/ms-marco-MiniLM-L-6-v2
-    description: "빠르고 가벼운 영어 전용 reranker"
+    description: "Fast and lightweight English reranker"
 
 # ============================================================
-# Method: "agent" - Agent 기반 reranking (LLM)
+# Method: "agent" - agent-based reranking (LLM)
 # ============================================================
 
-# Agent 이름 (agent_config.yaml에 정의된 agent)
+# Agent name (define in agent_config.yaml)
 # agent_name: llm_reranker
 
-# 사용 예시:
-# 1. rerankers/ 폴더에 커스텀 reranker agent 생성
-#    - my_reranker.py: Agent 구현 (BaseAgent 상속)
-#    - my_reranker.yaml: Agent 설정
+# Example usage:
+# 1. Create a custom reranker agent in rerankers/
+#    - my_reranker.py: Agent implementation (inherits BaseAgent)
+#    - my_reranker.yaml: Agent configuration
 #
-# 2. configs/agent_config.yaml에 agent 등록:
+# 2. Register the agent in configs/agent_config.yaml:
 #    my_reranker:
 #      type: custom
 #      class: maru_lang.rerankers.my_reranker.MyRerankerAgent
@@ -47,4 +47,4 @@ models:
 #        servers:
 #          - name: openai
 #
-# 3. 위의 method를 "agent"로, agent_name을 "my_reranker"로 설정
+# 3. Set method to "agent" and agent_name to "my_reranker"

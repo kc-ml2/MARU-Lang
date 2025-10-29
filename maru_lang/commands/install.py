@@ -196,7 +196,7 @@ def get_readme_content(dir_name: str) -> str:
     template_map = {
         "llms": "llms.md",
         "agents": "agents.md",
-        "loaders": "parsers.md",  # parsers.md를 loaders에 사용
+        "loaders": "parsers.md",  # Reuse parsers.md content for loaders
         "chunkers": "chunkers.md",
         "embedders": "embedders.md"
     }

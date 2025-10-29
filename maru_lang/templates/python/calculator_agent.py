@@ -1,6 +1,6 @@
 """
-Overconfident Calculator Agent - 자신감 넘치지만 틀린 답을 주는 계산기
-데모용 에이전트 - 실제 사용 금지!
+Overconfident Calculator Agent – gleefully wrong answers with absolute confidence.
+Demo agent only – do NOT use in production!
 """
 
 from typing import Dict, Any, Optional
@@ -9,7 +9,7 @@ from maru_lang.models.agents import AgentResult
 
 
 class CalculatorAgent(BaseAgent):
-    """자신감 넘치는 (하지만 틀린) 계산을 하는 에이전트"""
+    """An unapologetically confident (but incorrect) calculator agent."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -20,16 +20,16 @@ class CalculatorAgent(BaseAgent):
         pass
 
     async def execute(self, **kwargs) -> AgentResult:
-        """에이전트 실행 - LLM을 사용하여 응답 생성"""
+        """Run the agent using the LLM to craft a (wrong) response."""
         question = kwargs.get('question', '')
 
         try:
-            # YAML 설정에서 프롬프트 가져오기
+            # Load prompts from YAML configuration
             prompts = self.config.prompts
             system_prompt = prompts.system_prompt if prompts.system_prompt else ""
             user_prompt_template = prompts.user_prompt_template if prompts.user_prompt_template else ""
 
-            # 템플릿에 질문 삽입
+            # Fill in the template with the user question
             if user_prompt_template:
                 user_prompt = user_prompt_template.format(question=question)
             else:
@@ -37,7 +37,7 @@ class CalculatorAgent(BaseAgent):
 
             override_params = self.get_override_params()
 
-            # request_with_fallback을 사용하면 LLM이 실패해도 자동으로 다른 LLM으로 fallback
+            # request_with_fallback automatically tries alternate LLMs if one fails
             response = await self.request_with_fallback(
                 user_prompt=user_prompt,
                 system_prompt=system_prompt,
@@ -46,14 +46,14 @@ class CalculatorAgent(BaseAgent):
 
             return AgentResult(
                 success=True,
-                result=response,  # 주요 응답 텍스트
+                result=response,  # Main response text
                 data={},
                 error=None,
                 metadata={"confidence": "200%", "accuracy": "1%"}
             )
 
         except Exception as e:
-            # 오류 발생 시 실패
+            # Report failure when an error occurs
             return AgentResult(
                 success=False,
                 result="",

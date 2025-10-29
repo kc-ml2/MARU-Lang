@@ -13,38 +13,38 @@ from maru_lang.models.ingest import ChunkInput
 
 class CustomChunker(BaseChunker):
     """
-    커스텀 청킹 전략 템플릿
+    Template for custom chunking strategies.
 
-    이 클래스를 복사하여 새로운 청킹 방식을 구현할 수 있습니다.
+    Copy this class to implement your own chunking method.
     """
 
-    # Chunker 식별 정보
+    # Chunker identification
     name = "custom"
-    description = "커스텀 청킹 전략"
+    description = "Custom chunking strategy"
 
     def __init__(self, max_chunk_size: int = 500):
         """
-        청킹 전략 초기화
+        Initialize the chunking strategy.
 
         Args:
-            max_chunk_size: 청크의 최대 크기
+            max_chunk_size: Maximum size of each chunk
         """
         self.max_chunk_size = max_chunk_size
 
     def chunk(self, text: str) -> List[ChunkInput]:
         """
-        텍스트를 청크로 분할합니다.
+        Split the text into chunks.
 
         Args:
-            text: 전체 텍스트
+            text: Complete text input
 
         Returns:
-            List[ChunkInput]: 청크 리스트
+            List[ChunkInput]: Generated chunks
         """
-        # 여기에 청킹 로직을 구현하세요
-        # 예: 특정 구분자로 분할, 의미적 단위로 분할 등
+        # Implement your chunking logic here.
+        # Example: split by delimiter, semantic unit, etc.
 
-        # 간단한 예제: 문장 단위 분할
+        # Simple example: sentence-level splitting
         import re
         sentences = re.split(r'[.!?]+\s+', text)
         chunks = []
@@ -60,17 +60,17 @@ class CustomChunker(BaseChunker):
         return chunks
 
 
-# 예제 1: 헤더 기반 청킹 (마크다운용)
+# Example 1: Header-based chunking for Markdown
 class HeaderBasedChunker(BaseChunker):
-    """마크다운 헤더를 기준으로 청킹"""
+    """Chunk content based on Markdown headers."""
 
     name = "header"
-    description = "마크다운 헤더 기준 청킹"
+    description = "Chunking by Markdown headers"
 
     def chunk(self, text: str) -> List[ChunkInput]:
         import re
 
-        # 헤더 패턴 (# 또는 ##로 시작하는 줄)
+        # Header pattern (lines beginning with # or ##)
         header_pattern = r'^(#{1,6})\s+(.+)$'
 
         chunks = []
@@ -82,7 +82,7 @@ class HeaderBasedChunker(BaseChunker):
             header_match = re.match(header_pattern, line, re.MULTILINE)
 
             if header_match:
-                # 이전 청크 저장
+                # Store the previous chunk
                 if current_chunk:
                     chunks.append(ChunkInput(
                         number=chunk_num,
@@ -91,13 +91,13 @@ class HeaderBasedChunker(BaseChunker):
                     ))
                     chunk_num += 1
 
-                # 새 청크 시작
+                # Start a new chunk
                 current_header = header_match.group(2)
                 current_chunk = [line]
             else:
                 current_chunk.append(line)
 
-        # 마지막 청크
+        # Final chunk
         if current_chunk:
             chunks.append(ChunkInput(
                 number=chunk_num,
@@ -108,17 +108,17 @@ class HeaderBasedChunker(BaseChunker):
         return chunks
 
 
-# 예제 2: 코드 함수 기반 청킹 (Python 코드용)
+# Example 2: Function-based chunking for Python code
 class FunctionBasedChunker(BaseChunker):
-    """Python 함수/클래스 단위로 청킹"""
+    """Chunk Python code by function/class definitions."""
 
     name = "function"
-    description = "Python 함수/클래스 단위 청킹"
+    description = "Chunking by Python functions/classes"
 
     def chunk(self, text: str) -> List[ChunkInput]:
         import re
 
-        # 함수/클래스 정의 패턴
+        # Pattern for detecting function/class definitions
         definition_pattern = r'^(def |class )'
 
         chunks = []
@@ -126,9 +126,9 @@ class FunctionBasedChunker(BaseChunker):
         chunk_num = 1
 
         for line in text.split('\n'):
-            # 새 함수/클래스 정의 발견
+            # Detect a new function/class definition
             if re.match(definition_pattern, line) and current_chunk:
-                # 이전 청크 저장
+                # Store the previous chunk
                 chunks.append(ChunkInput(
                     number=chunk_num,
                     content='\n'.join(current_chunk),
@@ -138,7 +138,7 @@ class FunctionBasedChunker(BaseChunker):
 
             current_chunk.append(line)
 
-        # 마지막 청크
+        # Final chunk
         if current_chunk:
             chunks.append(ChunkInput(
                 number=chunk_num,
@@ -148,23 +148,23 @@ class FunctionBasedChunker(BaseChunker):
         return chunks
 
 
-# 예제 3: 의미적 청킹 (문장 임베딩 기반)
+# Example 3: Semantic chunking (sentence-embedding approach)
 class SemanticChunker(BaseChunker):
-    """의미적 유사도 기반 청킹 (실험적)"""
+    """Experimental semantic similarity-based chunker."""
 
     name = "semantic"
-    description = "의미적 유사도 기반 청킹"
+    description = "Semantic similarity chunking"
 
     def __init__(self, similarity_threshold: float = 0.7):
         """
         Args:
-            similarity_threshold: 청크를 분리하는 유사도 임계값
+            similarity_threshold: Threshold for splitting chunks based on similarity
         """
         self.similarity_threshold = similarity_threshold
 
     def chunk(self, text: str) -> List[ChunkInput]:
-        # 이 예제는 간단한 버전입니다
-        # 실제로는 문장 임베딩을 사용하여 유사도를 계산해야 합니다
+        # This example is intentionally simple.
+        # In production you would compute sentence embeddings and compare similarity.
 
         import re
         sentences = re.split(r'[.!?]+\s+', text)
@@ -177,10 +177,10 @@ class SemanticChunker(BaseChunker):
             if not sentence.strip():
                 continue
 
-            # 실제 구현에서는 여기서 이전 문장들과의 유사도를 계산
-            # 유사도가 threshold 이하면 새 청크 시작
+            # In a real implementation, compute similarity with previous sentences here.
+            # Start a new chunk when similarity falls below the threshold.
 
-            if len(current_chunk) >= 5:  # 간단한 예: 5문장마다 분할
+            if len(current_chunk) >= 5:  # Simple heuristic: split every 5 sentences
                 chunks.append(ChunkInput(
                     number=chunk_num,
                     content=' '.join(current_chunk),
@@ -191,7 +191,7 @@ class SemanticChunker(BaseChunker):
 
             current_chunk.append(sentence.strip())
 
-        # 마지막 청크
+        # Final chunk
         if current_chunk:
             chunks.append(ChunkInput(
                 number=chunk_num,

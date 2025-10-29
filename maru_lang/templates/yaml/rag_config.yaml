@@ -1,68 +1,67 @@
 # RAG Configuration
-# Retriever 설정 및 문서 그룹별 RAG 설정
+# Configure retriever defaults and per-group RAG settings
 
 # ============================================================
-# Retriever 전역 설정
+# Retriever global settings
 # ============================================================
 retriever:
-  # 기본 검색 설정
-  default_k: 5                # 기본 검색 결과 개수
-  default_method: "ensemble"  # vector, bm25, ensemble 중 선택
+  # Default search parameters
+  default_k: 5                # Number of search results to return
+  default_method: "ensemble"  # Choose among vector, bm25, or ensemble
 
-  # 쿼리 타입별 가중치 설정
-  # - cosine_weight: 벡터 유사도 검색 가중치
-  # - bm25_weight: BM25 키워드 검색 가중치
+  # Query-type weights
+  # - cosine_weight: weight of vector similarity search
+  # - bm25_weight: weight of BM25 keyword search
   query_type_weights:
-    factual:      # 사실적 질문 (예: "~은 무엇인가")
+    factual:      # Fact-based question (e.g., "What is ...")
       cosine_weight: 0.2
       bm25_weight: 0.8
-    procedural:   # 절차적 질문 (예: "~하는 방법")
+    procedural:   # How-to question (e.g., "How do I ...")
       cosine_weight: 0.8
       bm25_weight: 0.2
-    analytical:   # 분석적 질문 (예: "A와 B 비교")
+    analytical:   # Comparative/analytical question (e.g., "Compare A and B")
       cosine_weight: 0.5
       bm25_weight: 0.5
 
-  # 대표 쿼리 (쿼리 타입 자동 분류용)
-  # 사용자의 쿼리가 어떤 타입에 가까운지 판단하는 기준
+  # Representative queries for automatic query-type classification
+  # Used to determine which query type the user's question resembles
   representative_queries:
-    factual: "~은 무엇인가"
-    procedural: "~하는 방법"
-    analytical: "A와 B비교 분석"
+    factual: "What is ..."
+    procedural: "How to ..."
+    analytical: "Compare A and B"
 
-  # Fallback 로직 설정
-  # 쿼리 타입 분류 실패 시 사용하는 규칙 기반 로직
+  # Fallback logic configuration
+  # Applied when the query type cannot be determined reliably
   fallback_logic:
-    similarity_threshold: 0.3  # 이 값 이하면 fallback 사용
-    short_query_length: 2      # 짧은 쿼리 기준 (단어 수)
-    long_query_length: 6       # 긴 쿼리 기준 (단어 수)
+    similarity_threshold: 0.3  # Use fallback when similarity drops below this value
+    short_query_length: 2      # Short query threshold (word count)
+    long_query_length: 6       # Long query threshold (word count)
     weights:
-      short_query:    # 짧은 쿼리 (≤ 2 단어)
+      short_query:    # Short query (≤ 2 words)
         cosine_weight: 0.3
         bm25_weight: 0.7
-      medium_query:   # 중간 길이 쿼리 (3-5 단어)
+      medium_query:   # Medium-length query (3–5 words)
         cosine_weight: 0.5
         bm25_weight: 0.5
-      long_query:     # 긴 쿼리 (≥ 6 단어)
+      long_query:     # Long query (≥ 6 words)
         cosine_weight: 0.7
         bm25_weight: 0.3
 
 # ============================================================
-# 그룹별 RAG 설정
+# Group-specific RAG configuration
 # ============================================================
 groups:
-  # 예시: Python 문서 그룹
+  # Example: Python documentation group
   # python_docs:
-  #   description: "Python 공식 문서 및 튜토리얼"
+  #   description: "Official Python documentation and tutorials"
   #
-  #   # 플러거블 컴포넌트 오버라이드 (선택사항)
-  #   # 이 그룹에서만 다른 컴포넌트를 사용하고 싶을 때 설정
+  #   # Optional overrides for pluggable components (per-group customization)
   #   components:
-  #     loader: "markdown"        # 이 그룹에서 사용할 로더
-  #     chunker: "sentence"       # 이 그룹에서 사용할 청커
-  #     embedder: "bge-m3"        # 이 그룹에서 사용할 임베더
-  #     reranker: "bge-reranker-v2-m3"  # 이 그룹에서 사용할 reranker
+  #     loader: "markdown"        # Loader to use for this group
+  #     chunker: "sentence"       # Chunker to use for this group
+  #     embedder: "bge-m3"        # Embedder to use for this group
+  #     reranker: "bge-reranker-v2-m3"  # Reranker to use for this group
 
-  # 예시: 일반 문서 그룹
+  # Example: General documents group
   # general_docs:
-  #   description: "일반적인 정보 및 문서"
+  #   description: "General information and documents"

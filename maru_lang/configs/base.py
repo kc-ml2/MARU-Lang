@@ -36,9 +36,9 @@ class DefaultConfigLoader(ABC, Generic[T]):
             self.config_type = config_type
 
         # Set directories
-        # base_dir: 패키지 내부의 기본 설정
+        # base_dir: default configuration bundled with the package
         self.base_dir = Path(__file__).parent / self.config_type
-        # user_dir: 사용자가 maru_app 디렉토리에 만든 설정
+        # user_dir: user-provided configuration inside maru_app
         self.user_dir = Path.cwd() / "maru_app" / self.config_type
 
         # Storage for loaded configs

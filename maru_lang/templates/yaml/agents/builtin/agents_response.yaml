@@ -1,13 +1,13 @@
 # Response Agent Configuration
-# 다른 에이전트들의 결과를 사용자에게 최종적으로 전달하는 응답 포맷팅 에이전트
+# Formats and delivers results from other agents to the end user
 
 name: response
-description: "다른 에이전트의 결과를 받아 사용자 친화적으로 포맷팅하여 전달하는 응답 에이전트"
+description: "Formats outputs from other agents into user-friendly responses"
 type: builtin
 enabled: true
 version: "1.0.0"
 
-# LLM 설정
+# LLM configuration
 target_llm_config:
   server_name: "openai"
   override_params:
@@ -16,79 +16,79 @@ target_llm_config:
 
   fallback_strategy: "any_available"
 
-# 프롬프트 설정
+# Prompt configuration
 prompts:
   system_prompt: |
-    당신은 전문적이고 친절한 AI 어시스턴트입니다.
-    다른 시스템 컴포넌트(에이전트)에서 생성한 결과를 받아서
-    사용자가 이해하기 쉽고 유용한 형태로 최종 응답을 만드는 역할을 합니다.
+    You are a professional and friendly AI assistant.
+    Your job is to take results from other system components (agents)
+    and craft a final answer that is easy to understand and genuinely helpful for the user.
 
-    주요 역할:
-    - 에이전트 실행 결과를 자연스러운 문장으로 변환
-    - 기술적인 내용을 사용자 친화적으로 설명
-    - 구조화된 데이터를 읽기 쉬운 형태로 포맷팅
-    - 에러나 경고 메시지를 친절하게 전달
-    - 필요한 경우 추가 설명이나 컨텍스트 제공
-    - 다양한 실행 상황(성공, 실패, 에러)에 따라 적절히 응답
+    Primary responsibilities:
+    - Turn agent outputs into natural, fluent sentences.
+    - Explain technical details in user-friendly language.
+    - Present structured data in readable formats.
+    - Communicate errors or warnings with empathy and clarity.
+    - Provide additional context or explanations when helpful.
+    - Adapt your response based on different execution outcomes (success, failure, partial success, errors).
 
-    답변 원칙:
-    - 명확하고 이해하기 쉬운 언어 사용
-    - 중요한 정보는 강조하여 표시
-    - 구조화된 정보는 적절히 포맷팅 (불릿 포인트, 번호 등)
-    - 기술 용어는 필요시 간단히 설명
-    - 긍정적이고 도움이 되는 톤 유지
-    - 에러 상황에서도 친절하고 건설적인 답변 제공
+    Response principles:
+    - Use clear, easy-to-follow language.
+    - Highlight important information.
+    - Format structured data appropriately (bullet points, numbered lists, tables, etc.).
+    - Briefly explain technical terms when necessary.
+    - Maintain a positive, supportive tone.
+    - Even when reporting errors, remain polite and constructive.
 
   user_prompt_template: |
-    사용자 질문: {question}
+    User question: {question}
 
-    실행 상황: {scenario}
+    Execution scenario: {scenario}
 
-    에이전트 실행 결과:
+    Agent outputs:
     {agent_result}
 
-    위 정보를 바탕으로 사용자에게 친절하고 명확한 최종 응답을 작성해주세요.
+    Using the information above, write a kind and clear final response for the user.
 
-    주의사항:
-    - 실행 상황에 따라 적절한 톤과 내용으로 답변
-    - 기술적인 세부사항은 숨기고 사용자에게 유용한 정보만 전달
-    - 자연스럽고 대화체로 작성
-    - 필요한 경우 적절한 포맷팅(마크다운) 사용
-    - 에이전트 이름이나 내부 구조는 언급하지 말고, 결과만 전달
+    Guidelines:
+    - Adjust tone and content to match the execution scenario.
+    - Hide implementation details; share only what is helpful for the user.
+    - Write naturally, as if conversing with the user.
+    - Apply Markdown formatting when it improves readability.
+    - Do not mention agent names or internal architecture; focus on the results.
 
-# 구현 클래스 (builtin 에이전트)
+# Implementation class (builtin agent)
 implementation: builtin.response_agent.ResponseAgent
 
-# 에이전트 설정
+# Agent configuration
 config:
   timeout: 30
   retry_count: 2
   max_context_length: 10000
 
-  # 응답 포맷팅 설정
+  # Response formatting options
   formatting:
-    include_metadata: false  # 메타데이터를 응답에 포함할지 여부
-    show_sources: true       # 정보 출처를 표시할지 여부
-    use_markdown: true       # 마크다운 포맷팅 사용 여부
-    max_response_length: 2000  # 최대 응답 길이
+    include_metadata: false  # Whether to include metadata in the response
+    show_sources: true       # Whether to list information sources
+    use_markdown: true       # Whether to render responses using Markdown
+    max_response_length: 2000  # Maximum length of the response
 
-  # 시나리오별 LLM 가이드 (프롬프트에 추가될 컨텍스트)
+  # Scenario-specific LLM guidance (appended to the prompt)
   scenario_config:
-    no_agents: "어떤 에이전트도 선택되지 않았습니다. 사용자에게 더 구체적인 질문을 요청하거나 일반적인 도움을 제공하세요."
-    errors: "에이전트 실행 중 오류가 발생했습니다. 사용자에게 오류를 친절하게 설명하고 재시도를 제안하세요."
-    success: "에이전트가 성공적으로 실행되었습니다. 결과를 사용자 친화적으로 전달하세요."
-    partial_success: "일부 에이전트는 성공했지만 일부는 실패했습니다. 성공한 결과를 우선 전달하고 실패한 부분은 간략히 언급하세요."
-    unknown: "알 수 없는 상황입니다. 사용자에게 도움을 제공하기 어렵다는 점을 친절하게 안내하세요."
+    no_agents: "No agents were selected. Ask the user for more details or offer general assistance."
+    errors: "An error occurred while running the agents. Explain the issue politely and suggest trying again."
+    success: "Agents completed successfully. Present the results in a user-friendly manner."
+    partial_success: "Some agents succeeded while others failed. Share the successful results first and briefly mention the failures."
+    unknown: "The situation is unclear. Let the user know that assistance is limited and offer alternative help."
 
-  # LLM 없이 동작할 때의 fallback 응답
+  # Fallback responses when no LLM output is available
   fallback_config:
-    no_agents: "죄송합니다. 질문을 처리할 수 있는 적절한 에이전트를 찾지 못했습니다. 더 구체적으로 질문해주시겠어요?"
-    errors: "죄송합니다. 요청을 처리하는 중 오류가 발생했습니다."
-    success: ""  # 빈 문자열: formatted_context를 그대로 사용
-    partial_success: ""  # 빈 문자열: formatted_context를 그대로 사용
-    unknown: "죄송합니다. 답변을 생성할 수 없습니다."
+    no_agents: "I’m sorry, I couldn’t find an appropriate agent to handle that question. Could you provide more details?"
+    errors: "I’m sorry, something went wrong while processing your request."
+    success: ""  # Empty string: use the formatted_context as-is
+    partial_success: ""  # Empty string: use the formatted_context as-is
+    unknown: "I’m sorry, I’m unable to generate a response right now."
 
-# 예제 (이 에이전트는 다른 에이전트의 결과를 포맷팅하는 용도)
+# Examples (this agent formats outputs from other agents)
 examples:
-  - "knowledge_search 결과를 사용자 친화적으로 포맷팅"
-  - "에러 메시지를 친절하게 전달"
+  - "Format knowledge_search results into a user-friendly response"
+  - "Communicate error messages politely"

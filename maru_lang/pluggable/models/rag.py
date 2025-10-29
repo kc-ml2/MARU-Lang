@@ -159,14 +159,17 @@ class RagConfig:
 
         # Groups
         groups = {}
-        if 'groups' in data:
-            for group_name, group_data in data['groups'].items():
-                groups[group_name] = GroupRagConfig.from_dict(
-                    name=group_name,
-                    data=group_data,
-                    source_path=source_path,
-                    is_override=is_override,
-                )
+        raw_groups = data.get('groups') or {}
+        if not isinstance(raw_groups, dict):
+            raw_groups = {}
+
+        for group_name, group_data in raw_groups.items():
+            groups[group_name] = GroupRagConfig.from_dict(
+                name=group_name,
+                data=group_data,
+                source_path=source_path,
+                is_override=is_override,
+            )
 
         return cls(
             retriever=retriever,

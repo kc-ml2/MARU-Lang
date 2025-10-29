@@ -1,94 +1,94 @@
 # Knowledge Search Agent Configuration
-# 회사 정책, 내부 문서 검색 및 웹검색 보완 에이전트
+# Supports company policy lookup, internal document search, and supplemental web search
 
 name: knowledge_search
-description: "회사 정책 및 회사 복지 규정 그리고 내부 문서 검색 및 웹검색 보완 에이전트"
+description: "Searches company policies, internal documents, and augments results with web search"
 type: builtin
 enabled: true
 version: "1.0.0"
 
-# 우선순위 (높을수록 우선 선택)
+# Priority (higher numbers are selected first)
 priority: 15
 
-# 에이전트 선택 조건
+# Agent selection criteria
 selection_criteria:
   keywords:
-    - "정책"
-    - "회사"
-    - "내부문서"
-    - "문서검색"
-    - "자료"
-    - "가이드"
-    - "규정"
-    - "매뉴얼"
-    - "지식"
-    - "검색"
+    - "policy"
+    - "company"
+    - "internal document"
+    - "document search"
+    - "materials"
+    - "guide"
+    - "regulation"
+    - "manual"
+    - "knowledge"
+    - "search"
   patterns:
-    - ".*정책.*"
-    - ".*회사.*규정.*"
-    - ".*내부.*문서.*"
-    - ".*가이드.*"
-    - ".*매뉴얼.*"
-    - ".*지식.*베이스.*"
-    - ".*자료.*찾.*"
+    - ".*policy.*"
+    - ".*company.*regulation.*"
+    - ".*internal.*document.*"
+    - ".*guide.*"
+    - ".*manual.*"
+    - ".*knowledge.*base.*"
+    - ".*find.*materials.*"
 
-# LLM 설정
+# LLM configuration
 target_llm_config:
   server_name: "openai"
   override_params:
-    temperature: 0.2 # 정확한 답변을 위해 낮은 온도
+    temperature: 0.2  # Lower temperature for precise answers
     max_tokens: 3000
 
   fallback_strategy: "any_available"
 
-# 프롬프트 설정
+# Prompt configuration
 prompts:
   system_prompt: |
-    당신은 회사의 지식 검색 전문가입니다.
-    사용자의 질문에 대해 다음 순서로 답변을 제공합니다:
+    You are the company's knowledge search specialist.
+    Answer user questions by following this process:
 
-    1. 먼저 내부 문서와 회사 정책 문서를 검색합니다
-    2. 내부 문서에서 충분한 정보를 찾지 못한 경우, 웹 검색으로 보완합니다
-    3. 모든 정보를 종합하여 정확하고 완전한 답변을 제공합니다
+    1. Search internal documents and company policy repositories first.
+    2. If internal sources are insufficient, supplement with web search.
+    3. Combine all information to deliver an accurate and complete answer.
 
-    주요 기능:
-    - 회사 정책 및 규정 검색
-    - 내부 문서 및 가이드 검색
-    - 웹 검색을 통한 추가 정보 수집
-    - 출처 명시 (내부 문서 vs 외부 소스)
-    - 신뢰할 수 있는 정보 우선 제공
+    Key capabilities:
+    - Locate company policies and regulations
+    - Retrieve internal documentation and guides
+    - Gather additional information via web search
+    - Clearly label sources (internal documents vs. external websites)
+    - Prioritize trustworthy information
 
   user_prompt_template: |
-    질문: {question}
+    Question: {question}
 
-    내부 문서 검색 결과:
+    Internal search results:
     {internal_context}
 
-    웹 검색 결과:
+    Web search results:
     {web_context}
 
-    위 정보를 바탕으로 질문에 대한 완전한 답변을 제공해주세요.
-    답변 시 정보의 출처를 명확히 구분해서 제시해주세요.
+    Using the information above, provide a comprehensive answer to the question.
+    Clearly indicate whether each piece of information comes from internal or external sources.
 
-# 구현 클래스 (builtin 에이전트)
+# Implementation (builtin agent)
 implementation: builtin.knowledge_search.KnowledgeSearchAgent
 
-# 에이전트 설정
+# Agent configuration
 config:
   timeout: 60
   retry_count: 2
   max_context_length: 12000
 
-  # 검색 설정
+  # Search configuration
   search_config:
     internal_search:
       max_results: 8
-      search_all_on_empty: true  # group이 없을 때 모든 문서 검색 (필터 없이)
+      search_all_on_empty: true  # Search all documents when no groups are provided
 
     web_search:
       enabled: true
       max_results: 5
-      fallback_threshold: 0.6 # 내부 검색 결과가 이 임계값 미만일 때 웹 검색 실행
+      fallback_threshold: 0.6  # Trigger web search when internal confidence falls below this threshold
       search_domains:
         - "official company sources"
         - "industry standards"
