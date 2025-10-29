@@ -2,8 +2,6 @@ import chromadb
 import asyncio
 from typing import Any
 from chromadb.api.models.Collection import Collection
-from konlpy.tag import Okt
-from rank_bm25 import BM25Okapi
 from maru_lang.core.vector_db.base import VectorDB
 from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
 from maru_lang.core.settings import settings
@@ -15,7 +13,6 @@ class ChromaVectorDB(VectorDB):
         persist_dir: str,
         collection_name: str,
     ):
-        self.okt: Okt | None = None
         self.persist_dir: str = persist_dir
         self.client = chromadb.PersistentClient(path=persist_dir)
         self.collection: Collection = self.client.get_or_create_collection(
@@ -156,6 +153,44 @@ class ChromaVectorDB(VectorDB):
             for doc_id, doc, metadata in zip(ids, docs, metadatas)
         ]
 
+    def get_all_documents(
+        self,
+        document_groups: list[str] | None = None
+    ) -> list[RetrieveDocument]:
+        """
+        Get all documents from VectorDB with optional group filter
+
+        Args:
+            document_groups: Optional list of document groups to filter
+
+        Returns:
+            List of all documents (or filtered by group)
+        """
+        # Build filter
+        if document_groups:
+            filter_where = {"group": {"$in": document_groups}}
+        else:
+            filter_where = None
+
+        # Get all documents with filter
+        results = self.collection.get(
+            where=filter_where,
+            include=["documents", "metadatas"]
+        )
+
+        docs = results["documents"]
+        ids = results["ids"]
+        metadatas = results["metadatas"]
+
+        return [
+            RetrieveDocument(
+                id=doc_id,
+                page_content=doc,
+                metadata=metadata
+            )
+            for doc_id, doc, metadata in zip(ids, docs, metadatas)
+        ]
+
     def similarity_search(
         self,
         query_embedding: list[float],
@@ -196,146 +231,6 @@ class ChromaVectorDB(VectorDB):
             )
             for doc_id, doc, metadata, distance in zip(ids, docs, metadatas, distances)
         ]
-
-    def bm25_search(
-        self,
-        query: str,
-        k: int,
-        document_groups: list[str] | None = None,
-        target_field: str | None = "document_name",
-    ) -> list[RetrieveDocument]:
-        """
-        BM25 검색 (그룹 기반)
-
-        Args:
-            query: 검색 쿼리
-            k: 반환할 결과 개수
-            document_groups: 그룹 이름 필터 (None이면 전체 검색)
-            target_field: BM25 대상 필드
-        """
-        if not self.okt:
-            self.okt = Okt()
-
-        # 그룹 필터로 문서 가져오기
-        if document_groups:
-            filter = {"group": {"$in": document_groups}}
-        else:
-            filter = None
-
-        result = self.collection.get(
-            where=filter,
-            include=["documents", "metadatas"]
-        )
-
-        all_allowed_chunks = [
-            RetrieveDocument(
-                id=doc_id,
-                page_content=doc,
-                metadata=metadata
-            )
-            for doc_id, doc, metadata in zip(result["ids"], result["documents"], result["metadatas"])
-        ]
-        if not all_allowed_chunks:
-            return []
-
-        unique_docs = {}
-        for chunk in all_allowed_chunks:
-            title = chunk.metadata.get(target_field, "")
-            if title and title not in unique_docs:
-                unique_docs[title] = chunk
-
-        representative_chunks = list(unique_docs.values())
-        if not representative_chunks:
-            return []
-
-        if target_field:
-            tokenized_docs = [self.okt.morphs(
-                doc.metadata[target_field]) for doc in representative_chunks]
-
-        bm25 = BM25Okapi(tokenized_docs)
-
-        scores = bm25.get_scores(self.okt.morphs(query))
-        doc_scores = [(score, idx, representative_chunks[idx])
-                      for idx, score in enumerate(scores)]
-        doc_scores.sort(key=lambda x: x[0], reverse=True)
-
-        return [
-            RetrieveDocument(
-                id=doc.id,
-                page_content=doc.page_content,
-                metadata={**doc.metadata, "bm25_score": score}
-            )
-            for score, idx, doc in doc_scores[:k]
-        ]
-
-    def ensemble_search(
-        self,
-        query_embedding: list[float],
-        k: int,
-        cosine_k: int,
-        document_groups: list[str] | None = None,
-        bm25_docs: list[RetrieveDocument] = [],
-        cosine_weight: float = 0.7,
-        bm25_weight: float = 0.3,
-    ) -> list[RetrieveDocument]:
-        """
-        Ensemble 검색 (그룹 기반)
-
-        Args:
-            query_embedding: 쿼리 임베딩 벡터 (외부에서 생성)
-            k: 반환할 결과 개수
-            cosine_k: Cosine 검색 결과 개수
-            document_groups: 그룹 이름 필터 (None이면 전체 검색)
-            bm25_docs: BM25 검색 결과 (optional)
-            cosine_weight: Cosine 가중치
-            bm25_weight: BM25 가중치
-        """
-        cosine_docs = self.similarity_search(
-            query_embedding=query_embedding,
-            k=cosine_k,
-            document_groups=document_groups,
-        )
-
-        return self._apply_rrf_fusion(cosine_docs, bm25_docs, cosine_weight, bm25_weight, k)
-
-    def _apply_rrf_fusion(
-        self,
-        cosine_docs: list[RetrieveDocument],
-        bm25_docs: list[RetrieveDocument],
-        cosine_weight: float,
-        bm25_weight: float,
-        k: int
-    ) -> list[RetrieveDocument]:
-        """RRF (Reciprocal Rank Fusion) 적용"""
-        for i, doc in enumerate(cosine_docs):
-            doc.metadata['cos_rank'] = i + 1
-
-        for i, doc in enumerate(bm25_docs):
-            doc.metadata['bm25_rank'] = i + 1
-
-        doc_dict: dict[str, RetrieveDocument] = {}
-        for doc in cosine_docs:
-            doc_id = doc.metadata.get('id')
-            doc_dict[doc_id] = doc
-
-        for doc in bm25_docs:
-            doc_id = doc.metadata.get('id')
-            if doc_id in doc_dict:
-                doc_dict[doc_id].metadata['bm25_rank'] = doc.metadata['bm25_rank']
-            else:
-                doc_dict[doc_id] = doc
-                doc.metadata['cos_rank'] = 9999
-
-        for doc in doc_dict.values():
-            bm_rnk = doc.metadata.get('bm25_rank', 9999)
-            cos_rnk = doc.metadata.get('cos_rank', 9999)
-            rrf_score = (bm25_weight / (k + bm_rnk)) + \
-                (cosine_weight / (k + cos_rnk))
-            doc.metadata['rrf_score'] = rrf_score
-
-        sorted_docs = sorted(doc_dict.values(), key=lambda x: x.metadata.get(
-            'rrf_score', 0), reverse=True)
-        return sorted_docs[:k]
 
     def health_check(self) -> bool:
         """
