@@ -54,36 +54,41 @@ class VectorDB(ABC):
         pass
 
     @abstractmethod
+    def get_all_documents(
+        self,
+        document_groups: list[str] | None = None
+    ) -> list[RetrieveDocument]:
+        """
+        Get all documents from VectorDB with optional group filter
+
+        Args:
+            document_groups: Optional list of document groups to filter
+
+        Returns:
+            List of all documents (or filtered by group)
+        """
+        pass
+
+    @abstractmethod
     def similarity_search(
         self,
-        query: str,
+        query_embedding: list[float],
         k: int,
-        document_ids: list[str],
+        document_groups: list[str] | None = None,
         **kwargs: dict[str, Any]
     ) -> list[RetrieveDocument]:
-        pass
+        """
+        Vector similarity search using query embedding
 
-    @abstractmethod
-    def bm25_search(
-        self,
-        query: str,
-        k: int,
-        document_ids: list[str],
-        target_field: str | None = None,
-    ) -> list[RetrieveDocument]:
-        pass
+        Args:
+            query_embedding: Query embedding vector
+            k: Number of results to return
+            document_groups: Optional list of document groups to filter
+            **kwargs: Additional search parameters
 
-    @abstractmethod
-    def ensemble_search(
-        self,
-        query: str,
-        k: int,
-        cosine_k: int,
-        document_ids: list[str],
-        bm25_docs: list[RetrieveDocument] = [],
-        cosine_weight: float = 0.7,
-        bm25_weight: float = 0.3,
-    ) -> list[RetrieveDocument]:
+        Returns:
+            List of retrieved documents
+        """
         pass
 
     @abstractmethod

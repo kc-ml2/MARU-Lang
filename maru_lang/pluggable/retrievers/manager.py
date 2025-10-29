@@ -4,6 +4,8 @@ Retriever: 검색 로직 관리 (VectorDB + Embedder + Reranker 조합)
 from typing import List, Optional, Literal, Tuple
 import logging
 import numpy as np
+from konlpy.tag import Okt
+from rank_bm25 import BM25Okapi
 from maru_lang.core.vector_db.base import VectorDB, RetrieveDocument
 from maru_lang.pluggable.embedders import get_embedder, Embedder
 from maru_lang.pluggable.rerankers import get_reranker, Reranker
@@ -63,6 +65,7 @@ class Retriever:
         self.reranker = reranker or get_reranker()
         self.reranker_config = reranker_config
         self._representative_vectors = None
+        self.okt: Optional[Okt] = None  # BM25용 형태소 분석기
 
     def search(
         self,
@@ -162,13 +165,64 @@ class Retriever:
         document_groups: Optional[List[str]],
         **kwargs,
     ) -> List[RetrieveDocument]:
-        """BM25 search"""
-        return self.vdb.bm25_search(
-            query=query,
-            k=k,
-            document_groups=document_groups,
-            **kwargs,
-        )
+        """
+        BM25 search implementation
+
+        Args:
+            query: Search query
+            k: Number of results to return
+            document_groups: Optional list of document groups to filter
+            **kwargs: Additional parameters (target_field, etc.)
+        """
+        if not self.okt:
+            self.okt = Okt()
+
+        target_field = kwargs.get("target_field", "document_name")
+
+        # Get all documents from VectorDB with group filter
+        all_allowed_chunks = self.vdb.get_all_documents(document_groups=document_groups)
+
+        if not all_allowed_chunks:
+            return []
+
+        # Get unique documents by target field
+        unique_docs = {}
+        for chunk in all_allowed_chunks:
+            title = chunk.metadata.get(target_field, "")
+            if title and title not in unique_docs:
+                unique_docs[title] = chunk
+
+        representative_chunks = list(unique_docs.values())
+        if not representative_chunks:
+            return []
+
+        # Tokenize documents
+        if target_field:
+            tokenized_docs = [
+                self.okt.morphs(doc.metadata[target_field])
+                for doc in representative_chunks
+            ]
+
+        # Build BM25 index
+        bm25 = BM25Okapi(tokenized_docs)
+
+        # Calculate scores
+        scores = bm25.get_scores(self.okt.morphs(query))
+        doc_scores = [
+            (score, idx, representative_chunks[idx])
+            for idx, score in enumerate(scores)
+        ]
+        doc_scores.sort(key=lambda x: x[0], reverse=True)
+
+        # Return top-k results with scores
+        return [
+            RetrieveDocument(
+                id=doc.id,
+                page_content=doc.page_content,
+                metadata={**doc.metadata, "bm25_score": score}
+            )
+            for score, idx, doc in doc_scores[:k]
+        ]
 
     def _ensemble_search(
         self,
@@ -178,7 +232,7 @@ class Retriever:
         embedding_model: Optional[str],
         **kwargs,
     ) -> List[RetrieveDocument]:
-        """Ensemble search (vector + BM25)"""
+        """Ensemble search (vector + BM25 with RRF fusion)"""
         if not embedding_model:
             raise ValueError("embedding_model is required for ensemble search")
 
@@ -187,11 +241,19 @@ class Retriever:
             [query], embedding_model, show_progress=False
         )[0]
 
-        # BM25 검색 (ensemble에서 사용)
+        # BM25 검색
         bm25_k = kwargs.pop("bm25_k", k)
-        bm25_docs = self.vdb.bm25_search(
+        bm25_docs = self._bm25_search(
             query=query,
             k=bm25_k,
+            document_groups=document_groups,
+        )
+
+        # Vector similarity 검색
+        cosine_k = kwargs.pop("cosine_k", k)
+        cosine_docs = self.vdb.similarity_search(
+            query_embedding=query_embedding,
+            k=cosine_k,
             document_groups=document_groups,
         )
 
@@ -205,18 +267,74 @@ class Retriever:
                 query, query_embedding, embedding_model
             )
 
-        # VectorDB ensemble 검색
-        cosine_k = kwargs.pop("cosine_k", k)
-        return self.vdb.ensemble_search(
-            query_embedding=query_embedding,
-            k=k,
-            cosine_k=cosine_k,
-            document_groups=document_groups,
+        # RRF Fusion 적용
+        return self._apply_rrf_fusion(
+            cosine_docs=cosine_docs,
             bm25_docs=bm25_docs,
             cosine_weight=cosine_weight,
             bm25_weight=bm25_weight,
-            **kwargs,
+            k=k
         )
+
+    def _apply_rrf_fusion(
+        self,
+        cosine_docs: List[RetrieveDocument],
+        bm25_docs: List[RetrieveDocument],
+        cosine_weight: float,
+        bm25_weight: float,
+        k: int
+    ) -> List[RetrieveDocument]:
+        """
+        Apply RRF (Reciprocal Rank Fusion) to combine vector and BM25 search results
+
+        Args:
+            cosine_docs: Vector similarity search results
+            bm25_docs: BM25 search results
+            cosine_weight: Weight for cosine similarity scores
+            bm25_weight: Weight for BM25 scores
+            k: Number of final results to return
+
+        Returns:
+            Fused and ranked list of documents
+        """
+        # Assign ranks to documents
+        for i, doc in enumerate(cosine_docs):
+            doc.metadata['cos_rank'] = i + 1
+
+        for i, doc in enumerate(bm25_docs):
+            doc.metadata['bm25_rank'] = i + 1
+
+        # Merge documents by ID
+        doc_dict: dict[str, RetrieveDocument] = {}
+
+        for doc in cosine_docs:
+            doc_id = doc.metadata.get('id')
+            doc_dict[doc_id] = doc
+
+        for doc in bm25_docs:
+            doc_id = doc.metadata.get('id')
+            if doc_id in doc_dict:
+                # Document appears in both results, add BM25 rank
+                doc_dict[doc_id].metadata['bm25_rank'] = doc.metadata['bm25_rank']
+            else:
+                # Document only in BM25 results
+                doc_dict[doc_id] = doc
+                doc.metadata['cos_rank'] = 9999  # Large rank for missing documents
+
+        # Calculate RRF scores
+        for doc in doc_dict.values():
+            bm_rnk = doc.metadata.get('bm25_rank', 9999)
+            cos_rnk = doc.metadata.get('cos_rank', 9999)
+            rrf_score = (bm25_weight / (k + bm_rnk)) + (cosine_weight / (k + cos_rnk))
+            doc.metadata['rrf_score'] = rrf_score
+
+        # Sort by RRF score and return top-k
+        sorted_docs = sorted(
+            doc_dict.values(),
+            key=lambda x: x.metadata.get('rrf_score', 0),
+            reverse=True
+        )
+        return sorted_docs[:k]
 
     def _should_use_reranking(self, use_reranking: Optional[bool]) -> bool:
         """Reranking 사용 여부 결정"""
