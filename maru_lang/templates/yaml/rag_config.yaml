@@ -1,0 +1,68 @@
+# RAG Configuration
+# Retriever 설정 및 문서 그룹별 RAG 설정
+
+# ============================================================
+# Retriever 전역 설정
+# ============================================================
+retriever:
+  # 기본 검색 설정
+  default_k: 5                # 기본 검색 결과 개수
+  default_method: "ensemble"  # vector, bm25, ensemble 중 선택
+
+  # 쿼리 타입별 가중치 설정
+  # - cosine_weight: 벡터 유사도 검색 가중치
+  # - bm25_weight: BM25 키워드 검색 가중치
+  query_type_weights:
+    factual:      # 사실적 질문 (예: "~은 무엇인가")
+      cosine_weight: 0.2
+      bm25_weight: 0.8
+    procedural:   # 절차적 질문 (예: "~하는 방법")
+      cosine_weight: 0.8
+      bm25_weight: 0.2
+    analytical:   # 분석적 질문 (예: "A와 B 비교")
+      cosine_weight: 0.5
+      bm25_weight: 0.5
+
+  # 대표 쿼리 (쿼리 타입 자동 분류용)
+  # 사용자의 쿼리가 어떤 타입에 가까운지 판단하는 기준
+  representative_queries:
+    factual: "~은 무엇인가"
+    procedural: "~하는 방법"
+    analytical: "A와 B비교 분석"
+
+  # Fallback 로직 설정
+  # 쿼리 타입 분류 실패 시 사용하는 규칙 기반 로직
+  fallback_logic:
+    similarity_threshold: 0.3  # 이 값 이하면 fallback 사용
+    short_query_length: 2      # 짧은 쿼리 기준 (단어 수)
+    long_query_length: 6       # 긴 쿼리 기준 (단어 수)
+    weights:
+      short_query:    # 짧은 쿼리 (≤ 2 단어)
+        cosine_weight: 0.3
+        bm25_weight: 0.7
+      medium_query:   # 중간 길이 쿼리 (3-5 단어)
+        cosine_weight: 0.5
+        bm25_weight: 0.5
+      long_query:     # 긴 쿼리 (≥ 6 단어)
+        cosine_weight: 0.7
+        bm25_weight: 0.3
+
+# ============================================================
+# 그룹별 RAG 설정
+# ============================================================
+groups:
+  # 예시: Python 문서 그룹
+  # python_docs:
+  #   description: "Python 공식 문서 및 튜토리얼"
+  #
+  #   # 플러거블 컴포넌트 오버라이드 (선택사항)
+  #   # 이 그룹에서만 다른 컴포넌트를 사용하고 싶을 때 설정
+  #   components:
+  #     loader: "markdown"        # 이 그룹에서 사용할 로더
+  #     chunker: "sentence"       # 이 그룹에서 사용할 청커
+  #     embedder: "bge-m3"        # 이 그룹에서 사용할 임베더
+  #     reranker: "bge-reranker-v2-m3"  # 이 그룹에서 사용할 reranker
+
+  # 예시: 일반 문서 그룹
+  # general_docs:
+  #   description: "일반적인 정보 및 문서"

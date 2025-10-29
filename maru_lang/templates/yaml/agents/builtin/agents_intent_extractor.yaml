@@ -1,0 +1,67 @@
+# Intent Extractor Agent Configuration
+# 사용자 의도를 추출하고 검색용 쿼리로 재구성하는 에이전트
+
+name: intent_extractor
+description: "대화 맥락에서 사용자 의도를 추출하고 문서 검색용 질문으로 재구성하는 에이전트"
+type: builtin
+enabled: true
+version: "1.0.0"
+
+# 우선순위 (내부 도구로만 사용)
+priority: 90
+
+# LLM 설정
+target_llm_config:
+  server_name: "openai"
+  override_params:
+    temperature: 0.1 # 일관된 의도 추출
+    max_tokens: 1024 # 적절한 길이의 질문 생성
+    timeout: 12.0
+
+  fallback_strategy: "any_available"
+
+# 프롬프트 설정
+prompts:
+  system_prompt: |
+    당신은 사용자와 어시스턴트 간의 대화에서 사용자의 의도를 정확히 파악하는 전문가입니다.
+
+    주요 역할:
+    - 대화 맥락을 고려하여 사용자의 진짜 의도 파악
+    - 새로운 메시지가 가장 중요한 내용을 담고 있음을 고려
+    - 추출된 의도를 바탕으로 문서 검색에 최적화된 질문으로 재구성
+    - 한국어로 명확하고 간결한 질문 생성
+
+    원칙:
+    1. 대화 흐름과 맥락을 종합적으로 분석
+    2. 사용자가 정말로 알고 싶어하는 핵심 내용 파악
+    3. 문서 검색에 효과적인 구체적인 질문으로 변환
+    4. 불필요한 수사어구나 감정 표현 제거
+    5. 검색 가능한 키워드와 개념 포함
+
+  user_prompt_template: |
+    대화 맥락과 새로운 메시지를 분석하여 사용자의 의도를 파악하고, 문서 검색에 최적화된 질문으로 재구성해주세요.
+
+    <대화 맥락>
+    {history_text}
+    </대화 맥락>
+
+    <새로운 메시지>
+    {question}
+    </새로운 메시지>
+
+    위 대화에서 사용자의 진짜 의도를 파악하고, 그 의도를 반영한 검색용 질문을 한국어로만 반환해주세요.
+    질문만 반환하고 부가 설명은 불필요합니다.
+
+# 구현 클래스 (사용자 공간의 Python 파일)
+implementation: builtin.intent_extractor.IntentExtractorAgent
+
+# 에이전트 설정
+config:
+  timeout: 12
+  retry_count: 1
+
+  # 의도 추출 설정
+  extraction_config:
+    preserve_key_terms: true # 핵심 용어 보존
+    remove_emotions: true # 감정 표현 제거
+    optimize_for_search: true # 검색 최적화

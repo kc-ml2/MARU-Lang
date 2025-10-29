@@ -1,0 +1,83 @@
+# Keyword Extractor Agent Configuration
+# BM25 검색에 최적화된 키워드를 추출하는 에이전트
+
+name: keyword_extractor
+description: "BM25 검색에 최적화된 핵심 키워드를 추출하는 에이전트"
+type: builtin
+enabled: true
+version: "1.0.0"
+
+# 우선순위 (내부 도구로만 사용)
+priority: 85
+
+# LLM 설정
+target_llm_config:
+  server_name: "openai"
+  override_params:
+    temperature: 0.1      # 일관된 키워드 추출
+    max_tokens: 50        # 키워드만 간단히
+    timeout: 8.0          # 빠른 처리
+
+  fallback_strategy: "any_available"
+
+# 프롬프트 설정
+prompts:
+  system_prompt: |
+    당신은 BM25 키워드 검색에 최적화된 핵심 키워드를 추출하는 전문가입니다.
+
+    주요 역할:
+    - 질문에서 가장 중요한 명사와 핵심 개념만 추출
+    - BM25 알고리즘에 효과적인 키워드 선별
+    - 불용어와 의미없는 단어 제거
+    - 동의어나 유사어도 고려한 키워드 선택
+
+    원칙:
+    1. 가장 중요한 명사와 핵심 개념만 추출
+    2. 불용어(조사, 어미, 의문사) 완전 제거
+    3. 동의어나 유사어도 함께 고려
+    4. 3-7개의 핵심 키워드로 압축
+    5. 키워드들을 공백으로 구분하여 나열
+    6. 검색에 도움이 되는 구체적인 용어 우선
+
+  user_prompt_template: |
+    다음 질문에서 BM25 검색에 최적화된 핵심 키워드들을 추출해주세요.
+
+    질문: {question}
+
+    위 질문에서 BM25 검색에 가장 효과적인 핵심 키워드들만을 공백으로 구분하여 추출해주세요.
+    키워드만 반환하고 부가 설명은 불필요합니다.
+
+    예시:
+    - 질문: "우리 회사 휴가 신청 절차가 어떻게 되나요?"
+    - 키워드: "회사 휴가 신청 절차 방법"
+
+# 구현 클래스 (사용자 공간의 Python 파일)
+implementation: builtin.keyword_extractor.KeywordExtractorAgent
+
+# 에이전트 설정
+config:
+  timeout: 8
+  retry_count: 1
+
+  # 키워드 추출 설정
+  extraction_config:
+    min_keywords: 3         # 최소 키워드 개수
+    max_keywords: 7         # 최대 키워드 개수
+    filter_stopwords: true  # 불용어 필터링
+    include_synonyms: true  # 동의어 고려
+
+    # 불용어 목록 (한국어)
+    stopwords:
+      - "어떻게"
+      - "무엇"
+      - "언제"
+      - "어디서"
+      - "왜"
+      - "어떤"
+      - "이것"
+      - "그것"
+      - "저것"
+      - "되나요"
+      - "인가요"
+      - "습니까"
+      - "하나요"

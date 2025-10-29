@@ -1,0 +1,822 @@
+"""
+Ingest Pipeline - 로컬 파일 시스템을 ingest하는 파이프라인
+"""
+import re
+from pathlib import Path
+from typing import List, Optional, Tuple
+from dataclasses import dataclass
+
+from maru_lang.pipelines.base import BasePipeline, PipelineMessage, PipelineComplete
+from maru_lang.core.relation_db.models.documents import (
+    Document,
+    DocumentGroup,
+    DocumentGroupMembership,
+    DocumentGroupInclusion,
+)
+from maru_lang.enums.documents import DocumentStatus
+from maru_lang.services.document import (
+    get_or_create_document_group,
+    set_document_group_inclusion,
+    get_all_descendant_group_ids,
+)
+from maru_lang.core.vector_db.factory import get_vector_db
+from maru_lang.core.settings import settings
+from maru_lang.pluggable.loaders import get_loader
+from maru_lang.pluggable.chunkers import get_chunker
+from maru_lang.configs import get_config_manager
+
+from maru_lang.models.vector_db import ChromaDBConfig
+from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
+from tortoise.transactions import in_transaction
+
+
+@dataclass
+class IngestResult:
+    """Ingest 파이프라인 실행 결과"""
+
+    group: DocumentGroup
+    documents: List[Document]
+    total_files: int
+    processed_files: int
+    skipped_files: int
+
+
+class IngestPipeline(BasePipeline):
+    """로컬 파일 시스템 ingest 파이프라인"""
+
+    def __init__(
+        self,
+        path: Path,
+        group_name: str,
+        vdb_config: ChromaDBConfig,
+        max_batch_size_mb: int = 1000,
+    ):
+        """
+        Args:
+            path: ingest할 디렉토리 경로
+            group_name: 최상위 DocumentGroup 이름
+            vdb_config: ChromaDB 설정
+            max_batch_size_mb: 배치당 최대 메모리 크기 (MB, 기본: 1000MB)
+        """
+        super().__init__()
+        self.path = path
+        self.group_name = group_name
+        self.vdb_config = vdb_config
+        self.max_batch_size_mb = max_batch_size_mb
+        # MB를 chars로 변환 (대략 1 char = 1 byte 가정)
+        self.max_chars_per_batch = max_batch_size_mb * 1024 * 1024
+
+        # Config-driven 컴포넌트 로드
+
+        self.parser_manager = get_loader()
+        self.chunker_manager = get_chunker()
+
+        # Embedding model은 config에서 로드
+        config_manager = get_config_manager()
+        embedder_config = config_manager.get_embedder_config()
+        self.embedding_model = embedder_config.default_model if embedder_config else "BAAI/bge-m3"
+
+        # 중간 결과 저장
+        self.all_files = []
+        self.supported_files = []
+        self.file_hierarchies = []
+        self.group_cache = {}
+        self.documents_to_process = []  # 재처리 필요한 문서만
+
+        # VectorDB 인스턴스 (CRUD 직접 사용)
+        self.vdb = None
+
+        # 결과 저장
+        self.files = None
+        self.group = None
+        self.unique_groups = None
+        self.documents = None
+
+    # ========== Pipeline Process ==========
+
+    async def process(self):
+        """파이프라인 주요 로직"""
+        try:
+            # 1. 입력 검증
+            await self._validate_inputs()
+            print("before", await Document.all().count())
+
+            # 2. 파일 스캔
+            await self._scan_files()
+            print("after", await Document.all().count())
+            # 3. 그룹 생성
+            await self._create_groups()
+
+            # 4. VDB 설정
+            await self._setup_vdb()
+
+            # 5. Document 생성
+            await self._create_documents()
+
+            # 6. 파싱, 청킹, 임베딩, VDB 저장
+            await self._process_documents()
+
+            # 7. Document 상태 업데이트
+            await self._update_document_status()
+
+            # 8. 완료
+            result = self._get_result()
+            await self.queue.put(PipelineComplete(data=result))
+
+        except Exception as e:
+            await self.queue.put(PipelineMessage.error(f"Pipeline failed: {str(e)}"))
+            await self.queue.put(PipelineComplete(data=None))
+            raise
+
+    # ========== 입력 검증 ==========
+
+    async def _validate_inputs(self):
+        """입력값 검증 + 경로 충돌 검사"""
+        await self.queue.put(PipelineMessage.info("🔍 Validating inputs..."))
+
+        if not self.path.exists():
+            await self.queue.put(
+                PipelineMessage.error(f"Directory does not exist: {self.path}")
+            )
+            raise ValueError(f"Directory does not exist: {self.path}")
+
+        if not self.path.is_dir():
+            await self.queue.put(
+                PipelineMessage.error(f"Path is not a directory: {self.path}")
+            )
+            raise ValueError(f"Path is not a directory: {self.path}")
+
+        # 경로 충돌 검사
+        await self._check_path_conflicts()
+
+        await self.queue.put(PipelineMessage.info(f"✓ Directory validated: {self.path}"))
+
+    async def _check_path_conflicts(self):
+        """경로 충돌 검사 - 상위/하위 경로에 DocumentGroup이 있는지 확인"""
+        all_groups = await DocumentGroup.all()
+
+        for group in all_groups:
+            if not group.base_path:
+                continue
+
+            existing_path = Path(group.base_path).resolve()
+            new_path = self.path.resolve()
+
+            # 같은 경로면 스킵 (재ingest 허용)
+            if existing_path == new_path:
+                continue
+
+            # 케이스 1: 새 경로가 기존 경로의 하위
+            if new_path.is_relative_to(existing_path):
+                error_msg = (
+                    f"경로 충돌: '{new_path}'는 기존 그룹 '{group.name}' ({existing_path})의 하위 경로입니다.\n"
+                    f"→ 그룹의 가장 상위 그룹이 발견되었습니다. 상위그룹에서 Ingest를 실행해주세요."
+                )
+                await self.queue.put(PipelineMessage.error(error_msg))
+                raise ValueError(error_msg)
+
+            # 케이스 2: 기존 경로가 새 경로의 하위
+            if existing_path.is_relative_to(new_path):
+                error_msg = (
+                    f"경로 충돌: 하위에 독립적인 문서그룹 '{group.name}' ({existing_path})이 발견되었습니다.\n"
+                    f"→ 제거 후 다시 시도해주세요."
+                )
+                await self.queue.put(PipelineMessage.error(error_msg))
+                raise ValueError(error_msg)
+
+    # ========== 파일 스캔 ==========
+
+    async def _scan_files(self):
+        """파일 스캔"""
+        await self.queue.put(PipelineMessage.info("📂 Scanning files..."))
+
+        self.all_files = sorted([f for f in self.path.rglob("*") if f.is_file()])
+        await self.queue.put(
+            PipelineMessage.info(f"Found {len(self.all_files)} total files")
+        )
+
+        self.supported_files = [
+            f for f in self.all_files if self.parser_manager.supports(f)
+        ]
+        await self.queue.put(
+            PipelineMessage.info(f"Found {len(self.supported_files)} supported files")
+        )
+
+        if not self.supported_files:
+            await self.queue.put(
+                PipelineMessage.error(f"No supported files found in: {self.path}")
+            )
+            raise ValueError(f"No supported files found in: {self.path}")
+
+        self.files = self.supported_files
+        await self.queue.put(PipelineMessage.info(f"✓ File scan completed"))
+
+    # ========== DocumentGroup 계층 생성 ==========
+
+    async def _create_groups(self):
+        """DocumentGroup 계층 생성 (services/document.py 활용)"""
+        await self.queue.put(PipelineMessage.info("🏗️  Building group hierarchy..."))
+
+        # 1. 모든 파일의 그룹 계층 정보 수집
+        for f in self.files:
+            hierarchy = self._get_group_hierarchy_for_file(f)
+            self.file_hierarchies.append((f, hierarchy))
+
+        # 2. 고유한 그룹들과 부모-자식 관계 추출
+        unique_groups = set()
+        parent_child_pairs = set()
+
+        for _, hierarchy in self.file_hierarchies:
+            for parent, current in hierarchy:
+                unique_groups.add(current)
+                if parent:
+                    unique_groups.add(parent)
+                    parent_child_pairs.add((parent, current))
+
+        await self.queue.put(
+            PipelineMessage.info(f"Creating {len(unique_groups)} document group(s)...")
+        )
+
+        # 3. 그룹 생성 (services/document.py 활용)
+        for gname in unique_groups:
+            self.group_cache[gname] = await get_or_create_document_group(gname)
+
+        # 4. base 그룹에 base_path 저장
+        base_group = self.group_cache[self.group_name]
+        if base_group.base_path is None:
+            base_group.base_path = str(self.path.absolute())
+            await base_group.save()
+
+        await self.queue.put(
+            PipelineMessage.info(f"Setting up {len(parent_child_pairs)} group relationship(s)...")
+        )
+
+        # 5. 부모-자식 관계 설정 (services/document.py 활용)
+        for parent_name, child_name in parent_child_pairs:
+            await set_document_group_inclusion(
+                self.group_cache[parent_name], self.group_cache[child_name]
+            )
+
+        self.group = base_group
+        self.unique_groups = unique_groups
+
+        await self.queue.put(PipelineMessage.info(f"✓ Group hierarchy created"))
+
+    def _get_group_hierarchy_for_file(
+        self, file_path: Path
+    ) -> List[tuple[Optional[str], str]]:
+        """
+        파일의 그룹 계층 구조를 결정 (전체 폴더 구조 사용)
+        """
+        relative_path = file_path.relative_to(self.path)
+        parts = relative_path.parts[:-1]  # 파일명 제외
+
+        if not parts:
+            return [(None, self.group_name)]
+
+        hierarchy = [(None, self.group_name)]
+
+        for i, part in enumerate(parts):
+            current_parts = [self.group_name] + list(parts[: i + 1])
+            current_name = "_".join(current_parts)
+
+            if i == 0:
+                parent_name = self.group_name
+            else:
+                parent_parts = [self.group_name] + list(parts[:i])
+                parent_name = "_".join(parent_parts)
+
+            hierarchy.append((parent_name, current_name))
+
+        return hierarchy
+
+    # ========== VectorDB 설정 ==========
+
+    async def _setup_vdb(self):
+        """VectorDB 인스턴스 생성 (CRUD 직접 사용)"""
+        await self.queue.put(PipelineMessage.info("💾 Setting up vector database..."))
+
+        # VectorDB 팩토리로 인스턴스 생성
+        self.vdb = get_vector_db(self.vdb_config)
+
+        # 헬스체크 수행
+        try:
+            self.vdb.health_check()
+            await self.queue.put(
+                PipelineMessage.info(
+                    f"✓ VDB connected (embedding model: {self.embedding_model})"
+                )
+            )
+        except Exception as e:
+            error_msg = (
+                f"❌ VectorDB health check failed:\n"
+                f"{str(e)}\n\n"
+                f"Check your VectorDB configuration"
+            )
+            await self.queue.put(PipelineMessage.error(error_msg))
+            raise ValueError(error_msg)
+
+        await self.queue.put(PipelineMessage.info(f"✓ VDB setup completed"))
+
+    # ========== Document 생성 ==========
+
+    async def _cleanup_deleted_files(self, current_documents: List[Document]):
+        """
+        파일 시스템에서 삭제된 파일을 RDB와 VDB에서 정리
+
+        Args:
+            current_documents: 현재 파일 시스템에 존재하는 문서 리스트
+        """
+        print(await Document.all().count())
+
+        # 1. 이 그룹과 모든 하위 그룹의 ID 가져오기
+        all_group_ids = await get_all_descendant_group_ids([self.group.id], inclusion_model=DocumentGroupInclusion)
+        all_group_ids.add(self.group.id)
+
+        # 2. RDB에서 이 그룹 계층의 모든 문서 가져오기
+        rdb_documents = await Document.filter(
+            group_memberships__group_id__in=list(all_group_ids)
+        ).distinct().all()
+
+        await self.queue.put(
+            PipelineMessage.info(f"📊 RDB documents: {len(rdb_documents)}, Current documents: {len(current_documents)}")
+        )
+
+        # 3. 현재 파일 시스템에 있는 문서 ID
+        current_doc_ids = {doc.id for doc in current_documents}
+
+        # 4. 삭제된 문서 찾기
+        deleted_documents = [doc for doc in rdb_documents if doc.id not in current_doc_ids]
+
+        await self.queue.put(
+            PipelineMessage.info(f"🔍 Checking deleted files: {len(deleted_documents)} candidates")
+        )
+
+        if not deleted_documents:
+            await self.queue.put(PipelineMessage.info("✓ No deleted files found"))
+            return
+
+        await self.queue.put(
+            PipelineMessage.info(
+                f"🗑️  Found {len(deleted_documents)} deleted file(s), cleaning up..."
+            )
+        )
+
+        total_chunks_deleted = 0
+
+        for doc in deleted_documents:
+            # 파일이 정말 삭제되었는지 재확인
+            if not Path(doc.file_path).exists():
+                try:
+                    # VDB에서 청크 삭제
+                    try:
+                        chunks_deleted = self.vdb.delete_all_chunks_by_document_id(doc.id)
+                        total_chunks_deleted += chunks_deleted
+                    except Exception as e:
+                        await self.queue.put(
+                            PipelineMessage.warning(
+                                f"Failed to delete VDB chunks for '{doc.name}': {str(e)}"
+                            )
+                        )
+
+                    # RDB에서 문서 삭제 (DocumentGroupMembership도 CASCADE로 삭제됨)
+                    await doc.delete()
+
+                    await self.queue.put(
+                        PipelineMessage.info(f"Deleted: {doc.name}")
+                    )
+
+                except Exception as e:
+                    await self.queue.put(
+                        PipelineMessage.warning(f"Failed to delete '{doc.name}': {str(e)}")
+                    )
+
+        if total_chunks_deleted > 0:
+            await self.queue.put(
+                PipelineMessage.info(
+                    f"✓ Cleaned up {len(deleted_documents)} document(s) and {total_chunks_deleted} chunk(s)"
+                )
+            )
+
+    async def _create_documents(self):
+        """Document 생성 및 그룹 연결 (변경 감지)"""
+        await self.queue.put(PipelineMessage.info("📄 Creating documents..."))
+
+        all_documents = []
+        documents_to_process = []
+
+        for file_path, hierarchy in self.file_hierarchies:
+            try:
+                # 1. Document 생성 및 변경 감지
+                stat = file_path.stat()
+                doc, needs_reprocessing = await self.upsert_document_from_file(
+                    name=file_path.stem,
+                    path=str(file_path),
+                    size=stat.st_size,
+                    mtime_ns=stat.st_mtime_ns,
+                    metadata={"original_filename": file_path.name},
+                )
+
+                # 2. 파일의 최종 그룹 결정
+                final_group_name = hierarchy[-1][1]
+
+                # 3. DocumentGroup 연결
+                doc_group = self.group_cache[final_group_name]
+                await DocumentGroupMembership.get_or_create(
+                    document=doc, group=doc_group
+                )
+
+                all_documents.append(doc)
+
+                # 4. 재처리 필요한 문서만 별도 저장
+                if needs_reprocessing:
+                    documents_to_process.append(doc)
+
+            except Exception as e:
+                # 개별 파일 처리 실패는 로깅만 하고 계속 진행
+                await self.queue.put(
+                    PipelineMessage.warning(f"Failed to process {file_path.name}: {str(e)}")
+                )
+                continue
+
+        self.documents = all_documents
+        self.documents_to_process = documents_to_process
+
+        # 삭제된 파일 감지 및 정리
+        await self._cleanup_deleted_files(all_documents)
+
+        # VDB-RDB 동기화 검증
+        await self.queue.put(PipelineMessage.info("🔍 Verifying VDB-RDB synchronization..."))
+        sync_stats = await self.verify_vdb_rdb_sync(self.group, self.documents_to_process, self.vdb)
+
+        # 동기화 검증 결과 출력
+        if sync_stats["missing_in_vdb"] > 0:
+            await self.queue.put(
+                PipelineMessage.warning(
+                    f"⚠️  Found {sync_stats['missing_in_vdb']} document(s) in RDB without VDB chunks (will reprocess)"
+                )
+            )
+
+        if sync_stats["orphan_chunks_deleted"] > 0:
+            await self.queue.put(
+                PipelineMessage.info(
+                    f"🗑️  Cleaned up {sync_stats['orphan_chunks_deleted']} orphan chunk(s) from VDB"
+                )
+            )
+
+        if sync_stats["missing_in_vdb"] == 0 and sync_stats["orphan_in_vdb"] == 0:
+            await self.queue.put(PipelineMessage.info("✓ VDB-RDB sync verified"))
+
+        # 재처리 통계 전달 (동기화 검증 후 업데이트된 documents_to_process 반영)
+        await self.queue.put(
+            PipelineMessage.info(
+                f"📊 Document Status: Total={len(all_documents)}, "
+                f"To Process={len(self.documents_to_process)}, "
+                f"Skipped={len(all_documents) - len(self.documents_to_process)}",
+                data={
+                    "total": len(all_documents),
+                    "to_process": len(self.documents_to_process),
+                    "skipped": len(all_documents) - len(self.documents_to_process),
+                }
+            )
+        )
+
+    # ========== 파싱, 청킹, 임베딩, VDB 저장 (스트리밍) ==========
+
+    async def _process_documents(self):
+        """파싱 → 청킹 → 임베딩 → VDB 저장 (스트리밍으로 메모리 효율적)"""
+        import hashlib
+        from maru_lang.pluggable.embedders import get_embedder
+
+        if not self.documents_to_process:
+            await self.queue.put(
+                PipelineMessage.info("✅ No files to process (all unchanged)")
+            )
+            return
+
+        # 1. 기존 VDB 청크 삭제
+        await self.queue.put(
+            PipelineMessage.info(
+                f"🗑️  Deleting old chunks for {len(self.documents_to_process)} document(s)..."
+            )
+        )
+
+        for doc in self.documents_to_process:
+            try:
+                deleted_count = self.vdb.delete_all_chunks_by_document_id(doc.id)
+                if deleted_count > 0:
+                    await self.queue.put(
+                        PipelineMessage.info(f"Deleted {deleted_count} chunk(s) for '{doc.name}'")
+                    )
+            except Exception as e:
+                await self.queue.put(
+                    PipelineMessage.warning(f"Failed to delete chunks for {doc.name}: {str(e)}")
+                )
+
+        # 2. 스트리밍 처리 (파싱 → 청킹 → 임베딩 → VDB 저장)
+        await self.queue.put(
+            PipelineMessage.info(f"🔄 Processing {len(self.documents_to_process)} file(s)...")
+        )
+
+        embedder = get_embedder()
+        batch_texts = []
+        batch_metadata = []  # (doc, chunk_input, idx) 저장
+        current_batch_chars = 0
+        total_chunks_saved = 0
+        processed_docs = 0
+
+        for doc in self.documents_to_process:
+            try:
+                # 파싱
+                parse_result = self.parser_manager.parse(doc.file_path)
+                if not parse_result.content.strip():
+                    await self.queue.put(
+                        PipelineMessage.warning(f"Empty content for {doc.name}")
+                    )
+                    continue
+
+                # 청킹
+                chunker_name = self.parser_manager.get_chunker_name_for_file(doc.file_path)
+                chunker = self.chunker_manager.get_chunker_or_default(chunker_name)
+                chunk_inputs = chunker.chunk(parse_result.content)
+
+                if not chunk_inputs:
+                    await self.queue.put(
+                        PipelineMessage.warning(f"No chunks for {doc.name}")
+                    )
+                    continue
+
+                # 청크를 배치에 추가
+                for idx, chunk_input in enumerate(chunk_inputs):
+                    chunk_chars = len(chunk_input.content)
+
+                    # 배치가 꽉 차면 임베딩 및 저장
+                    if current_batch_chars + chunk_chars > self.max_chars_per_batch and batch_texts:
+                        # 배치 임베딩
+                        await self.queue.put(
+                            PipelineMessage.info(
+                                f"Embedding batch: {len(batch_texts)} chunks (~{current_batch_chars:,} chars)..."
+                            )
+                        )
+                        vectors = embedder.encode(
+                            batch_texts, self.embedding_model, show_progress=False
+                        )
+
+                        # VDB 저장
+                        saved = self._save_batch_to_vdb(batch_metadata, vectors)
+                        total_chunks_saved += saved
+
+                        # 배치 초기화
+                        batch_texts = []
+                        batch_metadata = []
+                        current_batch_chars = 0
+
+                    # 현재 청크를 배치에 추가
+                    batch_texts.append(chunk_input.content)
+                    batch_metadata.append((doc, chunk_input, idx))
+                    current_batch_chars += chunk_chars
+
+                processed_docs += 1
+                await self.queue.put(
+                    PipelineMessage.info(
+                        f"Processed {processed_docs}/{len(self.documents_to_process)}: {doc.name}"
+                    )
+                )
+
+            except Exception as e:
+                await self.queue.put(
+                    PipelineMessage.error(f"Error processing {doc.name}: {str(e)}")
+                )
+                continue
+
+        # 남은 배치 처리
+        if batch_texts:
+            await self.queue.put(
+                PipelineMessage.info(
+                    f"Embedding final batch: {len(batch_texts)} chunks (~{current_batch_chars:,} chars)..."
+                )
+            )
+            vectors = embedder.encode(
+                batch_texts, self.embedding_model, show_progress=False
+            )
+            saved = self._save_batch_to_vdb(batch_metadata, vectors)
+            total_chunks_saved += saved
+
+        await self.queue.put(
+            PipelineMessage.info(
+                f"✅ Total {total_chunks_saved} chunks saved to VDB",
+                data={"total_chunks": total_chunks_saved}
+            )
+        )
+
+    def _save_batch_to_vdb(self, batch_metadata, vectors) -> int:
+        """
+        배치를 VDB에 저장 (헬퍼 메서드)
+
+        Args:
+            batch_metadata: (doc, chunk_input, idx) 튜플 리스트
+            vectors: 임베딩 벡터 리스트 (이미 Embedder로 생성됨)
+        """
+        import hashlib
+
+        vdb_documents = []
+        for (doc, chunk_input, idx), vector in zip(batch_metadata, vectors):
+            chunk_id = hashlib.blake2b(
+                f"{doc.id}:{idx}".encode(), digest_size=8
+            ).hexdigest()
+
+            vdb_documents.append({
+                "id": chunk_id,
+                "content": chunk_input.content,
+                "metadata": {
+                    "content": chunk_input.content,
+                    "document_id": doc.id,
+                    "document_name": doc.name,
+                    "file_path": doc.file_path or "",
+                    "chunk_number": idx,
+                    "group": self.group.name,  # 그룹 정보 추가 (필터링용)
+                    **(chunk_input.meta or {}),
+                },
+            })
+
+        # VectorDB에 문서와 임베딩 벡터 함께 전달
+        self.vdb.add_documents(
+            documents=vdb_documents,
+            embeddings=vectors,
+            store_text=settings.VECTOR_DB_STORE_TEXT
+        )
+        return len(vdb_documents)
+
+    # ========== 마무리 ==========
+
+    async def _update_document_status(self):
+        """재처리된 Document만 ACTIVE로 업데이트"""
+        await self.queue.put(PipelineMessage.info("✅ Updating document status..."))
+
+        if not self.documents_to_process:
+            await self.queue.put(PipelineMessage.info("No documents to update"))
+            return
+
+        for doc in self.documents_to_process:
+            doc.status = DocumentStatus.ACTIVE
+            await doc.save()
+
+        await self.queue.put(
+            PipelineMessage.info(
+                f"✅ Updated {len(self.documents_to_process)} document(s) to ACTIVE"
+            )
+        )
+
+    # ========== Helper Methods ==========
+
+    @staticmethod
+    async def upsert_document_from_file(
+        name: str,
+        path: str,
+        size: int,
+        mtime_ns: int,
+        metadata: Optional[dict] = None,
+    ) -> Tuple[Document, bool]:
+        """
+        파일 기반 문서 업서트
+
+        파일 경로로 Document를 찾고, fingerprint로 변경 여부 확인
+        변경된 경우 PROCESSING 상태로 되돌려 재처리 필요함을 표시
+
+        Args:
+            name: 문서 이름
+            path: 파일 전체 경로
+            size: 파일 크기 (bytes)
+            mtime_ns: 수정 시간 (nanoseconds)
+            metadata: 추가 메타데이터
+
+        Returns:
+            Tuple[Document, bool]: (문서, 재처리필요여부)
+            - 재처리필요 = True: 신규 생성 또는 파일 수정됨
+            - 재처리필요 = False: 기존 파일이고 변경 없음
+        """
+        filename = Path(path).name
+        fp = make_source_fingerprint_for_file(filename, size, mtime_ns)
+
+        async with in_transaction():
+            # 1. 파일 경로로 기존 Document 조회
+            doc = await Document.get_or_none(file_path=path)
+
+            if doc:
+                # 2. 기존 문서 존재 → fingerprint 비교
+                if doc.source_fingerprint == fp:
+                    # fingerprint 동일 = 파일 수정 없음 → 재처리 불필요
+                    doc.name = name or doc.name
+                    doc.metadata = {**(doc.metadata or {}), **(metadata or {})}
+                    await doc.save()
+                    return doc, False
+
+                # fingerprint 다름 = 파일 수정됨 → 재처리 필요
+                doc.name = name
+                doc.file_size = size
+                doc.source_fingerprint = fp
+                doc.status = DocumentStatus.PROCESSING  # 재처리 위해 PROCESSING으로
+                doc.metadata = {**(doc.metadata or {}), **(metadata or {})}
+                await doc.save()
+                return doc, True
+
+            # 3. 신규 생성 (PROCESSING 상태)
+            new_doc = await Document.create(
+                id=new_ulid(),
+                name=name,
+                file_path=path,
+                file_size=size,
+                source_fingerprint=fp,
+                status=DocumentStatus.PROCESSING,
+                metadata=metadata or {},
+            )
+            return new_doc, True
+
+    async def verify_vdb_rdb_sync(self, group: DocumentGroup, documents_to_process: List[Document], vdb):
+        """
+        VDB와 RDB 동기화 상태 검증 및 불일치 해결
+
+        Args:
+            group: 검증할 DocumentGroup
+            documents_to_process: 재처리 대상 문서 리스트 (불일치 발견 시 추가됨)
+            vdb: VectorDB 인스턴스 (CRUD 직접 사용)
+
+        Returns:
+            dict: 검증 결과 통계
+                - missing_in_vdb: RDB에는 있지만 VDB에 없는 문서 수
+                - orphan_in_vdb: VDB에는 있지만 RDB에 없는 문서 수
+                - orphan_chunks_deleted: 삭제된 orphan 청크 수
+        """
+        stats = {
+            "missing_in_vdb": 0,
+            "orphan_in_vdb": 0,
+            "orphan_chunks_deleted": 0,
+        }
+
+        # 1. RDB에서 이 그룹의 모든 문서 ID 가져오기
+        rdb_documents = await Document.filter(
+            group_memberships__group=group
+        ).distinct().all()
+        rdb_doc_ids = {doc.id for doc in rdb_documents}
+
+        # 2. VDB에서 이 그룹의 모든 청크 document_id 가져오기 (그룹 필터 적용)
+        try:
+            # ChromaDB의 get_all_metadata는 where 파라미터를 받지 않으므로
+            # collection.get()을 직접 사용
+            result = vdb.collection.get(
+                where={"group": group.name},
+                include=["metadatas"]
+            )
+            all_metadata = result.get("metadatas", [])
+            vdb_doc_ids = {meta.get("document_id") for meta in all_metadata if meta.get("document_id")}
+        except Exception as e:
+            # VDB 메타데이터 조회 실패 시 검증 스킵
+            return stats
+
+        # 3. 불일치 감지 및 처리
+        # 케이스 1: RDB에는 있지만 VDB에는 없는 문서 (청크 누락)
+        missing_in_vdb = rdb_doc_ids - vdb_doc_ids
+        if missing_in_vdb:
+            stats["missing_in_vdb"] = len(missing_in_vdb)
+            missing_docs = [doc for doc in rdb_documents if doc.id in missing_in_vdb]
+
+            # 재처리 대상에 추가
+            for doc in missing_docs:
+                if doc not in documents_to_process:
+                    # 파일이 실제로 존재하는지 확인
+                    if Path(doc.file_path).exists():
+                        documents_to_process.append(doc)
+                    else:
+                        # 파일이 삭제된 경우 RDB에서도 삭제
+                        await doc.delete()
+                        stats["missing_in_vdb"] -= 1
+
+        # 케이스 2: VDB에는 있지만 RDB에는 없는 문서 (orphan chunks)
+        orphan_in_vdb = vdb_doc_ids - rdb_doc_ids
+        if orphan_in_vdb:
+            stats["orphan_in_vdb"] = len(orphan_in_vdb)
+
+            # Orphan 청크 삭제
+            for orphan_id in orphan_in_vdb:
+                try:
+                    count = vdb.delete_all_chunks_by_document_id(orphan_id)
+                    stats["orphan_chunks_deleted"] += count
+                except Exception:
+                    # 삭제 실패는 무시하고 계속 진행
+                    pass
+
+        return stats
+
+    def _get_result(self) -> IngestResult:
+        """결과 반환 (헬퍼 메서드)"""
+        return IngestResult(
+            group=self.group,
+            documents=self.documents,
+            total_files=len(self.files) if self.files else 0,
+            processed_files=len(self.documents_to_process) if self.documents_to_process else 0,
+            skipped_files=(
+                len(self.documents) - len(self.documents_to_process)
+                if self.documents and self.documents_to_process
+                else 0
+            ),
+        )

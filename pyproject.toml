@@ -1,0 +1,139 @@
+[project]
+name = "maru-lang"
+version = "0.0.0"
+description = "Advanced LLM-powered chatbot with RAG, multi-agent system, and enterprise features"
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "KC ML2"},
+]
+keywords = ["llm", "chatbot", "rag", "ai", "fastapi", "agents"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
+    "typer[all]>=0.9.0",
+    "tortoise-orm[asyncpg]>=0.20.0",
+    "aerich>=0.7.2",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib>=1.7.4",
+    "pydantic-settings>=2.0.0",
+    "httpx>=0.24.0",
+    "sentence-transformers>=2.2.0",
+    "fastapi-pagination>=0.12.0",
+    "rank-bm25>=0.2.2",
+    "chromadb>=0.4.0",
+    "konlpy>=0.6.0",
+    "mcp>=0.9.0",
+]
+
+[project.optional-dependencies]
+# 벡터 데이터베이스
+vector-db = [
+    "chromadb>=0.4.0",
+    "pymilvus[model]>=2.3.0",
+]
+
+# 이메일 기능
+email = [
+    "O365>=2.0.0",  # 대소문자 정리
+]
+
+# 트레이싱/관찰가능성
+observability = [
+    "langfuse>=2.0.0",
+]
+
+# 한국어 NLP
+nlp-ko = [
+    "konlpy>=0.6.0",
+]
+
+# 개발/테스트
+dev = [
+    "aerich[toml]>=0.7.0",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "notebook>=6.5.0",
+]
+
+# 모든 기능 (자기참조 제거, 수동 합집합)
+all = [
+    "chromadb>=0.4.0",
+    "pymilvus[model]>=2.3.0",
+    "O365>=2.0.0",
+    "langfuse>=2.0.0",
+    "konlpy>=0.6.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = {find = {where = ["."], include = ["maru_lang*"]}}
+include-package-data = true
+
+[tool.setuptools.package-data]
+maru_lang = [
+    "config/**/*.yaml",
+    "config/**/*.yml",
+    "py.typed",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+markers = [
+    "slow: 실행이 오래 걸리는 테스트",
+    "integration: 통합 테스트",
+]
+
+[tool.coverage.run]
+source = ["maru_lang"]
+omit = [
+    "maru_lang/migrations/*",
+    "maru_lang/alembic/*",
+    "maru_lang/scripts/*",
+    "maru_lang/tests/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == '__main__':",
+    "pass",
+    "raise ImportError",
+]
+
+[project.scripts]
+maru = "maru_lang.cli:app"
+
+[tool.aerich]
+tortoise_orm = "maru_lang.core.settings.TORTOISE_ORM"
+location = "./migrations"
+src_folder = "./."

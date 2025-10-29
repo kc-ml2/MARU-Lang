@@ -1,0 +1,32 @@
+# LLM-based Reranker Agent Configuration
+# LLM을 사용한 고정확도 검색 결과 재정렬
+
+name: llm_reranker
+description: "LLM을 활용한 검색 결과 재정렬 (높은 정확도, 높은 비용)"
+enabled: false  # 기본값: 비활성화 (사용하려면 true로 변경)
+version: "1.0.0"
+
+# LLM 설정
+target_llm_config:
+  server_name: "openai"
+  override_params:
+    temperature: 0.0      # 일관된 평가를 위해 낮은 온도
+    max_tokens: 2000
+  fallback_strategy: "any_available"
+
+# Reranker 설정
+config:
+  # 각 문서에서 사용할 최대 문자 수 (비용 절감)
+  max_document_length: 500
+
+  # 배치 처리 크기 (문서가 많을 경우)
+  batch_size: 10
+
+# 구현 클래스
+implementation: maru_lang.rerankers.llm_reranker.LLMRerankerAgent
+
+# 프롬프트 설정 (선택사항 - 기본 프롬프트 오버라이드)
+# prompts:
+#   system_prompt: |
+#     당신은 검색 결과의 관련성을 평가하는 전문가입니다.
+#     사용자 질의와 각 문서의 관련성을 정확히 평가하세요.
