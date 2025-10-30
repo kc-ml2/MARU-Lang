@@ -70,13 +70,18 @@ class IngestPipeline(BasePipeline):
         self.max_chars_per_batch = max_batch_size_mb * 1024 * 1024
 
         # Config-driven 컴포넌트 로드
+        config_manager = get_config_manager()
 
-        self.parser_manager = get_loader()
+        self.loader_manager = get_loader()
         self.chunker_manager = get_chunker()
+
+        # RAG config 로드 (그룹별 설정 조회용)
+        # ConfigManager는 lazy loading이므로 명시적으로 로드 필요
+        config_manager.ensure_loaded()
+        self.rag_config = config_manager.get_rag_config()
 
         # Embedding model 결정: Global default만 사용
         # 모든 문서는 동일한 embedding space에 있어야 검색 시 비교 가능
-        config_manager = get_config_manager()
         embedder_config = config_manager.get_embedder_config()
 
         if embedder_config and embedder_config.default_model:
@@ -210,7 +215,7 @@ class IngestPipeline(BasePipeline):
         )
 
         self.supported_files = [
-            f for f in self.all_files if self.parser_manager.supports(f)
+            f for f in self.all_files if self.loader_manager.supports(f)
         ]
         await self.queue.put(
             PipelineMessage.info(f"Found {len(self.supported_files)} supported files")
@@ -277,6 +282,49 @@ class IngestPipeline(BasePipeline):
         self.unique_groups = unique_groups
 
         await self.queue.put(PipelineMessage.info(f"✓ Group hierarchy created"))
+
+        # 6. 그룹별 RAG 컴포넌트 설정 출력
+        await self._print_group_components()
+
+    async def _print_group_components(self):
+        """그룹별 RAG 컴포넌트 설정 출력"""
+        if not self.rag_config or not self.rag_config.groups:
+            await self.queue.put(
+                PipelineMessage.info("📦 RAG Components: Using default settings for all groups")
+            )
+            return
+
+        await self.queue.put(PipelineMessage.info("📦 RAG Components Configuration:"))
+
+        # 생성된 그룹 이름들 추출
+        created_group_names = set(self.unique_groups.values())
+
+        for group_name in sorted(created_group_names):
+            group_config = self.rag_config.groups.get(group_name)
+
+            if group_config and group_config.components:
+                components = group_config.components
+                parts = []
+
+                if components.loader:
+                    parts.append(f"loader={components.loader}")
+                if components.chunker:
+                    parts.append(f"chunker={components.chunker}")
+                if components.reranker:
+                    parts.append(f"reranker={components.reranker}")
+
+                if parts:
+                    await self.queue.put(
+                        PipelineMessage.info(f"  [{group_name}] {', '.join(parts)}")
+                    )
+                else:
+                    await self.queue.put(
+                        PipelineMessage.info(f"  [{group_name}] default settings")
+                    )
+            else:
+                await self.queue.put(
+                    PipelineMessage.info(f"  [{group_name}] default settings")
+                )
 
     def _get_group_hierarchy_for_file(
         self, file_path: Path
@@ -547,9 +595,17 @@ class IngestPipeline(BasePipeline):
                     PipelineMessage.warning(f"Failed to delete chunks for {doc.name}: {str(e)}")
                 )
 
-        # 2. 스트리밍 처리 (파싱 → 청킹 → 임베딩 → VDB 저장)
+        # 2. 문서를 그룹별로 정리
+        docs_by_group = {}
+        for doc in self.documents_to_process:
+            group_name = self.doc_to_group.get(doc.id, self.group_name)
+            if group_name not in docs_by_group:
+                docs_by_group[group_name] = []
+            docs_by_group[group_name].append(doc)
+
+        # 3. 스트리밍 처리 (파싱 → 청킹 → 임베딩 → VDB 저장)
         await self.queue.put(
-            PipelineMessage.info(f"🔄 Processing {len(self.documents_to_process)} file(s)...")
+            PipelineMessage.info(f"🔄 Processing {len(self.documents_to_process)} file(s) across {len(docs_by_group)} group(s)...")
         )
 
         embedder = get_embedder()
@@ -560,73 +616,143 @@ class IngestPipeline(BasePipeline):
         total_chunks_saved = 0
         processed_docs = 0
         batch_number = 0
+        current_group = None  # 현재 처리 중인 그룹 추적
 
-        for doc in self.documents_to_process:
-            try:
-                # 파싱
-                parse_result = self.parser_manager.parse(doc.file_path)
-                if not parse_result.content.strip():
+        # 그룹별로 순회하면서 처리
+        for group_name in sorted(docs_by_group.keys()):
+            docs_in_group = docs_by_group[group_name]
+
+            # 그룹 헤더 출력
+            await self.queue.put(
+                PipelineMessage.info(f"\n📁 Group: [{group_name}] ({len(docs_in_group)} file(s))")
+            )
+
+            # 그룹별 RAG config 조회 및 출력
+            group_config = None
+            if self.rag_config:
+                group_config = self.rag_config.groups.get(group_name)
+
+            loader_info = "auto"
+            chunker_info = "default"
+            if group_config and group_config.components:
+                if group_config.components.loader:
+                    loader_info = group_config.components.loader
+                if group_config.components.chunker:
+                    chunker_info = group_config.components.chunker
+
+            await self.queue.put(
+                PipelineMessage.info(f"   Loader: {loader_info}, Chunker: {chunker_info}")
+            )
+
+            for doc in docs_in_group:
+                try:
+                    # file_path를 Path 객체로 변환
+                    file_path = Path(doc.file_path)
+
+                    # 파싱: 그룹별 loader 설정 적용
+                    loader_name = None
+                    loader_source = "auto (extension)"  # 출력용
+                    if group_config and group_config.components:
+                        loader_name = group_config.components.loader
+
+                    if loader_name:
+                        # 그룹별 지정된 loader 사용
+                        parse_result = self.loader_manager.parse(file_path, loader_name=loader_name)
+                        loader_source = f"group config ({loader_name})"
+                    else:
+                        # 기본 loader 사용 (확장자 기반)
+                        parse_result = self.loader_manager.parse(file_path)
+                        # 실제 사용된 loader 이름 추출
+                        loader = self.loader_manager.get_loader(file_path)
+                        if loader:
+                            loader_source = f"auto ({loader.__class__.__name__})"
+
+                    if not parse_result.content.strip():
+                        await self.queue.put(
+                            PipelineMessage.warning(f"Empty content for {doc.name}")
+                        )
+                        continue
+
+                    # 청킹: 그룹별 chunker 설정 적용
+                    chunker_name = None
+                    chunker_source = "default"  # 출력용
+                    if group_config and group_config.components:
+                        chunker_name = group_config.components.chunker
+                        if chunker_name:
+                            chunker_source = f"group config ({chunker_name})"
+
+                    if not chunker_name:
+                        # 그룹별 설정이 없으면 loader가 제안하는 chunker 사용
+                        chunker_name = self.loader_manager.get_chunker_name_for_file(file_path)
+                        chunker_source = f"loader suggestion ({chunker_name})"
+
+                    chunker = self.chunker_manager.get_chunker_or_default(chunker_name)
+                    chunk_inputs = chunker.chunk(parse_result.content)
+
+                    # 파일별 출력
+                    if self.verbose:
+                        # verbose 모드: 상세 정보
+                        await self.queue.put(
+                            PipelineMessage.info(
+                                f"   ├─ {doc.name}\n"
+                                f"   │  → Loader: {loader_source}\n"
+                                f"   │  → Chunker: {chunker_source}\n"
+                                f"   │  → Chunks: {len(chunk_inputs)}"
+                            )
+                        )
+                    else:
+                        # 일반 모드: 파일명과 청크 개수만
+                        await self.queue.put(
+                            PipelineMessage.info(
+                                f"   ├─ {doc.name} ({len(chunk_inputs)} chunks)"
+                            )
+                        )
+
+                    if not chunk_inputs:
+                        await self.queue.put(
+                            PipelineMessage.warning(f"No chunks for {doc.name}")
+                        )
+                        continue
+
+                    # 청크를 배치에 추가
+                    doc_added_to_batch = False
+                    for idx, chunk_input in enumerate(chunk_inputs):
+                        chunk_chars = len(chunk_input.content)
+
+                        # 배치가 꽉 차면 임베딩 및 저장
+                        if current_batch_chars + chunk_chars > self.max_chars_per_batch and batch_texts:
+                            batch_number += 1
+                            # 배치 임베딩
+                            await self._process_and_save_batch(
+                                batch_number, batch_texts, batch_metadata, batch_docs,
+                                current_batch_chars, embedder
+                            )
+                            total_chunks_saved += len(batch_texts)
+
+                            # 배치 초기화
+                            batch_texts = []
+                            batch_metadata = []
+                            batch_docs = []
+                            current_batch_chars = 0
+                            doc_added_to_batch = False
+
+                        # 현재 청크를 배치에 추가
+                        batch_texts.append(chunk_input.content)
+                        batch_metadata.append((doc, chunk_input, idx))
+                        current_batch_chars += chunk_chars
+
+                        # 문서 이름을 배치에 추가 (한 번만)
+                        if not doc_added_to_batch:
+                            batch_docs.append(doc.name)
+                            doc_added_to_batch = True
+
+                    processed_docs += 1
+
+                except Exception as e:
                     await self.queue.put(
-                        PipelineMessage.warning(f"Empty content for {doc.name}")
+                        PipelineMessage.error(f"   ├─ Error: {doc.name} - {str(e)}")
                     )
                     continue
-
-                # 청킹
-                chunker_name = self.parser_manager.get_chunker_name_for_file(doc.file_path)
-                chunker = self.chunker_manager.get_chunker_or_default(chunker_name)
-                chunk_inputs = chunker.chunk(parse_result.content)
-
-                if not chunk_inputs:
-                    await self.queue.put(
-                        PipelineMessage.warning(f"No chunks for {doc.name}")
-                    )
-                    continue
-
-                # 청크를 배치에 추가
-                doc_added_to_batch = False
-                for idx, chunk_input in enumerate(chunk_inputs):
-                    chunk_chars = len(chunk_input.content)
-
-                    # 배치가 꽉 차면 임베딩 및 저장
-                    if current_batch_chars + chunk_chars > self.max_chars_per_batch and batch_texts:
-                        batch_number += 1
-                        # 배치 임베딩
-                        await self._process_and_save_batch(
-                            batch_number, batch_texts, batch_metadata, batch_docs,
-                            current_batch_chars, embedder
-                        )
-                        total_chunks_saved += len(batch_texts)
-
-                        # 배치 초기화
-                        batch_texts = []
-                        batch_metadata = []
-                        batch_docs = []
-                        current_batch_chars = 0
-                        doc_added_to_batch = False
-
-                    # 현재 청크를 배치에 추가
-                    batch_texts.append(chunk_input.content)
-                    batch_metadata.append((doc, chunk_input, idx))
-                    current_batch_chars += chunk_chars
-
-                    # 문서 이름을 배치에 추가 (한 번만)
-                    if not doc_added_to_batch:
-                        batch_docs.append(doc.name)
-                        doc_added_to_batch = True
-
-                processed_docs += 1
-                if self.verbose:
-                    await self.queue.put(
-                        PipelineMessage.info(
-                            f"Processed {processed_docs}/{len(self.documents_to_process)}: {doc.name}"
-                        )
-                    )
-
-            except Exception as e:
-                await self.queue.put(
-                    PipelineMessage.error(f"Error processing {doc.name}: {str(e)}")
-                )
-                continue
 
         # 남은 배치 처리
         if batch_texts:
