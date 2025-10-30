@@ -200,16 +200,16 @@ class Loader:
         """
         self._register_user_parser(parser, source)
 
-    def get_parser(self, file_path: Path) -> Optional[BaseParser]:
+    def get_loader(self, file_path: Path) -> Optional[BaseParser]:
         """
-        파일 확장자에 맞는 파서를 반환합니다.
+        파일 확장자에 맞는 loader를 반환합니다.
         확장자 매핑이 없으면 default_loader를 fallback으로 사용합니다.
 
         Args:
             file_path: 파싱할 파일 경로
 
         Returns:
-            Optional[BaseParser]: 해당 확장자를 지원하는 파서, 없으면 None
+            Optional[BaseParser]: 해당 확장자를 지원하는 loader, 없으면 None
         """
         ext = file_path.suffix.lower()
 
@@ -230,12 +230,31 @@ class Loader:
 
         return None
 
-    def parse(self, file_path: Path) -> ParseResult:
+    def get_loader_by_name(self, loader_name: str) -> Optional[BaseParser]:
+        """
+        loader 이름으로 loader를 찾습니다.
+
+        Args:
+            loader_name: loader 이름 (예: "txt", "pdf", ".txt", ".pdf")
+
+        Returns:
+            Optional[BaseParser]: 해당 loader, 없으면 None
+        """
+        # 확장자 형태로 변환 (.txt, .pdf 등)
+        if not loader_name.startswith('.'):
+            ext = f".{loader_name}"
+        else:
+            ext = loader_name
+
+        return self._parsers.get(ext.lower())
+
+    def parse(self, file_path: Path, loader_name: Optional[str] = None) -> ParseResult:
         """
         파일을 파싱합니다.
 
         Args:
             file_path: 파싱할 파일 경로
+            loader_name: 사용할 loader 이름 (None이면 확장자 기반 자동 선택)
 
         Returns:
             ParseResult: 파싱 결과
@@ -247,22 +266,31 @@ class Loader:
         if not isinstance(file_path, Path):
             file_path = Path(file_path)
 
-        parser = self.get_parser(file_path)
-        if parser is None:
-            ext = file_path.suffix.lower()
-            error_msg = f"❌ 파일을 로드할 수 없습니다: {file_path.name}\n"
-            error_msg += f"   확장자 '{ext}'에 대한 loader 매핑이 없습니다.\n"
-            if self._default_loader:
-                error_msg += f"   default_loader '{self._default_loader}'도 사용할 수 없습니다.\n"
-            error_msg += f"   지원 가능한 확장자: {', '.join(sorted(self._parsers.keys()))}\n"
-            error_msg += f"   💡 loader_config.yaml에서 확장자 매핑을 추가하거나 default_loader를 설정하세요."
-            raise ValueError(error_msg)
+        # loader_name이 지정된 경우 해당 loader 사용
+        if loader_name:
+            loader = self.get_loader_by_name(loader_name)
+            if loader is None:
+                error_msg = f"❌ 지정된 loader를 찾을 수 없습니다: '{loader_name}'\n"
+                error_msg += f"   지원 가능한 loader: {', '.join(sorted(self._parsers.keys()))}\n"
+                raise ValueError(error_msg)
+        else:
+            # 확장자 기반 자동 선택
+            loader = self.get_loader(file_path)
+            if loader is None:
+                ext = file_path.suffix.lower()
+                error_msg = f"❌ 파일을 로드할 수 없습니다: {file_path.name}\n"
+                error_msg += f"   확장자 '{ext}'에 대한 loader 매핑이 없습니다.\n"
+                if self._default_loader:
+                    error_msg += f"   default_loader '{self._default_loader}'도 사용할 수 없습니다.\n"
+                error_msg += f"   지원 가능한 확장자: {', '.join(sorted(self._parsers.keys()))}\n"
+                error_msg += f"   💡 loader_config.yaml에서 확장자 매핑을 추가하거나 default_loader를 설정하세요."
+                raise ValueError(error_msg)
 
         try:
-            return parser.parse(file_path)
+            return loader.parse(file_path)
         except Exception as e:
             error_msg = f"❌ 파일 파싱 중 오류 발생: {file_path.name}\n"
-            error_msg += f"   사용된 parser: {parser.__class__.__name__}\n"
+            error_msg += f"   사용된 loader: {loader.__class__.__name__}\n"
             error_msg += f"   오류: {str(e)}"
             logger.error(error_msg)
             raise
@@ -280,7 +308,7 @@ class Loader:
         if not isinstance(file_path, Path):
             file_path = Path(file_path)
 
-        return self.get_parser(file_path) is not None
+        return self.get_loader(file_path) is not None
 
     @property
     def supported_extensions(self) -> list[str]:
