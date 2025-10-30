@@ -792,10 +792,10 @@ def get_retriever(
 
     Example:
         >>> from maru_lang.core.vector_db.factory import get_vector_db
-        >>> from maru_lang.models.vector_db import ChromaDBConfig
+        >>> from maru_lang.pluggable.retrievers import get_retriever
         >>>
-        >>> vdb_config = ChromaDBConfig.from_settings()
-        >>> vdb = get_vector_db(vdb_config)
+        >>> # system_config.yaml의 vector_db.type에 따라 자동으로 VectorDB 생성
+        >>> vdb = get_vector_db()
         >>> retriever = get_retriever(vdb)
         >>>
         >>> results = retriever.search(

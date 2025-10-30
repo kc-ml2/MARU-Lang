@@ -3,7 +3,13 @@ VectorDB 팩토리 - VectorDB 인스턴스 생성
 """
 from typing import Optional
 from maru_lang.core.vector_db.base import VectorDB
-from maru_lang.models.vector_db import BaseVectorDBConfig, ChromaDBConfig, PineconeConfig
+from maru_lang.models.vector_db import (
+    BaseVectorDBConfig,
+    ChromaDBConfig,
+    MilvusConfig,
+    PineconeConfig,
+    get_vector_db_config_from_settings,
+)
 
 
 def get_vector_db(config: Optional[BaseVectorDBConfig] = None) -> VectorDB:
@@ -11,35 +17,45 @@ def get_vector_db(config: Optional[BaseVectorDBConfig] = None) -> VectorDB:
     VectorDB 인스턴스 생성
 
     Args:
-        config: VectorDB 설정 (None이면 settings에서 기본 ChromaDB 생성)
+        config: VectorDB 설정 (None이면 system_config.yaml의 vector_db.type에 따라 자동 생성)
 
     Returns:
-        BaseVectorDB: VectorDB 인스턴스
+        VectorDB: VectorDB 인스턴스
 
     Raises:
         ValueError: 지원하지 않는 VectorDB 타입인 경우
 
     Examples:
-        # Settings에서 기본 ChromaDB 생성
-        vdb = get_vector_db()
+        # system_config.yaml의 vector_db.type에 따라 자동 생성
+        vdb = get_vector_db()  # type이 'chroma'면 ChromaDB, 'milvus'면 Milvus
 
         # 커스텀 ChromaDB 생성
         config = ChromaDBConfig(
-            db_type="chromadb",
             persist_dir="/path/to/chromadb",
             collection_name="my_collection",
         )
         vdb = get_vector_db(config)
     """
-    # config가 없으면 settings에서 기본 ChromaDB 생성
+    # config가 없으면 system_config에서 자동으로 적절한 타입 선택
     if config is None:
-        config = ChromaDBConfig.from_settings()
+        config = get_vector_db_config_from_settings()
 
     # ChromaDB
     if isinstance(config, ChromaDBConfig):
         from maru_lang.core.vector_db.chroma import ChromaVectorDB
         return ChromaVectorDB(
             persist_dir=config.persist_dir,
+            collection_name=config.collection_name,
+        )
+
+    # Milvus
+    elif isinstance(config, MilvusConfig):
+        from maru_lang.core.vector_db.milvus import MilvusVectorDB
+        return MilvusVectorDB(
+            host=config.host,
+            port=config.port,
+            user=config.user,
+            password=config.password,
             collection_name=config.collection_name,
         )
 

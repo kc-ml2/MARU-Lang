@@ -7,7 +7,7 @@ from pathlib import Path
 
 from maru_lang.pipelines.ingest import IngestPipeline
 from maru_lang.pipelines.base import PipelineMessage, PipelineComplete, MessageType
-from maru_lang.models.vector_db import ChromaDBConfig
+from maru_lang.models.vector_db import get_vector_db_config_from_settings
 from maru_lang.services.user_group import (
     link_user_groups_to_document_groups,
     validate_user_groups_exist,
@@ -106,8 +106,8 @@ async def ingest_function(
 
     try:
         # ========== VectorDB 설정 ==========
-        # VectorDB 설정 생성 (settings 기본값 사용, 단일 backend)
-        vdb_config = ChromaDBConfig.from_settings()
+        # VectorDB 설정 생성 (system_config.yaml의 vector_db.type에 따라 자동 선택)
+        vdb_config = get_vector_db_config_from_settings()
 
         # ========== IngestPipeline 실행 (config-driven) ==========
         pipeline = IngestPipeline(
