@@ -13,23 +13,32 @@ def normalized_groups_weights(
     Returns:
         List of (group_name, normalized_weight) tuples
     """
-    # groups에 있는 그룹들의 weight만 추출
-    active_groups = [(g, group_weights.get(g, 0.0)) for g in groups]
-    active_groups = [(g, w) for g, w in active_groups if w > 0]
+    # groups에 있는 그룹들의 weight만 추출 (0 포함)
+    all_groups = [(g, group_weights.get(g, 0.0)) for g in groups]
 
-    if not active_groups:
+    # weight > 0인 그룹만 정규화 대상
+    positive_groups = [(g, w) for g, w in all_groups if w > 0]
+
+    if not positive_groups:
+        # 모든 그룹이 weight=0이면 균등 분배
         print("⚠️  No active group weights found, assigning uniform weights")
         uniform_weight = 1.0 / len(groups) if groups else 0.0
-        active_groups = [(g, uniform_weight) for g in groups]
+        return [(g, uniform_weight) for g in groups]
 
     # 가중치 합 계산 및 정규화
-    weight_sum = sum(w for _, w in active_groups)
+    weight_sum = sum(w for _, w in positive_groups)
     if weight_sum <= 0:
         print("⚠️  Weight sum is zero or negative, assigning uniform weights")
         uniform_weight = 1.0 / len(groups) if groups else 0.0
-        normalized_group_weights = [(g, uniform_weight) for g in groups]
-    else:
-        normalized_group_weights = [(g, w / weight_sum) for g, w in active_groups]
+        return [(g, uniform_weight) for g in groups]
+
+    # 정규화: positive 그룹만 정규화, zero 그룹은 0 유지
+    normalized_weights = {}
+    for g, w in positive_groups:
+        normalized_weights[g] = w / weight_sum
+
+    # 모든 그룹 포함 (zero 포함)
+    normalized_group_weights = [(g, normalized_weights.get(g, 0.0)) for g in groups]
 
     return normalized_group_weights
 
@@ -51,17 +60,21 @@ def allocate_by_weight(
                         group with positive weight when possible.
 
     Returns:
-        A list of (group_name, allocated_count) tuples whose total equals `max_results`.
+        A dict of {group_name: allocated_count} including zero-weight groups with count=0.
     """
 
     if max_results <= 0 or not groups_with_weights:
         return {}
 
+    # 모든 그룹을 포함 (weight=0인 그룹도 포함, allocation=0으로)
+    allocations: dict[str, int] = {g: 0 for g, _ in groups_with_weights}
+
+    # weight > 0인 그룹만 할당 대상
     pos = [(g, w) for g, w in groups_with_weights if w > 0]
     if not pos:
-        return {}
+        # 모든 그룹이 weight=0이면 전부 0 반환
+        return allocations
 
-    allocations: dict[str, int] = {g: 0 for g, _ in pos}
     remaining = max_results
 
     # Step 1: Minimum allocation (if possible)

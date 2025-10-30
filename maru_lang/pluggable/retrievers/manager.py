@@ -121,10 +121,17 @@ class Retriever:
             if not allocated_group_counts:
                 k = top_k
             else:
-                k = allocated_group_counts[parent_group]
+                k = allocated_group_counts.get(parent_group, 0)
+
             print(f"parent_group: {parent_group}")
             print(f"k: {k}")
             print(f"all_inner_groups: {all_inner_groups}")
+
+            # k=0이면 검색 스킵 (빈 결과 반환)
+            if k <= 0:
+                print(f"⚠️  Skipping group '{parent_group}' (k={k})")
+                all_results[parent_group] = []
+                continue
 
             # 그룹별 embedding model 가져오기 (파라미터로 명시되지 않은 경우에만)
             group_embedding_model = embedding_model
