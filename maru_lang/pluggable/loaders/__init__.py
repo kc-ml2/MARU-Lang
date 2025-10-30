@@ -33,7 +33,7 @@ class Loader:
         self._parser_sources: Dict[str, str] = {}  # 어떤 파서가 어디서 왔는지 추적
         self._chunker_mapping: Dict[str, str] = {}  # 확장자 -> chunker 이름 매핑
         self._default_chunker: str = "paragraph"  # 기본 chunker
-        self._default_loader: Optional[str] = "txt"  # 기본 loader (확장자 매핑 없을 때)
+        self._default_loader: Optional[str] = None  # 기본 loader (None이면 whitelist 모드)
 
         # 1. 기본 파서 등록
         self._register_default_parsers()

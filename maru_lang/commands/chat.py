@@ -208,8 +208,7 @@ async def chat_session(
                     async for step_result in chat_manager.process_stream(
                         question=question,
                         chat_history=chat_history,
-                        forced_groups=forced_groups if forced_groups != ["__all__"] else None,
-                        context=None  # CLI에서는 Langfuse 사용 안 함
+                        forced_groups=forced_groups if forced_groups != ["__all__"] else None
                     ):
                         step = step_result.step
 
