@@ -15,7 +15,7 @@ from maru_lang.core.relation_db.models.documents import (
 )
 from maru_lang.enums.documents import DocumentStatus
 from maru_lang.services.document import (
-    get_or_create_document_group,
+    upsert_document_group,
     set_document_group_inclusion,
     get_all_descendant_group_ids,
 )
@@ -71,10 +71,23 @@ class IngestPipeline(BasePipeline):
         self.parser_manager = get_loader()
         self.chunker_manager = get_chunker()
 
-        # Embedding model은 config에서 로드
+        # Embedding model 결정: 그룹별 config > global default (필수)
         config_manager = get_config_manager()
         embedder_config = config_manager.get_embedder_config()
-        self.embedding_model = embedder_config.default_model if embedder_config else "BAAI/bge-m3"
+        rag_config = config_manager.get_rag_config()
+
+        # 1. 그룹별 RAG config 확인
+        group_rag_config = rag_config.groups.get(group_name) if rag_config else None
+        if group_rag_config and group_rag_config.embedder:
+            self.embedder = group_rag_config.embedder
+        elif embedder_config and embedder_config.default_model:
+            # 2. Global default 사용
+            self.embedder = embedder_config.default_model
+        else:
+            raise ValueError(
+                "No embedding model configured. Please set default_model in embedder_config.yaml "
+                f"or specify embedder for group '{group_name}' in rag_config.yaml"
+            )
 
         # 중간 결과 저장
         self.all_files = []
@@ -82,6 +95,7 @@ class IngestPipeline(BasePipeline):
         self.file_hierarchies = []
         self.group_cache = {}
         self.documents_to_process = []  # 재처리 필요한 문서만
+        self.doc_to_group = {}  # document_id -> group_name 매핑
 
         # VectorDB 인스턴스 (CRUD 직접 사용)
         self.vdb = None
@@ -99,11 +113,9 @@ class IngestPipeline(BasePipeline):
         try:
             # 1. 입력 검증
             await self._validate_inputs()
-            print("before", await Document.all().count())
 
             # 2. 파일 스캔
             await self._scan_files()
-            print("after", await Document.all().count())
             # 3. 그룹 생성
             await self._create_groups()
 
@@ -152,13 +164,12 @@ class IngestPipeline(BasePipeline):
         await self.queue.put(PipelineMessage.info(f"✓ Directory validated: {self.path}"))
 
     async def _check_path_conflicts(self):
-        """경로 충돌 검사 - 상위/하위 경로에 DocumentGroup이 있는지 확인"""
+        """경로 충돌 검사 - 상위 경로에 DocumentGroup이 있는지 확인"""
         all_groups = await DocumentGroup.all()
 
-        for group in all_groups:
-            if not group.base_path:
-                continue
+        existing_subgroups = []
 
+        for group in all_groups:
             existing_path = Path(group.base_path).resolve()
             new_path = self.path.resolve()
 
@@ -167,22 +178,28 @@ class IngestPipeline(BasePipeline):
                 continue
 
             # 케이스 1: 새 경로가 기존 경로의 하위
+            # → 에러: 상위 그룹에서 ingest 해야 함
             if new_path.is_relative_to(existing_path):
                 error_msg = (
                     f"경로 충돌: '{new_path}'는 기존 그룹 '{group.name}' ({existing_path})의 하위 경로입니다.\n"
-                    f"→ 그룹의 가장 상위 그룹이 발견되었습니다. 상위그룹에서 Ingest를 실행해주세요."
+                    f"→ 상위 경로에서 Ingest를 실행해주세요."
                 )
                 await self.queue.put(PipelineMessage.error(error_msg))
                 raise ValueError(error_msg)
 
             # 케이스 2: 기존 경로가 새 경로의 하위
+            # → 허용: 하위 그룹들을 자동으로 업데이트
             if existing_path.is_relative_to(new_path):
-                error_msg = (
-                    f"경로 충돌: 하위에 독립적인 문서그룹 '{group.name}' ({existing_path})이 발견되었습니다.\n"
-                    f"→ 제거 후 다시 시도해주세요."
+                existing_subgroups.append(f"'{group.name}' ({existing_path})")
+
+        # 하위 그룹이 있으면 정보 메시지 출력
+        if existing_subgroups:
+            await self.queue.put(
+                PipelineMessage.info(
+                    f"ℹ️  하위에 기존 그룹 발견: {', '.join(existing_subgroups)}\n"
+                    f"   → 자동으로 업데이트됩니다."
                 )
-                await self.queue.put(PipelineMessage.error(error_msg))
-                raise ValueError(error_msg)
+            )
 
     # ========== 파일 스캔 ==========
 
@@ -223,70 +240,87 @@ class IngestPipeline(BasePipeline):
             self.file_hierarchies.append((f, hierarchy))
 
         # 2. 고유한 그룹들과 부모-자식 관계 추출
-        unique_groups = set()
+        # unique_groups: {(name, path)} 형태
+        # parent_child_pairs: {(parent_path, child_path)} 형태
+        unique_groups = {}  # path -> name
         parent_child_pairs = set()
 
         for _, hierarchy in self.file_hierarchies:
-            for parent, current in hierarchy:
-                unique_groups.add(current)
-                if parent:
-                    unique_groups.add(parent)
-                    parent_child_pairs.add((parent, current))
+            for parent_path, name, current_path in hierarchy:
+                unique_groups[current_path] = name
+                if parent_path:
+                    parent_child_pairs.add((parent_path, current_path))
 
         await self.queue.put(
             PipelineMessage.info(f"Creating {len(unique_groups)} document group(s)...")
         )
 
-        # 3. 그룹 생성 (services/document.py 활용)
-        for gname in unique_groups:
-            self.group_cache[gname] = await get_or_create_document_group(gname)
-
-        # 4. base 그룹에 base_path 저장
-        base_group = self.group_cache[self.group_name]
-        if base_group.base_path is None:
-            base_group.base_path = str(self.path.absolute())
-            await base_group.save()
+        # 3. 그룹 생성 (upsert: base_path로 찾아서 업데이트 또는 생성)
+        for path, name in unique_groups.items():
+            group = await upsert_document_group(
+                name=name,
+                base_path=path,
+                embedder=self.embedder
+            )
+            self.group_cache[path] = group
 
         await self.queue.put(
             PipelineMessage.info(f"Setting up {len(parent_child_pairs)} group relationship(s)...")
         )
 
-        # 5. 부모-자식 관계 설정 (services/document.py 활용)
-        for parent_name, child_name in parent_child_pairs:
+        # 4. 부모-자식 관계 설정
+        for parent_path, child_path in parent_child_pairs:
             await set_document_group_inclusion(
-                self.group_cache[parent_name], self.group_cache[child_name]
+                self.group_cache[parent_path], self.group_cache[child_path]
             )
 
-        self.group = base_group
+        # 5. base 그룹 설정
+        base_path_str = str(self.path.absolute())
+        self.group = self.group_cache[base_path_str]
         self.unique_groups = unique_groups
 
         await self.queue.put(PipelineMessage.info(f"✓ Group hierarchy created"))
 
     def _get_group_hierarchy_for_file(
         self, file_path: Path
-    ) -> List[tuple[Optional[str], str]]:
+    ) -> List[tuple[Optional[str], str, str]]:
         """
-        파일의 그룹 계층 구조를 결정 (전체 폴더 구조 사용)
+        파일의 그룹 계층 구조를 결정
+
+        Returns:
+            List of (parent_path, name, current_path) tuples
+            - parent_path: 부모 그룹의 base_path (None이면 최상위)
+            - name: 현재 그룹 이름 (디렉토리명)
+            - current_path: 현재 그룹의 base_path
         """
         relative_path = file_path.relative_to(self.path)
         parts = relative_path.parts[:-1]  # 파일명 제외
 
+        base_path_str = str(self.path.absolute())
+
+        # 최상위 그룹 (base)
         if not parts:
-            return [(None, self.group_name)]
+            return [(None, self.group_name, base_path_str)]
 
-        hierarchy = [(None, self.group_name)]
+        hierarchy = [(None, self.group_name, base_path_str)]
 
+        # 하위 그룹들
         for i, part in enumerate(parts):
-            current_parts = [self.group_name] + list(parts[: i + 1])
-            current_name = "_".join(current_parts)
+            # 현재 디렉토리의 실제 경로
+            current_path = self.path / Path(*parts[: i + 1])
+            current_path_str = str(current_path.absolute())
 
+            # 부모 경로
             if i == 0:
-                parent_name = self.group_name
+                parent_path_str = base_path_str
             else:
-                parent_parts = [self.group_name] + list(parts[:i])
-                parent_name = "_".join(parent_parts)
+                parent_path = self.path / Path(*parts[:i])
+                parent_path_str = str(parent_path.absolute())
 
-            hierarchy.append((parent_name, current_name))
+            # 이름은 디렉토리명만
+            name = part
+
+            hierarchy.append((parent_path_str, name, current_path_str))
 
         return hierarchy
 
@@ -304,7 +338,7 @@ class IngestPipeline(BasePipeline):
             self.vdb.health_check()
             await self.queue.put(
                 PipelineMessage.info(
-                    f"✓ VDB connected (embedding model: {self.embedding_model})"
+                    f"✓ VDB connected (embedder: {self.embedder})"
                 )
             )
         except Exception as e:
@@ -327,7 +361,6 @@ class IngestPipeline(BasePipeline):
         Args:
             current_documents: 현재 파일 시스템에 존재하는 문서 리스트
         """
-        print(await Document.all().count())
 
         # 1. 이 그룹과 모든 하위 그룹의 ID 가져오기
         all_group_ids = await get_all_descendant_group_ids([self.group.id], inclusion_model=DocumentGroupInclusion)
@@ -418,13 +451,17 @@ class IngestPipeline(BasePipeline):
                 )
 
                 # 2. 파일의 최종 그룹 결정
-                final_group_name = hierarchy[-1][1]
+                # hierarchy[-1] = (parent_path, name, current_path)
+                final_group_path = hierarchy[-1][2]
 
                 # 3. DocumentGroup 연결
-                doc_group = self.group_cache[final_group_name]
+                doc_group = self.group_cache[final_group_path]
                 await DocumentGroupMembership.get_or_create(
                     document=doc, group=doc_group
                 )
+
+                # 4. Document → Group 매핑 저장 (VectorDB metadata용)
+                self.doc_to_group[doc.id] = doc_group.name
 
                 all_documents.append(doc)
 
@@ -559,7 +596,7 @@ class IngestPipeline(BasePipeline):
                             )
                         )
                         vectors = embedder.encode(
-                            batch_texts, self.embedding_model, show_progress=False
+                            batch_texts, self.embedder, show_progress=False
                         )
 
                         # VDB 저장
@@ -597,7 +634,7 @@ class IngestPipeline(BasePipeline):
                 )
             )
             vectors = embedder.encode(
-                batch_texts, self.embedding_model, show_progress=False
+                batch_texts, self.embedder, show_progress=False
             )
             saved = self._save_batch_to_vdb(batch_metadata, vectors)
             total_chunks_saved += saved
@@ -634,7 +671,7 @@ class IngestPipeline(BasePipeline):
                     "document_name": doc.name,
                     "file_path": doc.file_path or "",
                     "chunk_number": idx,
-                    "group": self.group.name,  # 그룹 정보 추가 (필터링용)
+                    "group": self.doc_to_group.get(doc.id, self.group.name),  # 실제 그룹 이름 사용
                     **(chunk_input.meta or {}),
                 },
             })
