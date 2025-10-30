@@ -57,13 +57,23 @@ class Retriever:
         Args:
             vdb: VectorDB 인스턴스
             embedder: Embedder 인스턴스 (None이면 자동 생성)
-            reranker: Reranker 인스턴스 (None이면 자동 생성)
+            reranker: Reranker 인스턴스 (method="model"일 때만 필요)
             reranker_config: Reranker 설정
         """
         self.vdb = vdb
         self.embedder = embedder or get_embedder()
-        self.reranker = reranker or get_reranker()
         self.reranker_config = reranker_config
+
+        # Reranker는 method가 "model"일 때만 초기화
+        if reranker:
+            self.reranker = reranker
+        elif reranker_config and reranker_config.method == "model":
+            logger.info(f"Initializing model-based reranker (method={reranker_config.method})")
+            self.reranker = get_reranker()
+        else:
+            logger.info(f"Skipping reranker initialization (method={reranker_config.method if reranker_config else 'None'})")
+            self.reranker = None
+
         self._representative_vectors = None
         self.okt: Optional[Okt] = None  # BM25용 형태소 분석기
 
@@ -94,7 +104,7 @@ class Retriever:
         """
         # Embedding model 자동 로드 (vector/ensemble 시 필요)
         if method in ("vector", "ensemble") and embedding_model is None:
-            embedding_model = self._get_default_embedding_model()
+            embedding_model = self._get_default_embedding_model(document_groups)
 
         # 검색 수행
         if method == "vector":
@@ -114,24 +124,48 @@ class Retriever:
         should_rerank = self._should_use_reranking(use_reranking)
         if should_rerank and results:
             results = self._rerank_results(query, results, k)
-
         return results
 
-    def _get_default_embedding_model(self) -> str:
-        """Config에서 기본 임베딩 모델 로드"""
-        try:
-            from maru_lang.configs import get_config_manager
+    def _get_default_embedding_model(self, document_groups: Optional[List[str]] = None) -> str:
+        """
+        Embedding model 자동 결정
 
-            config_manager = get_config_manager()
-            embedder_config = config_manager.get_embedder_config()
+        우선순위:
+        1. 그룹별 RAG config (document_groups[0]의 embedding_model)
+        2. Global embedder config (default_model)
+        3. 설정 없으면 오류
 
-            if embedder_config and embedder_config.default_model:
-                return embedder_config.default_model
-        except Exception:
-            pass
+        Args:
+            document_groups: 검색 대상 그룹 리스트 (첫 번째 그룹의 설정 사용)
 
-        # 폴백 기본값
-        return "BAAI/bge-m3"
+        Returns:
+            embedding model name
+
+        Raises:
+            ValueError: 설정된 embedding model이 없는 경우
+        """
+        from maru_lang.configs import get_config_manager
+
+        config_manager = get_config_manager()
+
+        # 1. 그룹별 RAG config 확인
+        if document_groups:
+            rag_config = config_manager.get_rag_config()
+            if rag_config:
+                group_rag_config = rag_config.groups.get(document_groups[0])
+                if group_rag_config and group_rag_config.embedder:
+                    return group_rag_config.embedder
+
+        # 2. Global default 사용
+        embedder_config = config_manager.get_embedder_config()
+        if embedder_config and embedder_config.default_model:
+            return embedder_config.default_model
+
+        # 3. 설정 없으면 오류
+        raise ValueError(
+            "No embedding model configured. Please set default_model in embedder_config.yaml "
+            "or specify embedder for the document group in rag_config.yaml"
+        )
 
     def _vector_search(
         self,
@@ -439,6 +473,7 @@ class Retriever:
                 return results
 
             # Agent 생성 및 실행
+            print(f"🔄 Starting LLM-based reranking with agent '{agent_name}' for {len(results)} documents...")
             factory = AgentFactory()
             agent = factory.create_agent(agent_name, agent_config)
             if not agent:
@@ -459,7 +494,17 @@ class Retriever:
                 return result
 
             # Sync context에서 async agent 실행
-            agent_result = asyncio.run(run_agent())
+            # 이미 실행 중인 event loop가 있는지 확인
+            try:
+                loop = asyncio.get_running_loop()
+                # 이미 loop가 실행 중이면 새 thread에서 실행
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, run_agent())
+                    agent_result = future.result()
+            except RuntimeError:
+                # 실행 중인 loop가 없으면 asyncio.run() 사용
+                agent_result = asyncio.run(run_agent())
 
             # Agent 결과 처리
             if agent_result.success and agent_result.data:
@@ -471,6 +516,8 @@ class Retriever:
                         doc = results[idx]
                         doc.metadata["reranker_score"] = score
                         reranked_results.append(doc)
+
+                print(f"✅ LLM reranking completed: {len(results)} → {len(reranked_results)} documents (top scores: {[f'{s:.3f}' for _, s in agent_result.data[:3]]})")
                 return reranked_results
             else:
                 logger.error(

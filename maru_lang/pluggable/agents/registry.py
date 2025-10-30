@@ -88,6 +88,11 @@ class AgentRegistry:
                         # mcps.something -> mcps/something.py
                         file_name = module_path.replace(".", "/") + ".py"
                         impl_file = user_agents_dir / file_name
+                    elif module_path.startswith("rerankers."):
+                        # Reranker agents are in rerankers/ directory
+                        rerankers_dir = Path.cwd() / "maru_app" / "rerankers"
+                        file_name = module_path.split(".", 1)[1] + ".py"  # Remove "rerankers." prefix
+                        impl_file = rerankers_dir / file_name
                     else:
                         # Default: all other agents are directly in agents/ directory
                         user_agents_dir = Path.cwd() / "maru_app" / "agents"

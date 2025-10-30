@@ -21,11 +21,21 @@ class RerankerConfigLoader(DefaultConfigLoader[RerankerConfig]):
         self.configs = {}
         self._base_configs = {}
 
-        # User config만 로드 (base 없음)
+        # User config만 로드 (base 없음) - 특정 파일만 읽기
         logger.info(f"Loading {self.config_type} configurations from user directory...")
-        user_count = self._load_from_directory(self.user_dir, is_user=True)
+
+        # reranker_config.yaml만 읽기 (llm_reranker.yaml 등 agent 설정 제외)
+        config_file = self.user_dir / "reranker_config.yaml"
+        if config_file.exists():
+            if self._load_file(config_file, is_user=True):
+                logger.info(f"Loaded reranker config from {config_file}")
+            else:
+                logger.warning(f"Failed to load reranker config from {config_file}")
+        else:
+            logger.warning(f"Reranker config file not found: {config_file}")
+
         logger.info(
-            f"Loaded {len(self.configs)} {self.config_type} configs (user: {user_count})"
+            f"Loaded {len(self.configs)} {self.config_type} configs"
         )
 
         return self.configs
@@ -35,11 +45,11 @@ class RerankerConfigLoader(DefaultConfigLoader[RerankerConfig]):
     ) -> Optional[RerankerConfig]:
         """Parse reranker configuration data"""
         try:
+            # 'models' 필드는 하위 호환성을 위해 무시 (deprecated)
             return RerankerConfig(
                 enabled=data.get("enabled", True),
                 method=data.get("method", "model"),
                 default_model=data.get("default_model", "BAAI/bge-reranker-v2-m3"),
-                models=data.get("models", []),
                 agent_name=data.get("agent_name"),
                 source_path=source_path,
                 is_override=is_user,

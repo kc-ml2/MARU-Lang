@@ -77,8 +77,9 @@ class AgentSelector:
         for agent_config in enabled_agents.values():
             agent_name = agent_config.name
 
-            # Skip builtin agents except selectable ones, and check overrides
-            is_selectable = (agent_config.type != "builtin" or
+            # Skip builtin agents except selectable ones, and skip utility agents
+            # Utility agents (rerankers, etc.) are not selectable for general tasks
+            is_selectable = (agent_config.type not in ("builtin", "utility") or
                            agent_name in selectable_builtins)
 
             if agent_overrides.get(agent_name, True) and is_selectable:
