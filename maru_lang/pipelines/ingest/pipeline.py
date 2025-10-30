@@ -20,8 +20,10 @@ from maru_lang.services.document import (
     get_all_descendant_group_ids,
 )
 from maru_lang.core.vector_db.factory import get_vector_db
-from maru_lang.core.settings import settings
+from maru_lang.configs.system_config import get_system_config
 from maru_lang.pluggable.loaders import get_loader
+
+config = get_system_config()
 from maru_lang.pluggable.chunkers import get_chunker
 from maru_lang.configs import get_config_manager
 
@@ -852,7 +854,6 @@ class IngestPipeline(BasePipeline):
         self.vdb.add_documents(
             documents=vdb_documents,
             embeddings=vectors,
-            store_text=settings.VECTOR_DB_STORE_TEXT
         )
         return len(vdb_documents)
 

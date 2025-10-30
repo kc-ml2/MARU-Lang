@@ -2,8 +2,10 @@ from datetime import datetime, timedelta, timezone
 import random
 import asyncio
 from urllib.parse import parse_qs
-from maru_lang.core.settings import settings
+from maru_lang.configs.system_config import get_system_config
 from maru_lang.enums.auth import UserRoleCode
+
+config = get_system_config()
 from maru_lang.dependencies.email import EmailService
 from maru_lang.utils.security import (
     aes256_decrypt,
@@ -71,7 +73,7 @@ async def create_or_get_user(
     )
 
     # 4. Optionally create and link a user group based on the email domain
-    if settings.AUTO_CREATE_GROUP_BY_DOMAIN:
+    if config.auth.auto_create_group_by_domain:
         domain = email.split('@')[1].split('.')[0] if '@' in email else 'default'
         group = await create_or_get_user_group(name=domain)
         await UserGroupMembership.create(user=new_user, group=group)
@@ -86,7 +88,7 @@ async def create_or_get_user(
 async def generate_OTP(email: str, email_service: EmailService | None = None) -> OTP:
     
     if not email_service:
-        code = settings.DEFAULT_VALIDATION_CODE
+        code = config.auth.default_validation_code
     else:
         code = str(random.randint(100000, 999999))  # Generate a 6-digit code
     
@@ -114,11 +116,11 @@ async def generate_token(
 
     access_token, _ = create_jwt_token(
         token_payload,
-        timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)  # Default is one hour
+        timedelta(minutes=config.auth.access_token_expire_minutes)  # Default is one hour
     )
     refresh_token, expires_at = create_jwt_token(
         token_payload,
-        timedelta(minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES))
+        timedelta(minutes=config.auth.refresh_token_expire_minutes))
 
     await UserToken.filter(user_id=user_id, device_id=device_id).delete()
     await RefreshToken.filter(user_id=user_id, device_id=device_id).delete()
@@ -171,7 +173,7 @@ async def refresh_token_flow(
 
     access_token, _ = create_jwt_token(
         payload,
-        timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)  # Default is one hour
+        timedelta(minutes=config.auth.access_token_expire_minutes)  # Default is one hour
     )
 
     await UserToken.filter(user_id=user_id, device_id=device_id).delete()
@@ -183,7 +185,7 @@ async def refresh_token_flow(
 
     # Update the existing refresh-token expiration without rotating the token itself
     db_refresh.expires_at = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES)
+        minutes=config.auth.refresh_token_expire_minutes)
     await db_refresh.save()
 
     return access_token

@@ -4,7 +4,9 @@ Email service dependency for FastAPI
 from abc import ABC, abstractmethod
 from typing import Optional
 from fastapi import Depends
-from maru_lang.core.settings import settings
+from maru_lang.configs.system_config import get_system_config
+
+config = get_system_config()
 
 
 class EmailService(ABC):
@@ -23,10 +25,10 @@ class O365EmailManager(EmailService):
     """Office 365 email service implementation"""
 
     def __init__(self):
-        self.sender_email = settings.SENDER_EMAIL
-        self.client_id = settings.O365_CLIENT_ID
-        self.client_secret = settings.O365_CLIENT_SECRET
-        self.tenant_id = settings.O365_TENANT_ID
+        self.sender_email = config.email.sender_email
+        self.client_id = config.email.o365.client_id
+        self.client_secret = config.email.o365.client_secret
+        self.tenant_id = config.email.o365.tenant_id
 
     def send_email(self, recipient: str, subject: str, body: str) -> bool:
         try:
@@ -74,11 +76,11 @@ class O365EmailManager(EmailService):
 
 def get_email_manager() -> Optional[EmailService]:
     """Get email service instance based on settings"""
-    if not settings.EMAIL_SERVICE_TYPE:
+    if not config.email.service_type:
         return None
 
-    if settings.EMAIL_SERVICE_TYPE == "o365":
-        if all([settings.O365_CLIENT_ID, settings.O365_CLIENT_SECRET, settings.O365_TENANT_ID, settings.SENDER_EMAIL]):
+    if config.email.service_type == "o365":
+        if all([config.email.o365.client_id, config.email.o365.client_secret, config.email.o365.tenant_id, config.email.sender_email]):
             try:
                 return O365EmailManager()
             except Exception as e:

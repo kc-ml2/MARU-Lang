@@ -4,7 +4,9 @@ from typing import Any
 from chromadb.api.models.Collection import Collection
 from maru_lang.core.vector_db.base import VectorDB
 from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
-from maru_lang.core.settings import settings
+from maru_lang.configs.system_config import get_system_config
+
+config = get_system_config()
 
 
 class ChromaVectorDB(VectorDB):
@@ -30,7 +32,6 @@ class ChromaVectorDB(VectorDB):
         self,
         documents: list[dict[str, Any]],
         embeddings: list[list[float]],
-        store_text: bool = True
     ) -> None:
         """
         문서를 VectorDB에 추가
@@ -38,15 +39,11 @@ class ChromaVectorDB(VectorDB):
         Args:
             documents: 문서 리스트 (id, content, metadata 포함)
             embeddings: 임베딩 벡터 리스트 (외부에서 생성)
-            store_text: 텍스트 저장 여부
         """
         contents = [doc["content"] for doc in documents]
 
-        # store_text 파라미터에 따라 텍스트 저장 여부 결정
-        docs_to_store = contents if store_text else []
-
         self.collection.add(
-            documents=docs_to_store,
+            documents=contents,
             embeddings=embeddings,
             ids=[doc["id"] for doc in documents],
             metadatas=[doc["metadata"] for doc in documents]
@@ -69,7 +66,6 @@ class ChromaVectorDB(VectorDB):
         new_doc_id: str,
         new_content: str,
         embedding: list[float],
-        store_text: bool = True
     ) -> None:
         """
         문서 업데이트
@@ -79,7 +75,6 @@ class ChromaVectorDB(VectorDB):
             new_doc_id: 새 문서 ID
             new_content: 새 문서 내용
             embedding: 새 임베딩 벡터 (외부에서 생성)
-            store_text: 텍스트 저장 여부
         """
         try:
             existing = self.collection.get(ids=[doc_id])
@@ -88,14 +83,11 @@ class ChromaVectorDB(VectorDB):
 
             old_metadata = existing["metadatas"][0]
 
-            # store_text 파라미터에 따라 텍스트 저장 여부 결정
-            docs_to_store = [new_content] if store_text else []
-
             # 먼저 삭제
             self.collection.delete(ids=[doc_id])
             # 다시 추가
             self.collection.add(
-                documents=docs_to_store,
+                documents=[new_content],
                 embeddings=[embedding],
                 ids=[new_doc_id],
                 metadatas=[old_metadata]

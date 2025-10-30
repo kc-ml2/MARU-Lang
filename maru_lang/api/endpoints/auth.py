@@ -1,8 +1,10 @@
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Response
 from maru_lang.enums.auth import UserRoleCode
-from maru_lang.core.settings import settings
+from maru_lang.configs.system_config import get_system_config
 from maru_lang.dependencies.auth import get_user
+
+config = get_system_config()
 from maru_lang.dependencies.email import get_email_service_dependency, EmailService
 from maru_lang.schemas.auth import (
     VerifyCodeRequest,
@@ -91,7 +93,7 @@ async def verify_code(
             httponly=True,
             secure=True,
             samesite="strict",
-            max_age=settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60
+            max_age=config.auth.refresh_token_expire_minutes * 60
         )
 
         return access_token

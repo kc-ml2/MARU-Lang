@@ -6,7 +6,9 @@ import uvicorn
 import subprocess
 from pathlib import Path
 from typing import Optional, List
-from maru_lang.core.settings import settings
+from maru_lang.configs.system_config import get_system_config
+
+config = get_system_config()
 from maru_lang.core.relation_db.connection import run_with_orm_context
 from maru_lang.commands.ingest import ingest_function
 from maru_lang.commands.remove import remove_function
@@ -44,10 +46,10 @@ def serve(
         sys.path.insert(0, maru_app_path)
 
     # Override defaults with CLI arguments when provided
-    host = host or settings.HOST
-    port = port or settings.PROT
-    reload = reload if reload is not None else settings.RELOAD
-    log_level = log_level or settings.LOG_LEVEL
+    host = host or config.server.host
+    port = port or config.server.port
+    reload = reload if reload is not None else config.server.reload
+    log_level = log_level or config.server.log_level
 
     # Prevent using reload with multiple workers
     if workers > 1 and reload:
