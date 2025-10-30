@@ -192,6 +192,8 @@ class GroupClassifierAgent(BaseAgent):
             # Fallback: assume result is already the arguments
             arguments = result
 
+        print(f"🧭[GroupClassifier][arguments] {arguments}")
+
         # Extract and validate groups
         selected_groups = arguments.get('selected_groups', [])
         confidence = arguments.get('confidence', 0.0)
@@ -199,6 +201,25 @@ class GroupClassifierAgent(BaseAgent):
         group_scores_raw = arguments.get('group_confidences') or arguments.get('group_scores')
 
         normalized_scores: Dict[str, float] = {}
+
+        # If overall confidence is high enough, trust the selected groups directly
+        if selected_groups and confidence >= 0.4:
+            print(
+                f"🧭[GroupClassifier][confidence_override] confidence={confidence} >= 0.4, "
+                f"using selected_groups={selected_groups}"
+            )
+            normalized_scores = {group: 0.0 for group in available_group_names}
+            primary_group = selected_groups[0]
+            if primary_group in normalized_scores:
+                normalized_scores[primary_group] = 1.0
+
+            return {
+                'selected_groups': selected_groups,
+                'confidence': confidence,
+                'group_confidences': normalized_scores,
+                'group_weights': normalized_scores,
+                'reasoning': reasoning,
+            }
 
         # Case 1: LLM returns list of confidences aligned with selected_groups
         if isinstance(group_scores_raw, list) and selected_groups:
@@ -242,6 +263,11 @@ class GroupClassifierAgent(BaseAgent):
         elif normalized_scores:
             equal_score = 1.0 / len(normalized_scores)
             normalized_scores = {group: equal_score for group in normalized_scores}
+
+        print(
+            f"🧭[GroupClassifier][normalized_scores] selected={selected_groups}, "
+            f"scores={normalized_scores}"
+        )
 
         # Determine priority order (respect LLM-selected order)
         prioritized_groups: List[str] = []
