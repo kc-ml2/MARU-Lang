@@ -128,6 +128,6 @@ exclude_lines = [
 maru = "maru_lang.cli:app"
 
 [tool.aerich]
-tortoise_orm = "maru_lang.core.settings.TORTOISE_ORM"
+tortoise_orm = "maru_lang.core.relation_db.TORTOISE_ORM"
 location = "./migrations"
 src_folder = "./."

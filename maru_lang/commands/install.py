@@ -32,7 +32,15 @@ def create_config_directories(base_path: Path, force: bool = False) -> bool:
         config_dirs = ['llms', 'agents', 'loaders', 'chunkers', 'embedders', 'rerankers']
 
         # Create root-level config files first
-        # 1. build_selector.yaml
+        # 1. system_config.yaml (central system configuration)
+        system_config_path = base_path / "system_config.yaml"
+        if not system_config_path.exists() or force:
+            system_config_content = get_sample_content("system_config")
+            if system_config_content:
+                system_config_path.write_text(system_config_content)
+                console.print(f"  ✅ Created system_config.yaml")
+
+        # 2. build_selector.yaml
         build_selector_path = base_path / "build_selector.yaml"
         if not build_selector_path.exists() or force:
             build_selector_content = get_sample_content("agents_build_selector")
@@ -40,7 +48,7 @@ def create_config_directories(base_path: Path, force: bool = False) -> bool:
                 build_selector_path.write_text(build_selector_content)
                 console.print(f"  ✅ Created build_selector.yaml")
 
-        # 2. rag_config.yaml (replaces group_config.yaml)
+        # 3. rag_config.yaml (replaces group_config.yaml)
         rag_config_path = base_path / "rag_config.yaml"
         if not rag_config_path.exists() or force:
             rag_config_content = get_sample_content("rag_config")
@@ -372,6 +380,7 @@ def get_sample_content(content_type: str) -> str:
             "llms_local": "local.yaml",
             "rag_config": "rag_config.yaml",
             "agents_build_selector": "agents_build_selector.yaml",
+            "system_config": "system_config.yaml",
         }
         if content_type in template_map:
             template_file = template_dir / template_map[content_type]

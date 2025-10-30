@@ -10,7 +10,7 @@ class VectorDB(ABC):
         pass
 
     @abstractmethod
-    def add_documents(self, documents: list[dict], store_text: bool = True) -> None:
+    def add_documents(self, documents: list[dict]) -> None:
         pass
 
     @abstractmethod
@@ -22,7 +22,7 @@ class VectorDB(ABC):
         pass
 
     @abstractmethod
-    def update_document(self, doc_id: str, new_doc_id: str, new_content: str, store_text: bool = True) -> None:
+    def update_document(self, doc_id: str, new_doc_id: str, new_content: str) -> None:
         pass
 
     @abstractmethod

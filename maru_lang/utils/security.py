@@ -8,14 +8,18 @@ from typing import Optional
 from jose import JWTError, jwt
 from fastapi import HTTPException, status
 from pydantic import ValidationError
-from maru_lang.core.settings import settings
+from maru_lang.configs.system_config import get_system_config
+
+config = get_system_config()
 
 
 def generate_anonymized_key(
     login_id: str,
     company_id: int,
-    salt: str = settings.SALT
+    salt: str = None
 ) -> str:
+    if salt is None:
+        salt = config.auth.salt
     # Combine the inputs with the salt to build a deterministic anonymized key
     raw_data = f"{login_id}:{company_id}:{salt}"
     return hashlib.sha256(raw_data.encode()).hexdigest()
@@ -32,8 +36,8 @@ def create_jwt_token(
     to_encode.update({"exp": expires_at})
     encoded_jwt = jwt.encode(
         to_encode,
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM)
+        config.auth.secret_key,
+        algorithm=config.auth.algorithm)
     return encoded_jwt, expires_at
 
 
@@ -42,8 +46,8 @@ def decode_token(token: str) -> dict | None:
     try:
         payload = jwt.decode(
             token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM])
+            config.auth.secret_key,
+            algorithms=[config.auth.algorithm])
         return payload
     except (jwt.ExpiredSignatureError, jwt.JWTError, ValidationError) as e:
         # print(f"Token decode error: {e}")
@@ -61,7 +65,7 @@ def aes256_decrypt(target_str: str) -> str:
         decoded_data = base64.b64decode(target_str)
 
         # Initialize the AES cipher in ECB mode
-        cipher = Cipher(algorithms.AES(get_key_spec(settings.SECRET_KEY)),
+        cipher = Cipher(algorithms.AES(get_key_spec(config.auth.secret_key)),
                         modes.ECB(), backend=default_backend())
         decryptor = cipher.decryptor()
 
@@ -88,7 +92,7 @@ def aes256_encrypt(plain_text: str) -> str:
         padded_data = padder.update(plain_text_bytes) + padder.finalize()
 
         # Initialize the AES cipher in ECB mode
-        cipher = Cipher(algorithms.AES(get_key_spec(settings.SECRET_KEY)),
+        cipher = Cipher(algorithms.AES(get_key_spec(config.auth.secret_key)),
                         modes.ECB(), backend=default_backend())
         encryptor = cipher.encryptor()
 
