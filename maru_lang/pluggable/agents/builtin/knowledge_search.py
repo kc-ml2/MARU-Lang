@@ -7,7 +7,6 @@ from maru_lang.pluggable.agents.base import BaseAgent, AgentResult
 from maru_lang.pluggable.retrievers import get_retriever
 from maru_lang.core.vector_db.base import RetrieveDocument
 from maru_lang.core.vector_db.factory import get_vector_db
-from maru_lang.models.vector_db import ChromaDBConfig
 from maru_lang.models.agents import WebSearchResult
 from maru_lang.pluggable.agents.agent_factory import AgentFactory
 from maru_lang.configs.manager import get_config_manager
@@ -31,9 +30,8 @@ class KnowledgeSearchAgent(BaseAgent):
 
     async def _setup(self) -> None:
         """Initialize knowledge search capabilities"""
-        # Initialize VectorDB
-        vdb_config = ChromaDBConfig.from_settings()
-        vdb = get_vector_db(vdb_config)
+        # Initialize VectorDB (system_config.yaml의 vector_db.type에 따라 자동 선택)
+        vdb = get_vector_db()
 
         # Initialize Retriever (새로운 Retriever 사용)
         self.retriever = get_retriever(vdb)
