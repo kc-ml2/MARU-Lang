@@ -21,9 +21,26 @@ async def get_document_group_name(document: Document) -> List[str]:
     return [membership.group.name for membership in group_membership]
 
 
-async def get_or_create_document_group(name: str) -> DocumentGroup:
-    # only lowercase
-    doc_group, _ = await DocumentGroup.get_or_create(name=name.lower())
+async def upsert_document_group(name: str, base_path: str, embedder: str) -> DocumentGroup:
+    """
+    DocumentGroup을 upsert (base_path 기준으로 찾아서 업데이트 또는 생성)
+
+    Args:
+        name: 그룹 이름 (디렉토리명)
+        base_path: 파일시스템 경로 (unique)
+        embedder: 임베딩 모델명
+
+    Returns:
+        DocumentGroup 인스턴스
+    """
+    # base_path가 unique이므로 이걸로 upsert
+    doc_group, _ = await DocumentGroup.update_or_create(
+        base_path=base_path,
+        defaults={
+            "name": name.lower(),
+            "embedder": embedder
+        }
+    )
     return doc_group
 
 async def set_document_group_inclusion(

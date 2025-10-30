@@ -36,7 +36,9 @@ class DocumentGroup(Model):
     base_path = fields.CharField(
         max_length=500,
         unique=True,  # 같은 파일시스템 경로는 단일 DocumentGroup만 존재
-        null=True     # Virtual/수동 생성 그룹은 null 허용
+    )
+    embedder = fields.CharField(
+        max_length=255,
     )
     minhash_signature = fields.JSONField(null=True) # MinHash 시그니처 (128개 정수 배열)
     signature_updated_at = fields.DatetimeField(auto_now=True)
