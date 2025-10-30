@@ -61,6 +61,8 @@ implementation: builtin.group_classifier.GroupClassifierAgent
 config:
   timeout: 10
   retry_count: 1 # Keep retries minimal for fast classification
+  classification_config:
+    confidence_threshold: 0.4
 
 # Tool schema definition (JSON)
 tools:

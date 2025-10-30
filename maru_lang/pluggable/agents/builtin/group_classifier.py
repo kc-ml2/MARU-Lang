@@ -202,10 +202,12 @@ class GroupClassifierAgent(BaseAgent):
 
         normalized_scores: Dict[str, float] = {}
 
+        threshold = self._get_confidence_threshold()
+
         # If overall confidence is high enough, trust the selected groups directly
-        if selected_groups and confidence >= 0.4:
+        if selected_groups and confidence >= threshold:
             print(
-                f"🧭[GroupClassifier][confidence_override] confidence={confidence} >= 0.4, "
+                f"🧭[GroupClassifier][confidence_override] confidence={confidence} >= {threshold}, "
                 f"using selected_groups={selected_groups}"
             )
             normalized_scores = {group: 0.0 for group in available_group_names}
@@ -304,6 +306,14 @@ class GroupClassifierAgent(BaseAgent):
             'group_weights': normalized_scores,
             'reasoning': reasoning,
         }
+
+    def _get_confidence_threshold(self) -> float:
+        """Retrieve confidence threshold from configuration with fallback"""
+        try:
+            threshold = self.config.config.classification_config.confidence_threshold
+            return float(threshold)
+        except (AttributeError, TypeError, ValueError):
+            return 0.5
 
     def get_available_groups(self) -> Dict[str, str]:
         """Get available groups with descriptions"""
