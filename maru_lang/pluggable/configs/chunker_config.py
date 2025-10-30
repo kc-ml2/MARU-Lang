@@ -23,11 +23,21 @@ class ChunkerConfigLoader(DefaultConfigLoader[ChunkerConfig]):
         self.configs = {}
         self._base_configs = {}
 
-        # User config만 로드 (base 없음)
+        # User config만 로드 (base 없음) - 특정 파일만 읽기
         logger.info(f"Loading {self.config_type} configurations from user directory...")
-        user_count = self._load_from_directory(self.user_dir, is_user=True)
+
+        # chunker_config.yaml만 읽기 (사용자 정의 chunker .py 파일 제외)
+        config_file = self.user_dir / "chunker_config.yaml"
+        if config_file.exists():
+            if self._load_file(config_file, is_user=True):
+                logger.info(f"Loaded chunker config from {config_file}")
+            else:
+                logger.warning(f"Failed to load chunker config from {config_file}")
+        else:
+            logger.warning(f"Chunker config file not found: {config_file}")
+
         logger.info(
-            f"Loaded {len(self.configs)} {self.config_type} configs (user: {user_count})"
+            f"Loaded {len(self.configs)} {self.config_type} configs"
         )
 
         return self.configs

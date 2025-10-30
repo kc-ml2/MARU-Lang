@@ -2,7 +2,9 @@
 # Map loaders (parsers) and chunkers by file extension.
 
 # Default loader/chunker when no extension mapping is provided
-default_loader: txt
+# 💡 Tip: Comment out default_loader to ONLY process registered extensions
+#         (automatically ignores .DS_Store, .git, etc.)
+# default_loader: txt
 default_chunker: paragraph
 
 # Extension-specific mappings (declare special cases only)
