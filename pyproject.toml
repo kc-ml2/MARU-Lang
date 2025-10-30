@@ -30,7 +30,6 @@ dependencies = [
     "aerich>=0.7.2",
     "python-jose[cryptography]>=3.3.0",
     "passlib>=1.7.4",
-    "pydantic-settings>=2.0.0",
     "httpx>=0.24.0",
     "sentence-transformers>=2.2.0",
     "fastapi-pagination>=0.12.0",
@@ -38,23 +37,18 @@ dependencies = [
     "chromadb>=0.4.0",
     "konlpy>=0.6.0",
     "mcp>=0.9.0",
+    "pyyaml>=6.0.0",
 ]
 
 [project.optional-dependencies]
-# Vector database backends
+# Vector database backends (alternative to chromadb)
 vector-db = [
-    "chromadb>=0.4.0",
     "pymilvus[model]>=2.3.0",
 ]
 
 # Email integration
 email = [
-    "O365>=2.0.0",  # Ensure proper casing
-]
-
-# Korean NLP
-nlp-ko = [
-    "konlpy>=0.6.0",
+    "O365>=2.0.0",
 ]
 
 # Development / testing
@@ -66,12 +60,10 @@ dev = [
     "notebook>=6.5.0",
 ]
 
-# Bundle of all optional features (manual union without self-reference)
+# Bundle of all optional features
 all = [
-    "chromadb>=0.4.0",
     "pymilvus[model]>=2.3.0",
     "O365>=2.0.0",
-    "konlpy>=0.6.0",
 ]
 
 [build-system]
@@ -84,8 +76,10 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 maru_lang = [
-    "config/**/*.yaml",
-    "config/**/*.yml",
+    "templates/**/*.yaml",
+    "templates/**/*.yml",
+    "templates/**/*.py",
+    "templates/**/*.md",
     "py.typed",
 ]
 
