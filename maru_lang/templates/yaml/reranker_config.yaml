@@ -7,44 +7,38 @@ enabled: true
 # Reranking method
 # - "model": embedding-model-based reranking (fast, low cost)
 # - "agent": agent-based reranking (LLM-powered, higher accuracy)
-method: model
-
-# ============================================================
-# Method: "model" - embedding-model-based reranking
-# ============================================================
-
-# Default reranker model
-default_model: BAAI/bge-reranker-v2-m3
-
-# Available models (reference)
-models:
-  - name: BAAI/bge-reranker-v2-m3
-    description: "Multilingual reranker (includes Korean support)"
-
-  - name: BAAI/bge-reranker-large
-    description: "Large English-only reranker"
-
-  - name: cross-encoder/ms-marco-MiniLM-L-6-v2
-    description: "Fast and lightweight English reranker"
+method: agent
 
 # ============================================================
 # Method: "agent" - agent-based reranking (LLM)
 # ============================================================
 
 # Agent name (define in agent_config.yaml)
-# agent_name: llm_reranker
+agent_name: llm_reranker
 
-# Example usage:
-# 1. Create a custom reranker agent in rerankers/
-#    - my_reranker.py: Agent implementation (inherits BaseAgent)
-#    - my_reranker.yaml: Agent configuration
+# ============================================================
+# Method: "model" - embedding-model-based reranking
+# ============================================================
+
+# Default reranker model (only used when method: model)
+default_model: BAAI/bge-reranker-v2-m3
+
+# Example: Using LLM-based reranking (default)
+# 1. The llm_reranker agent is already included in rerankers/
+# 2. Make sure to register it in configs/agent_config.yaml (already done if using default)
+# 3. Set method: agent and agent_name: llm_reranker (already set above)
 #
-# 2. Register the agent in configs/agent_config.yaml:
+# Example: Switching to model-based reranking
+# 1. Set method: model
+# 2. Uncomment and configure default_model
+# 3. Comment out agent_name
+#
+# Example: Creating a custom reranker agent
+# 1. Create my_reranker.py in configs/rerankers/ (inherits BaseAgent)
+# 2. Create my_reranker.yaml in configs/rerankers/ with prompts and tools
+# 3. Register in configs/agent_config.yaml:
 #    my_reranker:
 #      type: custom
-#      class: maru_lang.rerankers.my_reranker.MyRerankerAgent
-#      llm:
-#        servers:
-#          - name: openai
-#
-# 3. Set method to "agent" and agent_name to "my_reranker"
+#      file: rerankers/my_reranker.py
+#      config: rerankers/my_reranker.yaml
+# 4. Set agent_name: my_reranker

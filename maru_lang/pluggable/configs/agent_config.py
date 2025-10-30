@@ -24,6 +24,7 @@ class AgentConfigLoader(DefaultConfigLoader[AgentConfig]):
     def load_all(self) -> Dict[str, AgentConfig]:
         """Load configurations from user directory ONLY (no base configs)"""
         import logging
+        from pathlib import Path
         logger = logging.getLogger(__name__)
 
         self.configs = {}
@@ -32,6 +33,13 @@ class AgentConfigLoader(DefaultConfigLoader[AgentConfig]):
         # Load ONLY user configs (no base)
         logger.info(f"Loading {self.config_type} configurations from user directory...")
         user_count = self._load_from_directory(self.user_dir, is_user=True)
+
+        # Also load agent configs from rerankers/ directory
+        rerankers_dir = Path.cwd() / "maru_app" / "rerankers"
+        if rerankers_dir.exists():
+            reranker_count = self._load_from_directory(rerankers_dir, is_user=True)
+            logger.info(f"Loaded {reranker_count} agent configs from rerankers/")
+
         logger.info(f"Loaded {len(self.configs)} {self.config_type} configs (user: {user_count})")
 
         return self.configs

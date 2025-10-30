@@ -107,19 +107,19 @@ def create_config_directories(base_path: Path, force: bool = False) -> bool:
                     console.print(f"  ✅ Created {dir_name}/reranker_config.yaml")
 
                 # Create example LLM reranker agent files
-                llm_reranker_py = dir_path / "llm_reranker.py.sample"
+                llm_reranker_py = dir_path / "llm_reranker.py"
                 if not llm_reranker_py.exists() or force:
                     py_content = get_sample_content("rerankers_llm_py")
                     if py_content:
                         llm_reranker_py.write_text(py_content)
-                        console.print(f"  ✅ Created {dir_name}/llm_reranker.py.sample")
+                        console.print(f"  ✅ Created {dir_name}/llm_reranker.py")
 
-                llm_reranker_yaml = dir_path / "llm_reranker.yaml.sample"
+                llm_reranker_yaml = dir_path / "llm_reranker.yaml"
                 if not llm_reranker_yaml.exists() or force:
                     yaml_content = get_sample_content("rerankers_llm_yaml")
                     if yaml_content:
                         llm_reranker_yaml.write_text(yaml_content)
-                        console.print(f"  ✅ Created {dir_name}/llm_reranker.yaml.sample")
+                        console.print(f"  ✅ Created {dir_name}/llm_reranker.yaml (auto-registered as agent)")
             elif dir_name == "agents":
                 # Dynamically discover agent templates (including builtin)
                 agent_templates = discover_agent_templates()
@@ -344,13 +344,14 @@ def get_sample_content(content_type: str) -> str:
             if template_file.exists():
                 return template_file.read_text()
         elif content_type in ["rerankers_llm_py", "rerankers_llm_yaml"]:
-            # Reranker agent examples from rerankers/
-            rerankers_dir = Path(__file__).parent.parent / "rerankers"
-            template_map = {
-                "rerankers_llm_py": "llm_reranker.py",
-                "rerankers_llm_yaml": "llm_reranker.yaml",
-            }
-            template_file = rerankers_dir / template_map[content_type]
+            # Reranker agent examples from templates/
+            if content_type == "rerankers_llm_py":
+                template_dir = Path(__file__).parent.parent / "templates" / "python"
+                template_file = template_dir / "llm_reranker.py"
+            else:  # rerankers_llm_yaml
+                template_dir = Path(__file__).parent.parent / "templates" / "yaml"
+                template_file = template_dir / "llm_reranker.yaml"
+
             if template_file.exists():
                 return template_file.read_text()
         else:

@@ -1,0 +1,91 @@
+# LLM Reranker Agent Configuration
+# Agent that uses LLM to rerank search results based on relevance to the query
+# NOTE: This is a utility agent, not selectable by agent_selector
+
+name: llm_reranker
+description: "Uses LLM to evaluate and rerank search results based on relevance"
+type: utility
+enabled: true
+version: "1.0.0"
+
+# Priority (lower priority - runs after retrieval)
+priority: 50
+
+# LLM Settings
+target_llm_config:
+  server_name: "openai"
+  override_params:
+    temperature: 0.0  # Keep temperature at 0 for consistent scoring
+    max_tokens: 1000  # Allow enough tokens for scoring multiple documents
+    timeout: 30.0  # Longer timeout for processing multiple documents
+
+  fallback_strategy: "any_available"
+
+# Prompt Settings
+prompts:
+  system_prompt: |
+    You are an expert at evaluating document relevance to search queries.
+
+    Responsibilities:
+    - Analyze the semantic relevance between a query and documents
+    - Assign relevance scores to each document (0.0 to 1.0)
+    - Consider both semantic meaning and keyword matching
+    - Be strict in scoring - only highly relevant documents should get high scores
+
+    Scoring Guidelines:
+    - 1.0: Perfect match, directly answers the query
+    - 0.8-0.9: Highly relevant, contains most information needed
+    - 0.6-0.7: Moderately relevant, contains some useful information
+    - 0.4-0.5: Weakly relevant, tangentially related
+    - 0.0-0.3: Not relevant or off-topic
+
+  user_prompt_template: |
+    Evaluate the relevance of each document to the given query and assign scores.
+
+    Query: {query}
+
+    Documents:
+    {documents}
+
+    Important rules:
+    1. Assign a relevance score (0.0 to 1.0) to each document based on how well it answers the query.
+    2. Document indices must match the input (0, 1, 2, ...).
+    3. Be strict in scoring - reserve high scores (>0.8) for truly relevant documents.
+    4. Consider semantic meaning, not just keyword overlap.
+    5. Return all documents with their scores, even if score is 0.0.
+
+    You must return a JSON object as a tool call following the definition below. Use the keys document_scores and reasoning exactly as written.
+
+# Implementation class (Python file in rerankers/)
+implementation: rerankers.llm_reranker.LLMRerankerAgent
+
+# Agent Settings
+config:
+  timeout: 30
+  retry_count: 1
+
+# Tool schema definition (JSON)
+tools:
+  llm_reranker:
+    description: "Reranks documents based on relevance to query using LLM evaluation"
+    parameters:
+      type: "object"
+      properties:
+        document_scores:
+          type: "array"
+          items:
+            type: "object"
+            properties:
+              index:
+                type: "integer"
+                description: "Document index (0-based)"
+              score:
+                type: "number"
+                minimum: 0.0
+                maximum: 1.0
+                description: "Relevance score (0.0 to 1.0)"
+          description: "List of documents with their relevance scores"
+        reasoning:
+          type: "string"
+          description: "Brief explanation of the scoring rationale"
+      required: ["document_scores", "reasoning"]
