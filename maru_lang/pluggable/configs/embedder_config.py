@@ -23,11 +23,21 @@ class EmbedderConfigLoader(DefaultConfigLoader[EmbedderConfig]):
         self.configs = {}
         self._base_configs = {}
 
-        # User config만 로드 (base 없음)
+        # User config만 로드 (base 없음) - 특정 파일만 읽기
         logger.info(f"Loading {self.config_type} configurations from user directory...")
-        user_count = self._load_from_directory(self.user_dir, is_user=True)
+
+        # embedder_config.yaml만 읽기
+        config_file = self.user_dir / "embedder_config.yaml"
+        if config_file.exists():
+            if self._load_file(config_file, is_user=True):
+                logger.info(f"Loaded embedder config from {config_file}")
+            else:
+                logger.warning(f"Failed to load embedder config from {config_file}")
+        else:
+            logger.warning(f"Embedder config file not found: {config_file}")
+
         logger.info(
-            f"Loaded {len(self.configs)} {self.config_type} configs (user: {user_count})"
+            f"Loaded {len(self.configs)} {self.config_type} configs"
         )
 
         return self.configs
@@ -37,10 +47,10 @@ class EmbedderConfigLoader(DefaultConfigLoader[EmbedderConfig]):
     ) -> Optional[EmbedderConfig]:
         """Parse embedder configuration data"""
         try:
+            # 'models' 필드는 하위 호환성을 위해 무시 (deprecated)
             return EmbedderConfig(
-                default_model=data.get("default_model", "BAAI/bge-m3"),
+                default_model=data.get("default_model"),
                 device=data.get("device"),
-                models=data.get("models", []),
                 source_path=source_path,
                 is_override=is_user,
             )

@@ -20,7 +20,8 @@ class LoaderConfig:
     파일 확장자별로 어떤 loader(parser)와 chunker를 사용할지 설정
     """
     # Default loader/chunker (확장자 매핑 없을 때 사용)
-    default_loader: Optional[str] = "txt"
+    # default_loader가 None이면 등록된 확장자만 처리 (whitelist 모드)
+    default_loader: Optional[str] = None
     default_chunker: Optional[str] = "paragraph"
 
     # 확장자 -> {loader, chunker} 매핑

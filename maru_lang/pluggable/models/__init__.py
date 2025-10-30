@@ -4,7 +4,7 @@ from .llm import LLMConfig
 from .agent import AgentConfig
 from .loader import LoaderConfig, ExtensionMapping
 from .chunker import ChunkerConfig
-from .embedder import EmbedderConfig, ModelInfo
+from .embedder import EmbedderConfig
 from .reranker import RerankerConfig
 from .rag import (
     RagConfig,
@@ -22,7 +22,6 @@ __all__ = [
     "ExtensionMapping",
     "ChunkerConfig",
     "EmbedderConfig",
-    "ModelInfo",
     "RerankerConfig",
     "RagConfig",
     "RetrieverConfig",

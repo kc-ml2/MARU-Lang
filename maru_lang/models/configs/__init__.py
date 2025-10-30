@@ -14,7 +14,6 @@ from maru_lang.pluggable.models import (
     ExtensionMapping,
     ChunkerConfig,
     EmbedderConfig,
-    ModelInfo,
     RerankerConfig,
 )
 
@@ -27,6 +26,5 @@ __all__ = [
     "ExtensionMapping",
     "ChunkerConfig",
     "EmbedderConfig",
-    "ModelInfo",
     "RerankerConfig",
 ]

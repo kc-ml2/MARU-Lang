@@ -108,6 +108,9 @@ class GroupRagConfig:
     name: str
     description: str = ""
 
+    # 임베딩 모델 (선택사항, 없으면 embedder_config의 default_model 사용)
+    embedder: Optional[str] = None
+
     # 플러거블 컴포넌트 설정 (선택사항)
     # 이 그룹에서만 다른 컴포넌트를 사용하고 싶을 때 설정
     components: Optional[GroupComponents] = None
@@ -132,6 +135,7 @@ class GroupRagConfig:
         return cls(
             name=name,
             description=data.get('description', ''),
+            embedder=data.get('embedder'),
             components=components,
             source_path=source_path,
             is_override=is_override,

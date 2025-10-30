@@ -1,22 +1,9 @@
 # Embedder Configuration
 # Configure embedding models and device preferences
 
-# Default embedding model
+# Default embedding model for all document groups
+# Can be overridden per-group in rag_config.yaml
 default_model: BAAI/bge-m3
 
 # Device selection (null => auto-detect: cuda > mps > cpu)
 device: null
-
-# Available models (reference)
-models:
-  - name: BAAI/bge-m3
-    dimension: 1024
-    description: "Multilingual embedding model (includes Korean support)"
-
-  - name: intfloat/multilingual-e5-large
-    dimension: 1024
-    description: "Large multilingual embedding model"
-
-  - name: sentence-transformers/all-MiniLM-L6-v2
-    dimension: 384
-    description: "Fast and lightweight English-only model"
