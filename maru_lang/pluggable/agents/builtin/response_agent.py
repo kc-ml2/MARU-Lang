@@ -199,15 +199,15 @@ class ResponseAgent(BaseAgent):
                         f"내부 문서 검색 결과: {result.data['internal_results_count']}건"
                     )
 
-                if 'web_results_count' in result.data:
-                    formatted_lines.append(
-                        f"웹 검색 결과: {result.data['web_results_count']}건"
-                    )
+                # if 'web_results_count' in result.data:
+                    # formatted_lines.append(
+                    #     f"웹 검색 결과: {result.data['web_results_count']}건"
+                    # )
 
                 # Format other data fields if metadata is enabled
                 if self.config.config.formatting.include_metadata:
                     for key, value in result.data.items():
-                        if key not in ['search_groups', 'internal_results_count', 'web_results_count']:
+                        if key not in ['search_groups', 'internal_results_count']:
                             formatted_lines.append(f"{key}: {value}")
             else:
                 formatted_lines.append(f"결과: {result.data}")

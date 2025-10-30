@@ -19,7 +19,8 @@ from maru_lang.core.relation_db.models.documents import PermissionAction
 async def ingest_function(
     path: Path,
     user_groups: Optional[List[str]] = None,
-    max_batch_size_mb: int = 10,
+    max_batch_size_mb: int = 1000,
+    verbose: bool = False,
 ):
     """
     디렉토리를 ingest (파싱, 청킹, 임베딩, VDB 저장)
@@ -28,6 +29,7 @@ async def ingest_function(
         path: ingest할 디렉토리 경로 (폴더 이름이 DocumentGroup 이름으로 사용됨)
         user_groups: 권한을 부여할 UserGroup 리스트
         max_batch_size_mb: 배치당 최대 메모리 크기 (MB, 기본: 10MB)
+        verbose: 자세한 출력 모드 (모든 처리되는 문서 표시)
     """
     # ========== 입력 검증 ==========
     if not path.exists() or not path.is_dir():
@@ -99,6 +101,9 @@ async def ingest_function(
     typer.echo(f"🧠 Batch size: {max_batch_size_mb}MB")
     typer.echo()
 
+    import time
+    start_time = time.time()
+
     try:
         # ========== VectorDB 설정 ==========
         # VectorDB 설정 생성 (settings 기본값 사용, 단일 backend)
@@ -110,6 +115,7 @@ async def ingest_function(
             group_name=group,
             vdb_config=vdb_config,
             max_batch_size_mb=max_batch_size_mb,
+            verbose=verbose,
         )
 
         result = None
@@ -173,6 +179,8 @@ async def ingest_function(
         )
 
     # ========== 완료 메시지 ==========
+    elapsed_time = time.time() - start_time
+
     typer.echo("\n" + "=" * 50)
     typer.secho("✅ Ingest 완료!", fg=typer.colors.GREEN, bold=True)
     typer.echo("=" * 50)
@@ -180,6 +188,7 @@ async def ingest_function(
     typer.echo(f"✅ 처리됨: {result.processed_files}개 (신규 또는 수정됨)")
     typer.echo(f"⏭️  스킵됨: {result.skipped_files}개 (변경 없음)")
     typer.echo(f"📦 DocumentGroup: {result.group.name}")
+    typer.echo(f"⏱️  소요 시간: {elapsed_time:.2f}초")
     typer.secho(
         "🎉 모든 문서가 임베딩되어 검색 가능합니다!", fg=typer.colors.GREEN
     )

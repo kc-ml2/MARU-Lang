@@ -6,8 +6,8 @@
 # ============================================================
 retriever:
   # Default search parameters
-  default_k: 5                # Number of search results to return
-  default_method: "ensemble"  # Choose among vector, bm25, or ensemble
+  default_k: 5              # Number of search results to return
+  default_method: "vector"  # Choose among vector, bm25, or ensemble
 
   # Query-type weights
   # - cosine_weight: weight of vector similarity search
@@ -59,8 +59,9 @@ groups:
   #   components:
   #     loader: "markdown"        # Loader to use for this group
   #     chunker: "sentence"       # Chunker to use for this group
-  #     embedder: "bge-m3"        # Embedder to use for this group
   #     reranker: "bge-reranker-v2-m3"  # Reranker to use for this group
+  #     # Note: embedder is NOT supported per-group
+  #     # All documents must use the same embedder (set in embedder_config.yaml)
 
   # Example: General documents group
   # general_docs:

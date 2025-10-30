@@ -58,7 +58,7 @@ class FallbackLogicConfig:
 class RetrieverConfig:
     """Retriever 전역 설정"""
     default_k: int = 5
-    default_method: str = "ensemble"  # vector, bm25, ensemble
+    default_method: str = "vector"  # vector, bm25, ensemble
 
     # 쿼리 타입별 가중치
     query_type_weights: Dict[str, QueryTypeWeights] = field(default_factory=dict)
@@ -86,7 +86,7 @@ class RetrieverConfig:
 
         return cls(
             default_k=data.get('default_k', 5),
-            default_method=data.get('default_method', 'ensemble'),
+            default_method=data.get('default_method', 'vector'),
             query_type_weights=query_type_weights,
             representative_queries=data.get('representative_queries', {}),
             fallback_logic=fallback_logic,
@@ -98,7 +98,8 @@ class GroupComponents:
     """그룹별 플러거블 컴포넌트 설정"""
     loader: Optional[str] = None
     chunker: Optional[str] = None
-    embedder: Optional[str] = None
+    # embedder는 그룹별로 다르면 검색 비교가 어려우므로 제거
+    # 모든 문서는 동일한 embedding space에 있어야 함
     reranker: Optional[str] = None
 
 
@@ -107,9 +108,6 @@ class GroupRagConfig:
     """그룹별 RAG 설정"""
     name: str
     description: str = ""
-
-    # 임베딩 모델 (선택사항, 없으면 embedder_config의 default_model 사용)
-    embedder: Optional[str] = None
 
     # 플러거블 컴포넌트 설정 (선택사항)
     # 이 그룹에서만 다른 컴포넌트를 사용하고 싶을 때 설정
@@ -128,14 +126,12 @@ class GroupRagConfig:
             components = GroupComponents(
                 loader=data['components'].get('loader'),
                 chunker=data['components'].get('chunker'),
-                embedder=data['components'].get('embedder'),
                 reranker=data['components'].get('reranker'),
             )
 
         return cls(
             name=name,
             description=data.get('description', ''),
-            embedder=data.get('embedder'),
             components=components,
             source_path=source_path,
             is_override=is_override,

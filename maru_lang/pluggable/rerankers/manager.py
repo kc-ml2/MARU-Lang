@@ -3,6 +3,7 @@ Reranker: 검색 결과 재정렬
 프로세스 단위로 모델을 캐싱하여 GPU 자원을 효율적으로 사용
 """
 from typing import Dict, List, Optional, Tuple
+from maru_lang.configs import get_config_manager
 from sentence_transformers import CrossEncoder
 
 
@@ -152,7 +153,6 @@ def _load_device_from_config() -> Optional[str]:
         Optional[str]: config에서 읽은 device 설정, 없으면 None
     """
     try:
-        from maru_lang.configs import get_config_manager
 
         config_manager = get_config_manager()
         embedder_config = config_manager.get_embedder_config()

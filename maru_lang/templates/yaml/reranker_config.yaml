@@ -23,6 +23,11 @@ agent_name: llm_reranker
 # Default reranker model (only used when method: model)
 default_model: BAAI/bge-reranker-v2-m3
 
+# Maximum number of documents to return after reranking
+# - If not set (or null), returns the same number as the original search results
+# - Use this to retrieve more documents (k=20) and rerank to top-k (top_k=5) for better quality
+top_k: 5
+
 # Example: Using LLM-based reranking (default)
 # 1. The llm_reranker agent is already included in rerankers/
 # 2. Make sure to register it in configs/agent_config.yaml (already done if using default)

@@ -50,6 +50,7 @@ class IngestPipeline(BasePipeline):
         group_name: str,
         vdb_config: ChromaDBConfig,
         max_batch_size_mb: int = 1000,
+        verbose: bool = False,
     ):
         """
         Args:
@@ -57,12 +58,14 @@ class IngestPipeline(BasePipeline):
             group_name: 최상위 DocumentGroup 이름
             vdb_config: ChromaDB 설정
             max_batch_size_mb: 배치당 최대 메모리 크기 (MB, 기본: 1000MB)
+            verbose: 자세한 출력 모드 (모든 처리되는 문서 표시)
         """
         super().__init__()
         self.path = path
         self.group_name = group_name
         self.vdb_config = vdb_config
         self.max_batch_size_mb = max_batch_size_mb
+        self.verbose = verbose
         # MB를 chars로 변환 (대략 1 char = 1 byte 가정)
         self.max_chars_per_batch = max_batch_size_mb * 1024 * 1024
 
@@ -71,22 +74,16 @@ class IngestPipeline(BasePipeline):
         self.parser_manager = get_loader()
         self.chunker_manager = get_chunker()
 
-        # Embedding model 결정: 그룹별 config > global default (필수)
+        # Embedding model 결정: Global default만 사용
+        # 모든 문서는 동일한 embedding space에 있어야 검색 시 비교 가능
         config_manager = get_config_manager()
         embedder_config = config_manager.get_embedder_config()
-        rag_config = config_manager.get_rag_config()
 
-        # 1. 그룹별 RAG config 확인
-        group_rag_config = rag_config.groups.get(group_name) if rag_config else None
-        if group_rag_config and group_rag_config.embedder:
-            self.embedder = group_rag_config.embedder
-        elif embedder_config and embedder_config.default_model:
-            # 2. Global default 사용
+        if embedder_config and embedder_config.default_model:
             self.embedder = embedder_config.default_model
         else:
             raise ValueError(
-                "No embedding model configured. Please set default_model in embedder_config.yaml "
-                f"or specify embedder for group '{group_name}' in rag_config.yaml"
+                "No embedding model configured. Please set default_model in embedder_config.yaml"
             )
 
         # 중간 결과 저장
@@ -558,9 +555,11 @@ class IngestPipeline(BasePipeline):
         embedder = get_embedder()
         batch_texts = []
         batch_metadata = []  # (doc, chunk_input, idx) 저장
+        batch_docs = []  # 현재 배치에 포함된 문서 이름들
         current_batch_chars = 0
         total_chunks_saved = 0
         processed_docs = 0
+        batch_number = 0
 
         for doc in self.documents_to_process:
             try:
@@ -584,41 +583,44 @@ class IngestPipeline(BasePipeline):
                     continue
 
                 # 청크를 배치에 추가
+                doc_added_to_batch = False
                 for idx, chunk_input in enumerate(chunk_inputs):
                     chunk_chars = len(chunk_input.content)
 
                     # 배치가 꽉 차면 임베딩 및 저장
                     if current_batch_chars + chunk_chars > self.max_chars_per_batch and batch_texts:
+                        batch_number += 1
                         # 배치 임베딩
-                        await self.queue.put(
-                            PipelineMessage.info(
-                                f"Embedding batch: {len(batch_texts)} chunks (~{current_batch_chars:,} chars)..."
-                            )
+                        await self._process_and_save_batch(
+                            batch_number, batch_texts, batch_metadata, batch_docs,
+                            current_batch_chars, embedder
                         )
-                        vectors = embedder.encode(
-                            batch_texts, self.embedder, show_progress=False
-                        )
-
-                        # VDB 저장
-                        saved = self._save_batch_to_vdb(batch_metadata, vectors)
-                        total_chunks_saved += saved
+                        total_chunks_saved += len(batch_texts)
 
                         # 배치 초기화
                         batch_texts = []
                         batch_metadata = []
+                        batch_docs = []
                         current_batch_chars = 0
+                        doc_added_to_batch = False
 
                     # 현재 청크를 배치에 추가
                     batch_texts.append(chunk_input.content)
                     batch_metadata.append((doc, chunk_input, idx))
                     current_batch_chars += chunk_chars
 
+                    # 문서 이름을 배치에 추가 (한 번만)
+                    if not doc_added_to_batch:
+                        batch_docs.append(doc.name)
+                        doc_added_to_batch = True
+
                 processed_docs += 1
-                await self.queue.put(
-                    PipelineMessage.info(
-                        f"Processed {processed_docs}/{len(self.documents_to_process)}: {doc.name}"
+                if self.verbose:
+                    await self.queue.put(
+                        PipelineMessage.info(
+                            f"Processed {processed_docs}/{len(self.documents_to_process)}: {doc.name}"
+                        )
                     )
-                )
 
             except Exception as e:
                 await self.queue.put(
@@ -628,16 +630,12 @@ class IngestPipeline(BasePipeline):
 
         # 남은 배치 처리
         if batch_texts:
-            await self.queue.put(
-                PipelineMessage.info(
-                    f"Embedding final batch: {len(batch_texts)} chunks (~{current_batch_chars:,} chars)..."
-                )
+            batch_number += 1
+            await self._process_and_save_batch(
+                batch_number, batch_texts, batch_metadata, batch_docs,
+                current_batch_chars, embedder, is_final=True
             )
-            vectors = embedder.encode(
-                batch_texts, self.embedder, show_progress=False
-            )
-            saved = self._save_batch_to_vdb(batch_metadata, vectors)
-            total_chunks_saved += saved
+            total_chunks_saved += len(batch_texts)
 
         await self.queue.put(
             PipelineMessage.info(
@@ -645,6 +643,54 @@ class IngestPipeline(BasePipeline):
                 data={"total_chunks": total_chunks_saved}
             )
         )
+
+    async def _process_and_save_batch(
+        self,
+        batch_number: int,
+        batch_texts: list,
+        batch_metadata: list,
+        batch_docs: list,
+        current_batch_chars: int,
+        embedder,
+        is_final: bool = False
+    ):
+        """
+        배치 처리 및 저장 (임베딩 → VDB 저장)
+
+        Args:
+            batch_number: 배치 번호
+            batch_texts: 배치에 포함된 텍스트 리스트
+            batch_metadata: 배치 메타데이터
+            batch_docs: 배치에 포함된 문서 이름 리스트
+            current_batch_chars: 현재 배치의 문자 수
+            embedder: 임베더 인스턴스
+            is_final: 마지막 배치 여부
+        """
+        # 문서 목록 포맷팅
+        if self.verbose:
+            docs_str = ", ".join(batch_docs)
+        else:
+            # verbose가 아닐 때는 처음 3개만 표시
+            if len(batch_docs) <= 3:
+                docs_str = ", ".join(batch_docs)
+            else:
+                docs_str = ", ".join(batch_docs[:3]) + f" 외 {len(batch_docs) - 3}개"
+
+        prefix = "Embedding final batch" if is_final else f"Embedding batch #{batch_number}"
+        await self.queue.put(
+            PipelineMessage.info(
+                f"{prefix}: {len(batch_texts)} chunks (~{current_batch_chars:,} chars)\n"
+                f"   📄 Documents: {docs_str}"
+            )
+        )
+
+        # 임베딩
+        vectors = embedder.encode(
+            batch_texts, self.embedder, show_progress=False
+        )
+
+        # VDB 저장
+        self._save_batch_to_vdb(batch_metadata, vectors)
 
     def _save_batch_to_vdb(self, batch_metadata, vectors) -> int:
         """
