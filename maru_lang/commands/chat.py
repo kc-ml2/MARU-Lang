@@ -107,27 +107,6 @@ async def chat_session(
         console.print(
             f"  - Agents ({len(user_agents)}): {agent_display}" if user_agents else "  - Agents: None")
 
-        # Groups with document/user separation
-        # TODO: 그룹 설정 파일 분리
-        group_configs = config_results.get('group', {})
-        if group_configs:
-            # Collect all document groups
-            doc_groups = []
-
-            for group_config in group_configs.values():
-                if hasattr(group_config, 'groups'):
-                    for group_name, group_info in group_config.groups.items():
-                        doc_groups.append(group_name)
-
-            # Display document groups
-            doc_display = ", ".join(doc_groups[:3])
-            if len(doc_groups) > 3:
-                doc_display += f" (+{len(doc_groups) - 3} more)"
-            console.print(
-                f"  - Filtered groups applied ({len(doc_groups)}): {doc_display}" if doc_groups else "  - Filtered groups applied: None")
-        else:
-            console.print("  - Filtered groups applied: None")
-
         # Show warnings and errors if any exist
         warnings = config_status.get('warnings', [])
         errors = config_status.get('errors', [])

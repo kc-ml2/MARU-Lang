@@ -85,6 +85,7 @@ async def get_all_descendant_group_names(
     if not group_names:
         return []
 
+
     # 1. Look up DocumentGroup instances by name
     groups = await DocumentGroup.filter(name__in=group_names).all()
     if not groups:

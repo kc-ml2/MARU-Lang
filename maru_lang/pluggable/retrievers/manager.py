@@ -1,15 +1,18 @@
 """
 Retriever: 검색 로직 관리 (VectorDB + Embedder + Reranker 조합)
 """
-from typing import List, Optional, Literal, Tuple
+from typing import List, Optional, Literal, Tuple, Dict
 import logging
 import numpy as np
 from konlpy.tag import Okt
 from rank_bm25 import BM25Okapi
 from maru_lang.core.vector_db.base import VectorDB, RetrieveDocument
+from maru_lang.configs import EmbedderConfig, get_config_manager
 from maru_lang.pluggable.embedders import get_embedder, Embedder
 from maru_lang.pluggable.rerankers import get_reranker, Reranker
 from maru_lang.pluggable.models.reranker import RerankerConfig
+from maru_lang.pluggable.models.rag import RagConfig
+from maru_lang.utils.distribution import allocate_by_weight, normalized_groups_weights
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,8 @@ class Retriever:
         embedder: Optional[Embedder] = None,
         reranker: Optional[Reranker] = None,
         reranker_config: Optional[RerankerConfig] = None,
+        rag_config: Optional[RagConfig] = None,
+        embedder_config: Optional[EmbedderConfig] = None,
     ):
         """
         Args:
@@ -60,83 +65,106 @@ class Retriever:
             reranker: Reranker 인스턴스 (method="model"일 때만 필요)
             reranker_config: Reranker 설정
         """
+        config_manager = get_config_manager()
+
         self.vdb = vdb
         self.embedder = embedder or get_embedder()
-        self.reranker_config = reranker_config
-
-        # Reranker는 method가 "model"일 때만 초기화
-        if reranker:
-            self.reranker = reranker
-        elif reranker_config and reranker_config.method == "model":
-            logger.info(f"Initializing model-based reranker (method={reranker_config.method})")
-            self.reranker = get_reranker()
-        else:
-            logger.info(f"Skipping reranker initialization (method={reranker_config.method if reranker_config else 'None'})")
-            self.reranker = None
-
+        self.reranker = reranker or get_reranker()
+        self.rag_config = rag_config or config_manager.get_rag_config()
+        self.embedder_config = embedder_config or config_manager.get_embedder_config()
+        self.reranker_config = reranker_config or config_manager.get_reranker_config()
         self._representative_vectors = None
         self.okt: Optional[Okt] = None  # BM25용 형태소 분석기
 
-    def search(
+    async def search(
         self,
         query: str,
-        k: int,
-        method: SearchMethod = "vector",
-        document_groups: Optional[List[str]] = None,
+        top_k: Optional[int] = None,
+        method: Optional[SearchMethod] = None,
+        document_group_map: Optional[Dict[str, List[str]]] = None,
+        document_group_weights: Optional[Dict[str,float]] = None,
         use_reranking: Optional[bool] = None,
         embedding_model: Optional[str] = None,
         **kwargs,
-    ) -> List[RetrieveDocument]:
-        """
-        통합 검색 메서드
+    ) -> Dict[str, List[RetrieveDocument]]:
 
-        Args:
-            query: 검색 쿼리
-            k: 반환할 결과 개수
-            method: 검색 방법 ("vector", "bm25", "ensemble") - 기본값: ensemble
-            document_groups: 그룹 이름 필터
-            use_reranking: reranking 사용 여부 (None이면 config 따름)
-            embedding_model: 임베딩 모델 이름 (None이면 config에서 자동 로드)
-            **kwargs: 메서드별 추가 파라미터
+        if method is None:
+            method = self.rag_config.retriever.default_method
+        if top_k is None:
+            top_k = self.rag_config.retriever.default_k
+    
+        all_results = {}
 
-        Returns:
-            검색 결과 리스트
-        """
-        # Embedding model 자동 로드 (vector/ensemble 시 필요)
-        if method in ("vector", "ensemble") and embedding_model is None:
-            embedding_model = self._get_default_embedding_model(document_groups)
-
-        # 검색 수행
-        if method == "vector":
-            results = self._vector_search(
-                query, k, document_groups, embedding_model, **kwargs
-            )
-        elif method == "bm25":
-            results = self._bm25_search(query, k, document_groups, **kwargs)
-        elif method == "ensemble":
-            results = self._ensemble_search(
-                query, k, document_groups, embedding_model, **kwargs
-            )
+        if document_group_map is None:
+            document_groups = {"__all__": None}
+            allocated_group_counts = {}
         else:
-            raise ValueError(f"Unknown search method: {method}")
+            document_groups = document_group_map
+
+            # document_group_weights가 None이면 균등 분배
+            if document_group_weights is None:
+                uniform_weight = 1.0 / len(document_groups)
+                document_group_weights = {g: uniform_weight for g in document_groups.keys()}
+
+            normalized_group_weights = normalized_groups_weights(
+                list(document_groups.keys()),
+                document_group_weights
+            )
+            allocated_group_counts = allocate_by_weight(
+                normalized_group_weights,
+                top_k,
+            )
+        print(f"allocated_group_counts: {allocated_group_counts}")
+
+        for parent_group, all_inner_groups in document_groups.items():
+            # 할당된 k 값 가져오기
+            if not allocated_group_counts:
+                k = top_k
+            else:
+                k = allocated_group_counts[parent_group]
+            print(f"parent_group: {parent_group}")
+            print(f"k: {k}")
+            print(f"all_inner_groups: {all_inner_groups}")
+
+            # 그룹별 embedding model 가져오기 (파라미터로 명시되지 않은 경우에만)
+            group_embedding_model = embedding_model
+            if method in ("vector", "ensemble") and group_embedding_model is None:
+                group_embedding_model = self._get_default_embedding_model(parent_group)
+
+            # 검색 수행
+            if method == "vector":
+                results = self._vector_search(
+                    query, k, all_inner_groups, group_embedding_model, **kwargs
+                )
+            elif method == "bm25":
+                results = self._bm25_search(query, k, all_inner_groups, **kwargs)
+            elif method == "ensemble":
+                results = self._ensemble_search(
+                    query, k, all_inner_groups, group_embedding_model, **kwargs
+                )
+            else:
+                raise ValueError(f"Unknown search method: {method}")
+
+            all_results[parent_group] = results
 
         # Reranking 적용 (옵션)
         should_rerank = self._should_use_reranking(use_reranking)
-        if should_rerank and results:
-            results = self._rerank_results(query, results, k)
-        return results
+        if should_rerank and all_results:
+            return await self._rerank_results(query, all_results)
+        return all_results
 
-    def _get_default_embedding_model(self, document_groups: Optional[List[str]] = None) -> str:
+    def _get_default_embedding_model(
+        self,
+        document_group: Optional[str] = None
+    ) -> str:
         """
         Embedding model 자동 결정
 
-        우선순위:
-        1. 그룹별 RAG config (document_groups[0]의 embedding_model)
-        2. Global embedder config (default_model)
-        3. 설정 없으면 오류
+        모든 문서는 동일한 embedding space에 있어야 하므로
+        Global embedder config만 사용
 
         Args:
-            document_groups: 검색 대상 그룹 리스트 (첫 번째 그룹의 설정 사용)
+            document_group: 사용되지 않음 (하위 호환성 유지)
 
         Returns:
             embedding model name
@@ -144,27 +172,15 @@ class Retriever:
         Raises:
             ValueError: 설정된 embedding model이 없는 경우
         """
-        from maru_lang.configs import get_config_manager
 
-        config_manager = get_config_manager()
-
-        # 1. 그룹별 RAG config 확인
-        if document_groups:
-            rag_config = config_manager.get_rag_config()
-            if rag_config:
-                group_rag_config = rag_config.groups.get(document_groups[0])
-                if group_rag_config and group_rag_config.embedder:
-                    return group_rag_config.embedder
-
-        # 2. Global default 사용
-        embedder_config = config_manager.get_embedder_config()
+        # Global default 사용
+        embedder_config = self.embedder_config
         if embedder_config and embedder_config.default_model:
             return embedder_config.default_model
 
-        # 3. 설정 없으면 오류
+        # 설정 없으면 오류
         raise ValueError(
-            "No embedding model configured. Please set default_model in embedder_config.yaml "
-            "or specify embedder for the document group in rag_config.yaml"
+            "No embedding model configured. Please set default_model in embedder_config.yaml"
         )
 
     def _vector_search(
@@ -383,23 +399,66 @@ class Retriever:
         # 기본값: False
         return False
 
-    def _rerank_results(
+    async def _rerank_results(
         self,
         query: str,
-        results: List[RetrieveDocument],
-        top_k: int,
-    ) -> List[RetrieveDocument]:
-        """Rerank search results using model or agent"""
-        if not results:
-            return results
+        all_results: Dict[str, List[RetrieveDocument]],
+    ) -> Dict[str, List[RetrieveDocument]]:
+        """
+        Rerank search results using model or agent
 
+        모든 그룹의 결과를 합쳐서 reranking 후 다시 그룹별로 분배
+
+        Args:
+            query: 검색 쿼리
+            all_results: 그룹별 검색 결과 {group_name: [documents]}
+
+        Returns:
+            그룹별 reranked 결과 {group_name: [reranked_documents]}
+        """
+        if not all_results:
+            return all_results
+
+        # 1. 모든 그룹의 결과를 하나로 합치기 (그룹 정보 보존)
+        all_docs = []
+        doc_to_group = {}  # document index -> group name 매핑
+
+        for group_name, docs in all_results.items():
+            for doc in docs:
+                doc_idx = len(all_docs)
+                all_docs.append(doc)
+                doc_to_group[doc_idx] = group_name
+
+        if not all_docs:
+            return all_results
+
+        # 2. 전체 문서에 대해 reranking 수행
         # Config에서 reranking 방식 확인
         method = self.reranker_config.method if self.reranker_config else "model"
+        top_k = self.reranker_config.top_k if self.reranker_config else None
 
         if method == "agent":
-            return self._rerank_with_agent(query, results, top_k)
+            reranked_docs = await self._rerank_with_agent(query, all_docs, top_k)
+        elif method == "model":
+            reranked_docs = self._rerank_with_model(query, all_docs, top_k)
         else:
-            return self._rerank_with_model(query, results, top_k)
+            reranked_docs = all_docs
+
+        # 3. Reranked 결과를 다시 그룹별로 분배
+        reranked_by_group = {group: [] for group in all_results.keys()}
+
+        # 효율성을 위해 doc.id -> original_idx 매핑 생성 (O(n) 대신 O(1) 조회)
+        doc_id_to_idx = {doc.id: idx for idx, doc in enumerate(all_docs)}
+
+        for doc in reranked_docs:
+            # 원본 문서의 인덱스 찾기
+            original_idx = doc_id_to_idx.get(doc.id)
+
+            if original_idx is not None and original_idx in doc_to_group:
+                group_name = doc_to_group[original_idx]
+                reranked_by_group[group_name].append(doc)
+
+        return reranked_by_group
 
     def _rerank_with_model(
         self,
@@ -441,7 +500,7 @@ class Retriever:
             logger.error(f"Model-based reranking failed: {e}. Returning original results.")
             return results
 
-    def _rerank_with_agent(
+    async def _rerank_with_agent(
         self,
         query: str,
         results: List[RetrieveDocument],
@@ -483,28 +542,12 @@ class Retriever:
                 )
                 return results
 
-            # Agent 초기화 및 실행 (async)
-            async def run_agent():
-                await agent.initialize()
-                result = await agent.execute(
-                    query=query,
-                    documents=results,
-                    top_k=top_k,
-                )
-                return result
-
             # Sync context에서 async agent 실행
-            # 이미 실행 중인 event loop가 있는지 확인
-            try:
-                loop = asyncio.get_running_loop()
-                # 이미 loop가 실행 중이면 새 thread에서 실행
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, run_agent())
-                    agent_result = future.result()
-            except RuntimeError:
-                # 실행 중인 loop가 없으면 asyncio.run() 사용
-                agent_result = asyncio.run(run_agent())
+            agent_result = await agent.execute(
+                query=query,
+                documents=results,
+                top_k=top_k,
+            )
 
             # Agent 결과 처리
             if agent_result.success and agent_result.data:
@@ -762,15 +805,8 @@ def get_retriever(
         if vdb is None:
             raise ValueError("vdb is required for first-time Retriever initialization")
 
-        # Config 로드
-        from maru_lang.configs import get_config_manager
-
-        config_manager = get_config_manager()
-        reranker_config = config_manager.get_reranker_config()
-
         _retriever_instance = Retriever(
             vdb=vdb,
-            reranker_config=reranker_config,
         )
 
     return _retriever_instance

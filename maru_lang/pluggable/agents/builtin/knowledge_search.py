@@ -9,9 +9,9 @@ from maru_lang.core.vector_db.base import RetrieveDocument
 from maru_lang.core.vector_db.factory import get_vector_db
 from maru_lang.models.vector_db import ChromaDBConfig
 from maru_lang.models.agents import WebSearchResult
-from maru_lang.services.document import get_all_descendant_group_names
 from maru_lang.pluggable.agents.agent_factory import AgentFactory
 from maru_lang.configs.manager import get_config_manager
+from maru_lang.services.document import get_all_descendant_group_names
 
 
 class KnowledgeSearchAgent(BaseAgent):
@@ -22,9 +22,7 @@ class KnowledgeSearchAgent(BaseAgent):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.retriever = None
-        self.web_search_enabled = True
-        
+        self.retriever = None        
         # Preprocessing agents (will be initialized in _setup)
         self.group_classifier = None
         self.intent_extractor = None
@@ -84,9 +82,6 @@ class KnowledgeSearchAgent(BaseAgent):
     async def execute(
         self,
         question: str,
-        max_internal_results: int = 8,
-        max_web_results: int = 5,
-        fallback_threshold: float = 0.6,
         metadata: Dict[str, Any] = {},
         **kwargs
     ) -> AgentResult:
@@ -95,9 +90,6 @@ class KnowledgeSearchAgent(BaseAgent):
 
         Args:
             question: Search question
-            max_internal_results: Maximum internal search results
-            max_web_results: Maximum web search results
-            fallback_threshold: Threshold to trigger web search fallback
             **kwargs: Additional parameters
 
         Returns:
@@ -116,7 +108,7 @@ class KnowledgeSearchAgent(BaseAgent):
             )
 
             # Step 3: Search internal documents using optimized queries
-            internal_results = []
+            internal_results = {}
 
             # Use groups from preprocessing agents
             search_groups = preprocessing_info.get('search_groups', [])
@@ -134,54 +126,34 @@ class KnowledgeSearchAgent(BaseAgent):
                     print("⚠️  No groups from group_classifier, search_all_on_empty is enabled")
                     search_groups = []
 
-            group_weights = preprocessing_info.get('group_weights', {})
 
             if self.retriever and (search_groups or (self.search_all_on_empty and not forced_groups)):
+                group_weights = preprocessing_info.get('group_weights', {})
                 internal_results = await self._search_internal_documents(
                     preprocessing_info.get('search_query', question),
                     search_groups,
-                    max_internal_results,
-                    preprocessing_info.get('search_keywords', question),
-                    group_weights
+                    group_weights,
                 )
 
             # Step 4: Determine if web search is needed
             internal_context = self._format_internal_results(internal_results)
-            need_web_search = (
-                self.web_search_enabled and
-                self._should_use_web_search(
-                    internal_context, fallback_threshold)
-            )
 
-            # Step 5: Perform web search if needed
-            web_results = []
-            if need_web_search:
-                web_results = await self._search_web(
-                    preprocessing_info.get('search_query', question), max_web_results
-                )
-
-            # Step 6: Generate comprehensive response
-            web_context = self._format_web_results(web_results)
             response_text = await self._generate_response(
-                question, internal_context, web_context
+                question, internal_context
             )
-
+            internal_results_count = sum(len(docs) for docs in internal_results.values())
             # Determine search strategy
             search_strategy = "internal_only"
-            if web_results:
-                search_strategy = "hybrid" if internal_results else "web_only"
-
+            print(f"search_strategy: {search_strategy}")
             return AgentResult(
                 success=True,
                 result=response_text,  # 주요 응답 텍스트
                 data={
                     "search_groups": search_groups,
                     "internal_results": internal_results,
-                    "web_results": web_results,
                     "preprocessing_info": preprocessing_info,
                     "search_strategy": search_strategy,
-                    "internal_results_count": len(internal_results),
-                    "web_results_count": len(web_results)
+                    "internal_results_count": internal_results_count,
                 }
             )
 
@@ -326,14 +298,12 @@ class KnowledgeSearchAgent(BaseAgent):
         self,
         question: str,
         document_groups: List[str],
-        max_results: int,
-        keywords: Optional[str] = None,
-        group_weights: Optional[Dict[str, float]] = None
-    ) -> List[RetrieveDocument]:
+        group_weights: Dict[str, float],
+    ) -> Dict[str, List[RetrieveDocument]]:
         """Search internal documents and policies"""
         if not self.retriever:
             print("⚠️  Retriever is not initialized; skipping internal search")
-            return []
+            return {}
 
         # No groups specified
         if not document_groups:
@@ -341,183 +311,62 @@ class KnowledgeSearchAgent(BaseAgent):
                 print("⚠️  No document groups specified, searching all documents")
                 try:
                     print("[DEBUG] Running full search with no document_groups")
-                    results = self.retriever.search(
+                    return await self.retriever.search(
                         query=question,
-                        k=max_results,
-                        document_groups=None,
                     )
-                    return results
                 except Exception as e:
                     print(f"❌ Internal document search failed: {e}")
-                    return []
+                    return {}
             else:
                 print("⚠️  No document groups specified, skipping internal search")
-                return []
+                return {}
 
         try:
-            results: List[RetrieveDocument] = []
-            weight_map = group_weights or {}
+            # 각 그룹과 그 descendants를 매핑
+            flat_document_groups = {}
+            for group in document_groups:
+                descendants = await get_all_descendant_group_names([group])
+                flat_document_groups[group] = descendants or [group]
 
-            print(f"[DEBUG] search groups before descendant expansion: {document_groups}")
-
-            if document_groups:
-
-                active_groups: List[tuple[str, float]] = []
-                for group in document_groups:
-                    weight = float(weight_map.get(group, 0.0))
-                    if weight > 0:
-                        active_groups.append((group, weight))
-
-                if not active_groups:
-                    uniform_weight = 1.0 / len(document_groups)
-                    active_groups = [(group, uniform_weight) for group in document_groups]
-                print(f"[DEBUG] active_groups (initial weights): {active_groups}")
-
-                weight_sum = sum(weight for _, weight in active_groups)
-                if weight_sum <= 0:
-                    uniform_weight = 1.0 / len(document_groups)
-                    active_groups = [(group, uniform_weight) for group in document_groups]
-                    weight_sum = 1.0
-                print(f"[DEBUG] weight_sum: {weight_sum}")
-
-                normalized_groups = [
-                    (group, weight / weight_sum) for group, weight in active_groups
-                ]
-                print(f"[DEBUG] normalized_groups: {normalized_groups}")
-
-                allocations: List[tuple[str, int]] = []
-                remaining_results = max_results
-
-                for index, (group_name, weight) in enumerate(normalized_groups):
-                    if remaining_results <= 0:
-                        break
-
-                    if index == len(normalized_groups) - 1:
-                        allocation = remaining_results
-                    else:
-                        allocation = int(round(max_results * weight))
-                        if weight > 0 and allocation == 0 and remaining_results > 0:
-                            allocation = 1
-                        allocation = min(allocation, remaining_results)
-
-                    if allocation <= 0:
-                        continue
-
-                    allocations.append((group_name, allocation))
-                    remaining_results -= allocation
-                print(f"[DEBUG] allocations: {allocations}, remaining_results: {remaining_results}")
-
-                if remaining_results > 0 and allocations:
-                    last_group, last_allocation = allocations[-1]
-                    allocations[-1] = (last_group, last_allocation + remaining_results)
-                    print(f"[DEBUG] allocations adjusted with remaining: {allocations}")
-
-                seen_ids = set()
-
-                for group_name, allocation in allocations:
-                    if allocation <= 0:
-                        continue
-
-                    descendant_groups = await get_all_descendant_group_names([group_name])
-                    target_groups = descendant_groups or [group_name]
-                    print(f"[DEBUG] searching group '{group_name}' with allocation {allocation} and descendants {target_groups}")
-
-                    try:
-                        group_results = self.retriever.search(
-                            query=question,
-                            k=allocation,
-                            document_groups=target_groups or None,
-                        )
-                        print(f"[DEBUG] retrieved {len(group_results)} docs for group '{group_name}'")
-                    except Exception as inner_error:
-                        print(f"❌ Internal search failed for group '{group_name}': {inner_error}")
-                        continue
-
-                    for doc in group_results:
-                        if doc.id in seen_ids:
-                            continue
-                        seen_ids.add(doc.id)
-                        doc.metadata.setdefault("group", group_name)
-                        results.append(doc)
-
-            if not results:
-                combined_groups = await get_all_descendant_group_names(document_groups)
-                target_groups = combined_groups or document_groups
-                print(f"[DEBUG] fallback search with target_groups={target_groups}")
-
-                results = self.retriever.search(
-                    query=question,
-                    k=max_results,
-                    document_groups=target_groups or None,
-                )
-                print(f"[DEBUG] fallback retrieved {len(results)} docs")
-
-            return results
+            return await self.retriever.search(
+                query=question,
+                document_group_map=flat_document_groups,
+                document_group_weights=group_weights,
+            )
         except Exception as e:
             print(f"❌ Internal document search failed: {e}")
-            return []
+            return {}
 
-    async def _search_web(self, question: str, max_results: int) -> List[WebSearchResult]:
-        """Search web sources for additional information"""
-        if not self.web_search_enabled:
-            return []
-
-        # Implementation for web search
-        # This would integrate with web search APIs
-        try:
-            # Placeholder for web search implementation
-            web_results = []
-            # Example: web_results.append(WebSearchResult(
-            #     title="Example",
-            #     url="https://example.com",
-            #     content="Example content",
-            #     snippet="Example snippet",
-            #     relevance_score=0.9
-            # ))
-            return web_results
-        except Exception:
-            return []
-
-    def _should_use_web_search(self, internal_context: str, threshold: float) -> bool:
-        """Determine if web search should be used based on internal results"""
-        if not internal_context.strip():
-            return True  # No internal results, use web search
-
-        # Simple heuristic: if internal context is too short, supplement with web
-        context_score = min(len(internal_context) / 1000,
-                            1.0)  # Normalize to 0-1
-        return context_score < threshold
-
-    def _format_internal_results(self, results: List[RetrieveDocument]) -> str:
+    def _format_internal_results(
+        self,
+        results: Dict[str, List[RetrieveDocument]],
+    ) -> str:
         """Format internal document search results"""
         if not results:
             return ""
 
-        formatted = []
-        for i, doc in enumerate(results, 1):
-            content = doc.page_content
-            source = doc.source
-            score = doc.metadata.get('score', 0.0)
-            formatted.append(f"[내부문서 {i}] {source} (유사도: {score:.2f}):\n{content}\n")
-
-        return "\n".join(formatted)
-
-    def _format_web_results(self, results: List[WebSearchResult]) -> str:
-        """Format web search results"""
-        if not results:
-            return ""
+        if len(results) == 1 and '__all__' in results:
+            with_all_groups = True
+        else:
+            with_all_groups = False
 
         formatted = []
-        for i, result in enumerate(results, 1):
-            formatted.append(f"[웹검색 {i}] {result.title} ({result.url}):\n{result.content}\n")
-
+        for group, docs in results.items():
+            for i, doc in enumerate(docs, 1):
+                content = doc.page_content
+                source = doc.source
+                score = doc.metadata.get('score', 0.0)
+                if with_all_groups:
+                    # group 이 의미 없음. 모든 그룹의 결과를 표시
+                    formatted.append(f"[내부 문서 {i}] {source} (유사도: {score:.2f}):\n{content}\n")
+                else:
+                    formatted.append(f"[{group} 문서 {i}] {source} (유사도: {score:.2f}):\n{content}\n")
         return "\n".join(formatted)
 
     async def _generate_response(
         self,
         question: str,
         internal_context: str,
-        web_context: str
     ) -> str:
         """Generate comprehensive response using LLM with fallback"""
         # Use the prompt template from configuration
@@ -525,9 +374,8 @@ class KnowledgeSearchAgent(BaseAgent):
         user_prompt = prompts.user_prompt_template.format(
             question=question,
             internal_context=internal_context or "관련 내부 문서를 찾지 못했습니다.",
-            web_context=web_context or "추가 웹 검색 결과가 없습니다."
+            web_context=""
         )
-
         override_params = self.get_override_params()
 
         try:
@@ -539,4 +387,5 @@ class KnowledgeSearchAgent(BaseAgent):
             )
             return response
         except Exception as e:
+            print(f"❌ 응답 생성 중 오류가 발생했습니다: {e}")
             return f"응답 생성 중 오류가 발생했습니다: {str(e)}"

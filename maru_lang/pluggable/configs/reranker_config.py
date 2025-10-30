@@ -51,6 +51,7 @@ class RerankerConfigLoader(DefaultConfigLoader[RerankerConfig]):
                 method=data.get("method", "model"),
                 default_model=data.get("default_model", "BAAI/bge-reranker-v2-m3"),
                 agent_name=data.get("agent_name"),
+                top_k=data.get("top_k"),
                 source_path=source_path,
                 is_override=is_user,
             )

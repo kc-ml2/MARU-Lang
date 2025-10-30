@@ -17,5 +17,8 @@ class RerankerConfig:
     # Method: "agent" - Agent 기반 reranking (LLM 등)
     agent_name: Optional[str] = None
 
+    # Reranking 후 반환할 최대 개수 (None이면 원본 k 사용)
+    top_k: Optional[int] = 5
+
     source_path: str = ""
     is_override: bool = False
