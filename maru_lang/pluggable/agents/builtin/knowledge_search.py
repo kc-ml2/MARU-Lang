@@ -361,15 +361,6 @@ class KnowledgeSearchAgent(BaseAgent):
             print(f"[DEBUG] search groups before descendant expansion: {document_groups}")
 
             if document_groups:
-                # Ensure groups match VectorDB metadata naming (docs_ prefix)
-                prefixed_groups = []
-                for group in document_groups:
-                    if group.startswith("docs_"):
-                        prefixed_groups.append(group)
-                    else:
-                        prefixed_groups.append(f"docs_{group}")
-                document_groups = prefixed_groups
-                print(f"[DEBUG] prefixed document_groups: {document_groups}")
 
                 active_groups: List[tuple[str, float]] = []
                 for group in document_groups:
@@ -429,10 +420,6 @@ class KnowledgeSearchAgent(BaseAgent):
 
                     descendant_groups = await get_all_descendant_group_names([group_name])
                     target_groups = descendant_groups or [group_name]
-                    target_groups = [
-                        tg if tg.startswith("docs_") else f"docs_{tg}"
-                        for tg in target_groups
-                    ]
                     print(f"[DEBUG] searching group '{group_name}' with allocation {allocation} and descendants {target_groups}")
 
                     try:
@@ -456,10 +443,6 @@ class KnowledgeSearchAgent(BaseAgent):
             if not results:
                 combined_groups = await get_all_descendant_group_names(document_groups)
                 target_groups = combined_groups or document_groups
-                target_groups = [
-                    tg if tg.startswith("docs_") else f"docs_{tg}"
-                    for tg in target_groups
-                ]
                 print(f"[DEBUG] fallback search with target_groups={target_groups}")
 
                 results = self.retriever.search(
