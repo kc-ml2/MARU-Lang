@@ -5,7 +5,7 @@ Agent selection -> Execution -> Answer extraction
 """
 from typing import AsyncGenerator, List, Optional
 
-from maru_lang.pipelines.base import BasePipeline, PipelineComplete
+from maru_lang.pipelines.base import BasePipeline, PipelineComplete, PipelineMessage
 from maru_lang.models.agents import ChatResult, ChatStep, ChatProcess, ExecutionContext, AgentSelection
 from maru_lang.pluggable.agents.agent_selector import AgentSelector
 from maru_lang.pluggable.agents.agent_executor import AgentExecutor
@@ -57,6 +57,7 @@ class ChatPipeline(BasePipeline):
                 try:
                     execution_context = ExecutionContext(
                         question=question,
+                        progress_queue=self.queue,
                         chat_history=chat_history,
                         metadata={
                             "forced_groups": forced_groups,
@@ -127,9 +128,12 @@ class ChatPipeline(BasePipeline):
             # PipelineComplete는 무시 (ChatProcess만 yield)
             if isinstance(item, PipelineComplete):
                 continue
-            # ChatProcess만 yield
-            if isinstance(item, ChatProcess):
+            elif isinstance(item, PipelineMessage):
                 yield item
+                continue
+            elif isinstance(item, ChatProcess):
+                yield item
+                continue
 
     async def _call_response_agent(
         self,
