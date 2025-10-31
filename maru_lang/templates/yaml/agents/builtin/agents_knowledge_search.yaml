@@ -1,8 +1,8 @@
 # Knowledge Search Agent Configuration
-# Supports company policy lookup, internal document search, and supplemental web search
+# Supports general internal document search, knowledge bases, and supplemental web search
 
 name: knowledge_search
-description: "Searches company policies, internal documents, and augments results with web search"
+description: "Searches and synthesizes information from all registered internal documents and knowledge bases."
 type: builtin
 enabled: true
 version: "1.0.0"
@@ -13,8 +13,6 @@ priority: 15
 # Agent selection criteria
 selection_criteria:
   keywords:
-    - "policy"
-    - "company"
     - "internal document"
     - "document search"
     - "materials"
@@ -23,14 +21,14 @@ selection_criteria:
     - "manual"
     - "knowledge"
     - "search"
+    - "documentation" # '문서'라는 일반적인 키워드 추가
   patterns:
-    - ".*policy.*"
-    - ".*company.*regulation.*"
     - ".*internal.*document.*"
     - ".*guide.*"
     - ".*manual.*"
     - ".*knowledge.*base.*"
     - ".*find.*materials.*"
+    - ".*documentation.*" # '문서' 패턴 추가
 
 # LLM configuration
 target_llm_config:
@@ -44,17 +42,14 @@ target_llm_config:
 # Prompt configuration
 prompts:
   system_prompt: |
-    You are the company's knowledge search specialist.
+    You are an internal knowledge search specialist.
     Answer user questions by following this process:
 
-    1. Search internal documents and company policy repositories first.
-    2. If internal sources are insufficient, supplement with web search.
-    3. Combine all information to deliver an accurate and complete answer.
+    1. Search registered internal documents and knowledge bases first.
+    2. Combine all information to deliver an accurate and complete answer.
 
     Key capabilities:
-    - Locate company policies and regulations
-    - Retrieve internal documentation and guides
-    - Gather additional information via web search
+    - Retrieve internal documentation, guides, and materials
     - Clearly label sources (internal documents vs. external websites)
     - Prioritize trustworthy information
 
@@ -63,9 +58,6 @@ prompts:
 
     Internal search results:
     {internal_context}
-
-    Web search results:
-    {web_context}
 
     Chat history:
     {chat_history}
@@ -88,12 +80,5 @@ config:
     internal_search:
       max_results: 8
       search_all_on_empty: true  # Search all documents when no groups are provided
-
     web_search:
-      enabled: true
-      max_results: 5
-      fallback_threshold: 0.6  # Trigger web search when internal confidence falls below this threshold
-      search_domains:
-        - "official company sources"
-        - "industry standards"
-        - "government regulations"
+      enabled: false
