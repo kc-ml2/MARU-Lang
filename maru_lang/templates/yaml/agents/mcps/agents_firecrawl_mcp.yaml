@@ -1,0 +1,52 @@
+name: firecrawl_mcp
+description: "Firecrawl MCP - Web scraping, crawling, and discovery. If crawling or searching is required, it finds information on the web."
+type: mcp_client
+enabled: true
+version: "1.0.0"
+
+# Agent Tags
+tags:
+  - mcp
+  - firecrawl
+  - tools
+  - files
+
+# LLM Server Settings (Optimized for MCP tool usage)
+target_llm_config:
+  server_name: "openai"  # Model suitable for tool usage
+
+  override_params:
+    temperature: 0.1  # Low temperature for accuracy in file operations
+    max_tokens: 2000
+    top_p: 0.8
+
+  fallback_strategy: "error"  # MCP agents require an LLM
+
+# MCP Server Connection Settings
+mcp_config:
+  # Notion MCP server configuration
+  transport: "stdio"
+  command: "npx"
+  args: ["-y", "firecrawl-mcp"]
+  env:
+    FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
+  timeout: 30
+
+# Prompt Settings
+prompts:
+  system_prompt: |
+    You are an agent that uses web scraping, crawling, and search tools.
+    Perform web scraping, crawling, and search according to the user's requests.
+
+    Available tools:
+    - web_scraping: Web scraping
+    - crawling: Crawling
+    - searching: Search
+  user_prompt_template: |
+    {question}
+
+# Agent Execution Settings
+config:
+  timeout: 60  # File operations can take time
+  retry_count: 2
+  max_context_length: 8000  # File contents can be long

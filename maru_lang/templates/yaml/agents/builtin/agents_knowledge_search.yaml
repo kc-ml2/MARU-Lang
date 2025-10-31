@@ -67,8 +67,12 @@ prompts:
     Web search results:
     {web_context}
 
+    Chat history:
+    {chat_history}
+
     Using the information above, provide a comprehensive answer to the question.
     Clearly indicate whether each piece of information comes from internal or external sources.
+    If you think you need to refer to the previous question during the search process, please create the query while referring to it.
 
 # Implementation (builtin agent)
 implementation: builtin.knowledge_search.KnowledgeSearchAgent
