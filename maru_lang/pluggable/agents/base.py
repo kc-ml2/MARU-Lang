@@ -1,11 +1,13 @@
 """
 Base Agent interface for all agents in the system
 """
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from maru_lang.models.agents import AgentResult
 from maru_lang.pluggable.models import AgentConfig
 from maru_lang.enums.agents import LLMFallbackStrategy
+from maru_lang.pipelines.base import PipelineMessage
 from maru_lang.dependencies.llm import (
     get_llm_manager,
     get_llm,
@@ -27,6 +29,7 @@ class BaseAgent(ABC):
         self.name = name
         self.config = config
         self._initialized = False
+        self._progress_queue: Optional[asyncio.Queue] = None
 
     async def initialize(self) -> None:
         """Initialize the agent (connect to services, load models, etc.)"""
@@ -45,12 +48,60 @@ class BaseAgent(ABC):
         Execute the agent's main task
 
         Args:
-            **kwargs: Agent-specific parameters
+            **kwargs: Agent-specific parameters (including progress_queue)
 
         Returns:
             AgentResult with the execution outcome
         """
         pass
+
+    def set_progress_queue(self, queue: Optional[asyncio.Queue]) -> None:
+        """
+        Set the progress queue for this agent
+
+        Args:
+            queue: asyncio.Queue for sending progress messages
+        """
+        self._progress_queue = queue
+
+    async def log_info(self, message: str, data: Any = None) -> None:
+        """
+        Send info message to progress queue
+
+        Args:
+            message: Info message to send
+            data: Optional data to attach
+        """
+        if self._progress_queue:
+            await self._progress_queue.put(
+                PipelineMessage.info(f"[{self.name}] {message}", data=data)
+            )
+
+    async def log_warning(self, message: str, data: Any = None) -> None:
+        """
+        Send warning message to progress queue
+
+        Args:
+            message: Warning message to send
+            data: Optional data to attach
+        """
+        if self._progress_queue:
+            await self._progress_queue.put(
+                PipelineMessage.warning(f"[{self.name}] ⚠️  {message}", data=data)
+            )
+
+    async def log_error(self, message: str, data: Any = None) -> None:
+        """
+        Send error message to progress queue
+
+        Args:
+            message: Error message to send
+            data: Optional data to attach
+        """
+        if self._progress_queue:
+            await self._progress_queue.put(
+                PipelineMessage.error(f"[{self.name}] ❌ {message}", data=data)
+            )
 
     def get_capabilities(self) -> Dict[str, Any]:
         """
@@ -195,11 +246,18 @@ class BaseAgent(ABC):
         clients = await self._get_llm_clients_with_fallback()
 
         if not clients:
+            await self.log_error("No LLM clients available")
             raise ValueError("No LLM clients available")
 
         last_error = None
         for idx, client in enumerate(clients):
             try:
+                # Log which LLM is being used
+                if idx == 0:
+                    await self.log_info(f"Using LLM: {client.config.name}")
+                else:
+                    await self.log_warning(f"Trying fallback LLM: {client.config.name}")
+
                 response = await client.request(
                     user_prompt=user_prompt,
                     system_prompt=system_prompt,
@@ -207,17 +265,21 @@ class BaseAgent(ABC):
                 )
 
                 if idx > 0:
-                    print(f"[INFO {self.name}] Fallback to LLM '{client.config.name}' succeeded")
+                    await self.log_info(f"Fallback to LLM '{client.config.name}' succeeded")
 
                 return response
 
             except Exception as e:
                 last_error = e
                 if idx < len(clients) - 1:
-                    print(f"[WARN {self.name}] LLM '{client.config.name}' failed, trying next: {e}")
+                    await self.log_warning(f"LLM '{client.config.name}' failed, trying next: {str(e)}")
+                else:
+                    await self.log_error(f"LLM '{client.config.name}' failed: {str(e)}")
                 continue
 
         # All LLMs failed
+        error_msg = f"All LLMs failed. Last error: {last_error}"
+        await self.log_error(error_msg)
         raise Exception(f"All LLMs failed for agent {self.name}. Last error: {last_error}")
 
     async def request_with_tools_and_fallback(
@@ -245,11 +307,18 @@ class BaseAgent(ABC):
         clients = await self._get_llm_clients_with_fallback()
 
         if not clients:
+            await self.log_error("No LLM clients available")
             raise ValueError("No LLM clients available")
 
         last_error = None
         for idx, client in enumerate(clients):
             try:
+                # Log which LLM is being used
+                if idx == 0:
+                    await self.log_info(f"Using LLM with tools: {client.config.name}")
+                else:
+                    await self.log_warning(f"Trying fallback LLM with tools: {client.config.name}")
+
                 response = await client.request_with_tools(
                     messages=messages,
                     tools=tools,
@@ -258,17 +327,21 @@ class BaseAgent(ABC):
                 )
 
                 if idx > 0:
-                    print(f"[INFO {self.name}] Fallback to LLM '{client.config.name}' succeeded")
+                    await self.log_info(f"Fallback to LLM '{client.config.name}' succeeded")
 
                 return response
 
             except Exception as e:
                 last_error = e
                 if idx < len(clients) - 1:
-                    print(f"[WARN {self.name}] LLM '{client.config.name}' failed, trying next: {e}")
+                    await self.log_warning(f"LLM '{client.config.name}' failed, trying next: {str(e)}")
+                else:
+                    await self.log_error(f"LLM '{client.config.name}' failed: {str(e)}")
                 continue
 
         # All LLMs failed
+        error_msg = f"All LLMs failed. Last error: {last_error}"
+        await self.log_error(error_msg)
         raise Exception(f"All LLMs failed for agent {self.name}. Last error: {last_error}")
 
     async def cleanup(self) -> None:

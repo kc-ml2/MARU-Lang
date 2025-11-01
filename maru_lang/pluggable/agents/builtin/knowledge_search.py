@@ -67,6 +67,9 @@ class KnowledgeSearchAgent(BaseAgent):
         progress_queue: Optional[asyncio.Queue] = None,
         **kwargs
     ) -> AgentResult:
+        # Set progress queue if provided (in case not set by executor)
+        if progress_queue:
+            self.set_progress_queue(progress_queue)
         """
         Execute knowledge search combining internal documents
 
@@ -77,6 +80,8 @@ class KnowledgeSearchAgent(BaseAgent):
         Returns:
             AgentResult with search results in data field
         """
+
+
         try:
             # Check if forced_groups exists in metadata
             forced_groups = metadata.get('forced_groups', {})
@@ -84,10 +89,8 @@ class KnowledgeSearchAgent(BaseAgent):
 
             if forced_groups:
                 forced_groups_message = f"Selected groups from metadata: {forced_groups}"
-                if progress_queue:
-                    await progress_queue.put(PipelineMessage.info(forced_groups_message))
-            if progress_queue:
-                await progress_queue.put(PipelineMessage.info(f"Retrieve method: {retrive_method}"))
+                await self.log_info(forced_groups_message)
+            await self.log_info(f"Retrieve method: {retrive_method}")
             # Step 1: Execute preprocessing agents in parallel
             preprocessing_results = await self._execute_preprocessing_agents(
                 question, 
@@ -104,31 +107,27 @@ class KnowledgeSearchAgent(BaseAgent):
                 total_retrieval_count = group_agent_result.data.get('total_retrieval_count')
             else:
                 selected_groups = {}
-                total_retrieval_count = 0
-                if progress_queue:
-                    await progress_queue.put(PipelineMessage.warning("Selected groups: None"))
+                # Use default_k from RAG config instead of 0
+                total_retrieval_count = self.rag_config.retriever.default_k
+                await self.log_warning(f"Selected groups: None, using default_k={total_retrieval_count}")
 
             
             intent_agent_result = preprocessing_results.get('intent_extractor', None)
 
             if intent_agent_result and intent_agent_result.success:
                 search_query = intent_agent_result.data.get('rewritten_question')
-                if progress_queue:
-                    await progress_queue.put(PipelineMessage.info(f"Rewritten query: {search_query}"))
+                await self.log_info(f"Rewritten query: {search_query}")
             else:
                 search_query = question
-                if progress_queue:
-                    await progress_queue.put(PipelineMessage.warning("No intent extraction result, using original question"))
+                await self.log_warning("No intent extraction result, using original question")
 
             keyword_agent_result = preprocessing_results.get('keyword_extractor', None)
             if keyword_agent_result and keyword_agent_result.success:
                 search_keywords = keyword_agent_result.data.get('extracted_keywords')
-                if progress_queue:
-                    await progress_queue.put(PipelineMessage.info(f"Extracted keywords: {search_keywords}"))
+                await self.log_info(f"Extracted keywords: {search_keywords}")
             else:
                 search_keywords = []
-                if progress_queue:
-                    await progress_queue.put(PipelineMessage.warning("No keywords extracted, fallback to vector-only search"))
+                await self.log_warning("No keywords extracted, fallback to vector-only search")
                 # 오류 나면 vector 로만
                 retrive_method = "vector"
 
@@ -137,8 +136,8 @@ class KnowledgeSearchAgent(BaseAgent):
                 if forced_groups:
                     # forced_selected_groups가 있으면 그것 사용 (search_all_on_empty 무시)
                     selected_groups = forced_groups
-            if not selected_groups and self.rag_config.retriever.search_on_empty_groups and progress_queue:
-                await progress_queue.put(PipelineMessage.warning("Search on empty groups is enabled, searching all documents"))
+            if not selected_groups and self.rag_config.retriever.search_on_empty_groups:
+                await self.log_warning("Search on empty groups is enabled, searching all documents")
 
             if selected_groups or self.rag_config.retriever.search_on_empty_groups:
                 internal_results = await self._search_internal_documents(
@@ -152,12 +151,11 @@ class KnowledgeSearchAgent(BaseAgent):
                 )
 
                 # Send pre-reranking results to progress queue
-                if progress_queue:
-                    pre_rerank_summary = self._format_search_results_summary(
-                        internal_results,
-                        "Search results before reranking"
-                    )
-                    await progress_queue.put(PipelineMessage.info(pre_rerank_summary))
+                pre_rerank_summary = self._format_search_results_summary(
+                    internal_results,
+                    "Search results before reranking"
+                )
+                await self.log_info(pre_rerank_summary)
 
                 # rerank internal results
                 if self.retriever.should_rerank():
@@ -168,16 +166,14 @@ class KnowledgeSearchAgent(BaseAgent):
                     internal_results = reranked_results
 
                     # Send post-reranking results to progress queue
-                    if progress_queue:
-                        post_rerank_summary = self._format_search_results_summary(
-                            reranked_results,
-                            "Search results after reranking"
-                        )
-                        await progress_queue.put(PipelineMessage.info(post_rerank_summary))
+                    post_rerank_summary = self._format_search_results_summary(
+                        reranked_results,
+                        "Search results after reranking"
+                    )
+                    await self.log_info(post_rerank_summary)
             else:
                 internal_results = {}
-                if progress_queue:
-                    await progress_queue.put(PipelineMessage.warning("No search performed (no groups and search_on_empty_groups=False)"))
+                await self.log_warning("No search performed (no groups and search_on_empty_groups=False)")
 
             internal_context = self._format_internal_results(internal_results)
             internal_results_count = sum(len(docs) for docs in internal_results.values())
@@ -187,9 +183,6 @@ class KnowledgeSearchAgent(BaseAgent):
                 internal_context,
                 kwargs.get('chat_history', None)
             )
-
-            print(f"[KnowledgeSearch] ✓ Response generated")
-            print(f"{'='*80}\n")
 
             return AgentResult(
                 success=True,
@@ -202,12 +195,7 @@ class KnowledgeSearchAgent(BaseAgent):
             )
 
         except Exception as e:
-            import traceback
             error_msg = f"Knowledge search failed: {str(e)}"
-            print(f"\n[KnowledgeSearch] ❌ ERROR: {error_msg}")
-            print(f"[KnowledgeSearch] Traceback:")
-            traceback.print_exc()
-            print(f"{'='*80}\n")
             return AgentResult(
                 success=False,
                 result="",
@@ -259,8 +247,7 @@ class KnowledgeSearchAgent(BaseAgent):
             preprocessing_results = {}
             for name, result in zip(agent_names, results):
                 if isinstance(result, Exception):
-                    if progress_queue:
-                        await progress_queue.put(PipelineMessage.error(f"Error executing {name}: {result}"))
+                    await self.log_error(f"Error executing {name}: {result}")
                     preprocessing_results[name] = AgentResult(
                         success=False,
                         result="",
@@ -289,8 +276,7 @@ class KnowledgeSearchAgent(BaseAgent):
 
         # No groups specified
         if not selected_groups:
-            if progress_queue:
-                await progress_queue.put(PipelineMessage.info(f"Searching all groups total {total_retrieval_count} documents with {default_embedding_model}"))
+            await self.log_info(f"Searching all groups total {total_retrieval_count} documents with {default_embedding_model}")
             result = await self.retriever.search(
                 query=question,
                 top_k=total_retrieval_count,
@@ -300,15 +286,13 @@ class KnowledgeSearchAgent(BaseAgent):
             )
             return {"__all__": result}
         else:
-            if progress_queue:
-                await progress_queue.put(PipelineMessage.info(f"Searching {list(selected_groups.keys())} groups total {total_retrieval_count} documents"))
+            await self.log_info(f"Searching {list(selected_groups.keys())} groups total {total_retrieval_count} documents")
 
         results = {}
         for group, selected_group in selected_groups.items():
             embedding_model = selected_group.get('embedding_model')
             top_k = selected_group.get('retrieval_count')
-            if progress_queue:
-                await progress_queue.put(PipelineMessage.info(f"Searching group '{group}' with top_k={top_k} with {embedding_model}"))
+            await self.log_info(f"Searching group '{group}' with top_k={top_k} with {embedding_model}")
 
             group_results = await self.retriever.search(
                 query=question,
@@ -370,7 +354,8 @@ class KnowledgeSearchAgent(BaseAgent):
 
         for group, docs in results.items():
             if docs:
-                lines.append(f"  {group} - {len(docs)} documents")
+                display_group_name = group if group != '__all__' else 'All groups'
+                lines.append(f"  {display_group_name} - {len(docs)} documents")
                 for i, doc in enumerate(docs, 1):
                     doc_id = doc.id
                     score = doc.metadata.get('score', 0.0)

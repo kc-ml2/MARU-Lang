@@ -103,6 +103,17 @@ class MCPClientAgent(BaseAgent):
                     # Execute tool calls on MCP server
                     tool_results = await self._execute_tool_calls(tool_calls, session)
 
+                    # Check if any tool calls were made
+                    if not tool_calls:
+                        return AgentResult(
+                            success=False,
+                            result="",
+                            error="No tool calls were made by LLM"
+                        )
+
+                    # Check if all tool executions were successful
+                    failed_tools = [r for r in tool_results if not r['success']]
+
                     # tool_results to text -> response
                     response_parts = []
                     for tool_result in tool_results:
@@ -124,9 +135,31 @@ class MCPClientAgent(BaseAgent):
 
                     response_text = "\n\n".join(response_parts)
 
+                    # If any tool failed, return failure with details
+                    if failed_tools:
+                        error_details = "; ".join([
+                            f"{t['tool']}: {t.get('error', 'Unknown error')}"
+                            for t in failed_tools
+                        ])
+                        return AgentResult(
+                            success=False,
+                            result=response_text,  # Include partial results
+                            error=f"MCP tool execution failed: {error_details}",
+                            data={
+                                "tool_calls": tool_calls,
+                                "tool_results": tool_results
+                            },
+                            metadata={
+                                "agent": self.name,
+                                "tools_called": len(tool_calls),
+                                "failed_tools": len(failed_tools)
+                            }
+                        )
+
+                    # All tools succeeded
                     return AgentResult(
                         success=True,
-                        result=response_text,  # 주요 응답 텍스트
+                        result=response_text,
                         data={
                             "tool_calls": tool_calls,
                             "tool_results": tool_results
@@ -138,7 +171,6 @@ class MCPClientAgent(BaseAgent):
                     )
 
         except Exception as e:
-            print(f"[DEBUG MCPClientAgent] Exception: {e}")
             return AgentResult(
                 success=False,
                 result="",

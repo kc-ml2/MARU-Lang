@@ -26,8 +26,6 @@ class ChatPipeline(BasePipeline):
         super().__init__()
         self.agent_selector = agent_selector
         self.agent_executor = agent_executor
-        print(
-            f"[DEBUG ChatPipeline] Enabled to select agents: {agent_selector.get_enabled_agents()}")
 
     async def process(self):
         """
@@ -68,8 +66,7 @@ class ChatPipeline(BasePipeline):
                         execution_context=execution_context
                     )
                 except Exception as e:
-                    print(f"[ERROR ChatPipeline] Error: {e}")
-
+                    await self.queue.put(PipelineMessage.error(f"Error: {e}"))
                 await self.queue.put(ChatProcess(
                     step=ChatStep.AGENT_EXECUTION,
                     data=execution_result,
@@ -87,7 +84,7 @@ class ChatPipeline(BasePipeline):
                     chat_history=chat_history
                 )
             except Exception as e:
-                print(f"[ERROR ChatPipeline] Response agent failed: {e}")
+                await self.queue.put(PipelineMessage.error(f"Response agent failed: {e}"))
                 # Ultimate fallback
                 answer = "죄송합니다. 답변을 생성하는 중 오류가 발생했습니다."
 
@@ -102,7 +99,7 @@ class ChatPipeline(BasePipeline):
             ))
 
         except Exception as e:
-            print(f"[ERROR ChatPipeline] Pipeline failed: {e}")
+            await self.queue.put(PipelineMessage.error(f"Pipeline failed: {e}"))
             await self.queue.put(PipelineComplete(data=None))
             raise
 
@@ -162,7 +159,7 @@ class ChatPipeline(BasePipeline):
         response_agent = self.agent_executor.agent_registry.get('response')
 
         if not response_agent:
-            print("[ERROR ChatPipeline] response_agent not found")
+            await self.queue.put(PipelineMessage.error("response_agent not found"))
             return "죄송합니다. 응답 생성 에이전트를 찾을 수 없습니다."
 
         # Initialize response_agent if not already initialized
@@ -171,7 +168,7 @@ class ChatPipeline(BasePipeline):
                 await response_agent.initialize()
                 self.agent_executor._initialized_agents.add('response')
             except Exception as e:
-                print(f"[ERROR ChatPipeline] Failed to initialize response_agent: {e}")
+                await self.queue.put(PipelineMessage.error(f"Failed to initialize response_agent: {e}"))
                 return "죄송합니다. 응답 생성 에이전트 초기화에 실패했습니다."
 
         # Execute response_agent with execution result
@@ -186,11 +183,11 @@ class ChatPipeline(BasePipeline):
             if result.success and result.result:
                 return result.result
             else:
-                print(f"[ERROR ChatPipeline] Response agent returned no response: {result.error}")
+                await self.queue.put(PipelineMessage.error(f"Response agent returned no response: {result.error}"))
                 return "죄송합니다. 응답을 생성할 수 없습니다."
 
         except Exception as e:
-            print(f"[ERROR ChatPipeline] Response agent execution failed: {e}")
+            await self.queue.put(PipelineMessage.error(f"Response agent execution failed: {e}"))
             raise
 
     async def cleanup(self):
