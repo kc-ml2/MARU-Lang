@@ -70,6 +70,9 @@ class RerankerConfigLoader(DefaultConfigLoader[RerankerConfig]):
     def validate_config(self, data: Dict[str, Any]) -> bool:
         """Validate reranker configuration data"""
         # 필수 필드가 없으므로 기본적으로 유효
+        if not isinstance(data, dict):
+            logger.error(f"Reranker config data is not a dict: {type(data)}")
+            return False
         return True
 
     def get_merged_config(self) -> RerankerConfig:

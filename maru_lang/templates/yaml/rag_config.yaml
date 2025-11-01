@@ -5,6 +5,7 @@
 # Retriever global settings
 # ============================================================
 retriever:
+  search_on_empty_groups: true     # Search on empty groups
   # Default search parameters
   default_k: 5              # Number of search results to return
   default_method: "vector"  # Choose among vector, bm25, or ensemble
@@ -59,9 +60,7 @@ groups:
   #   components:
   #     loader: "markdown"        # Loader to use for this group
   #     chunker: "sentence"       # Chunker to use for this group
-  #     reranker: "bge-reranker-v2-m3"  # Reranker to use for this group
-  #     # Note: embedder is NOT supported per-group
-  #     # All documents must use the same embedder (set in embedder_config.yaml)
+  #     embedding_model: "BAAI/bge-m3"  # Embedding model to use for this group
 
   # Example: General documents group
   # general_docs:

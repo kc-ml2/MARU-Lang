@@ -64,35 +64,6 @@ class ExtractionConfig:
 
 
 @dataclass
-class InternalSearchConfig:
-    """Internal search configuration"""
-    max_results: int = 8
-    search_all_on_empty: bool = False  # group이 없을 때 모든 문서 검색 여부
-
-
-@dataclass
-class WebSearchConfig:
-    """Web search configuration"""
-    enabled: bool = True
-    max_results: int = 5
-    fallback_threshold: float = 0.6
-    search_domains: List[str] = field(default_factory=list)
-
-
-@dataclass
-class SearchConfig:
-    """Search configuration for knowledge_search"""
-    internal_search: Optional[InternalSearchConfig] = None
-    web_search: Optional[WebSearchConfig] = None
-
-    def __post_init__(self):
-        if isinstance(self.internal_search, dict):
-            self.internal_search = InternalSearchConfig(**self.internal_search)
-        if isinstance(self.web_search, dict):
-            self.web_search = WebSearchConfig(**self.web_search)
-
-
-@dataclass
 class ToolParameterProperty:
     """Tool parameter property"""
     type: str
@@ -198,7 +169,6 @@ class AgentGeneralConfig:
     max_context_length: Optional[int] = None
     classification_config: Optional[ClassificationConfig] = None
     extraction_config: Optional[ExtractionConfig] = None
-    search_config: Optional[SearchConfig] = None
     formatting: Optional[FormattingConfig] = None
     scenario_config: Optional[ScenarioConfig] = None
     fallback_config: Optional[FallbackConfig] = None
@@ -209,8 +179,6 @@ class AgentGeneralConfig:
                 **self.classification_config)
         if isinstance(self.extraction_config, dict):
             self.extraction_config = ExtractionConfig(**self.extraction_config)
-        if isinstance(self.search_config, dict):
-            self.search_config = SearchConfig(**self.search_config)
         if isinstance(self.formatting, dict):
             self.formatting = FormattingConfig(**self.formatting)
         if isinstance(self.scenario_config, dict):

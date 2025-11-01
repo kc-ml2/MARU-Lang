@@ -12,10 +12,12 @@ config = get_system_config()
 from maru_lang.core.relation_db.connection import run_with_orm_context
 from maru_lang.commands.ingest import ingest_function
 from maru_lang.commands.remove import remove_function
+from maru_lang.commands.transfer import transfer_function
 from maru_lang.commands.install import install_configs
 from maru_lang.commands.chat import chat_session
 from maru_lang.commands.status import show_status
 from maru_lang.commands.tree import show_group_tree_command
+from maru_lang.configs.diff_checker import check_config_differences
 
 
 
@@ -44,6 +46,16 @@ def serve(
     maru_app_path = os.path.join(os.getcwd(), 'maru_app')
     if os.path.exists(maru_app_path) and maru_app_path not in sys.path:
         sys.path.insert(0, maru_app_path)
+
+    # Check configuration differences
+    try:
+        diff_report = check_config_differences()
+        if not diff_report.startswith("✓"):
+            typer.echo("\n" + "="*80)
+            typer.echo(diff_report)
+            typer.echo("="*80 + "\n")
+    except Exception as e:
+        typer.echo(f"⚠️  Warning: Could not check config differences: {e}\n")
 
     # Override defaults with CLI arguments when provided
     host = host or config.server.host
@@ -132,6 +144,8 @@ def ingest(
         None, "--user-group", "-ug", help="User groups that should receive access permission (multiple values allowed)"),
     batch_size: int = typer.Option(
         1000, "--batch-size", "-b", help="Maximum memory per batch in MB (default: 1000 MB)"),
+    re_embed: bool = typer.Option(
+        False, "--re-embed", "-r", help="Delete existing embeddings and re-embed all documents from scratch"),
 ):
     """Parse every document in the folder, chunk it, and store it in the database."""
     group = path.name
@@ -153,6 +167,7 @@ def ingest(
         path,
         user_groups,
         batch_size,
+        re_embed,
     )
 
 
@@ -185,6 +200,16 @@ def chat(
     # Check if installation is complete
     _check_maru_app_installation()
 
+    # Check configuration differences
+    try:
+        diff_report = check_config_differences()
+        if not diff_report.startswith("✓"):
+            typer.echo("\n" + "="*80)
+            typer.echo(diff_report)
+            typer.echo("="*80 + "\n")
+    except Exception as e:
+        typer.echo(f"⚠️  Warning: Could not check config differences: {e}\n")
+
     # Parse group selections
     if groups == "all":
         # Search across every group
@@ -215,7 +240,7 @@ def install(
     console = Console()
 
     console.print(Panel.fit(
-        "[bold cyan]LLM Chatbot Configuration Installer[/bold cyan]\n"
+        "[bold cyan]Maru Installer[/bold cyan]\n"
         "This will create configuration directories and sample files.",
         border_style="cyan"
     ))
@@ -258,6 +283,18 @@ def tree(
 ):
     """Show the DocumentGroup hierarchy."""
     run_with_orm_context(show_group_tree_command, name, depth)
+
+
+@app.command()
+def transfer(
+    group_name: str = typer.Argument(..., help="DocumentGroup name to transfer"),
+    new_manager_email: str = typer.Argument(..., help="Email of the new manager"),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Transfer without confirmation"
+    ),
+):
+    """Transfer DocumentGroup manager to another user"""
+    run_with_orm_context(transfer_function, group_name, new_manager_email, force)
 
 def _check_maru_app_installation() -> bool:
     """Check if required files exist and guide user to install if not"""

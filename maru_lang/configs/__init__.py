@@ -6,6 +6,7 @@ This module provides backward compatibility imports and manages non-pluggable co
 """
 from .base import DefaultConfigLoader
 from .manager import ConfigManager, get_config_manager
+from .diff_checker import check_config_differences, ConfigDiffChecker
 
 # Import pluggable configs for backward compatibility
 from maru_lang.pluggable.configs import (
@@ -68,4 +69,8 @@ __all__ = [
     # Config Manager
     'ConfigManager',
     'get_config_manager',
+
+    # Config Diff Checker
+    'check_config_differences',
+    'ConfigDiffChecker',
 ]

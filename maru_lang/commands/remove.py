@@ -33,12 +33,31 @@ async def remove_function(
     typer.secho("🗑️  DocumentGroup 삭제", fg=typer.colors.RED, bold=True)
     typer.echo("=" * 50)
 
-    group = await DocumentGroup.get_or_none(name=group_name)
+    group = await DocumentGroup.get_or_none(name=group_name).prefetch_related("manager")
     if not group:
         typer.secho(
             f"❌ DocumentGroup '{group_name}'을 찾을 수 없습니다.",
             fg=typer.colors.RED,
         )
+        raise typer.Exit(1)
+
+    # ========== 2. Manager 확인 (삭제 보호) ==========
+    if group.manager:
+        typer.echo("\n" + "=" * 50)
+        typer.secho(
+            "🛡️  삭제 보호: 이 DocumentGroup에는 관리자가 지정되어 있습니다!",
+            fg=typer.colors.YELLOW,
+            bold=True,
+        )
+        typer.echo("=" * 50)
+        typer.echo(f"   관리자: {group.manager.name} ({group.manager.email})")
+        typer.echo("\n관리자가 있는 DocumentGroup은 삭제할 수 없습니다.")
+        typer.echo("삭제하려면 먼저 다음 방법 중 하나를 선택하세요:")
+        typer.echo("  1. 다른 사용자에게 관리자 권한 이전:")
+        typer.echo(f"     maru transfer {group_name} <new_manager_email>")
+        typer.echo("  2. 관리자 제거 (권장하지 않음):")
+        typer.echo(f"     maru unmanage {group_name}")
+        typer.echo()
         raise typer.Exit(1)
 
     # ========== 2. 하위 그룹 및 문서 수집 ==========

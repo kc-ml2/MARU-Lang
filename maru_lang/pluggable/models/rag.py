@@ -59,14 +59,9 @@ class RetrieverConfig:
     """Retriever 전역 설정"""
     default_k: int = 5
     default_method: str = "vector"  # vector, bm25, ensemble
-
-    # 쿼리 타입별 가중치
+    search_on_empty_groups: bool = True
     query_type_weights: Dict[str, QueryTypeWeights] = field(default_factory=dict)
-
-    # 대표 쿼리 (쿼리 타입 분류용)
     representative_queries: Dict[str, str] = field(default_factory=dict)
-
-    # Fallback 로직 설정
     fallback_logic: Optional[FallbackLogicConfig] = None
 
     @classmethod
@@ -87,6 +82,7 @@ class RetrieverConfig:
         return cls(
             default_k=data.get('default_k', 5),
             default_method=data.get('default_method', 'vector'),
+            search_on_empty_groups=data.get('search_on_empty_groups', True),
             query_type_weights=query_type_weights,
             representative_queries=data.get('representative_queries', {}),
             fallback_logic=fallback_logic,
@@ -98,9 +94,7 @@ class GroupComponents:
     """그룹별 플러거블 컴포넌트 설정"""
     loader: Optional[str] = None
     chunker: Optional[str] = None
-    # embedder는 그룹별로 다르면 검색 비교가 어려우므로 제거
-    # 모든 문서는 동일한 embedding space에 있어야 함
-    reranker: Optional[str] = None
+    embedding_model: Optional[str] = None
 
 
 @dataclass
@@ -126,7 +120,7 @@ class GroupRagConfig:
             components = GroupComponents(
                 loader=data['components'].get('loader'),
                 chunker=data['components'].get('chunker'),
-                reranker=data['components'].get('reranker'),
+                embedding_model=data['components'].get('embedding_model'),
             )
 
         return cls(

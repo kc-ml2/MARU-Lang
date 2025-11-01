@@ -107,23 +107,10 @@ class MaruLangApp(FastAPI):
             if validation_status['errors']:
                 raise RuntimeError("Critical configuration errors found")
 
-        # Print configuration summary
-        summary = config_manager.get_summary()
-        print(f"  ✅ LLM: {summary['llm']['total']} servers")
-        print(f"  ✅ Prompts: {summary['prompt']['total']} templates")
-        print(f"  ✅ Groups: {len(config_manager.group_loader.all_groups)} groups")
-        print(f"  ✅ Tools: {summary['tool']['total']} tools")
-
         # 2. Register ORM
         print("🗄️ Initializing databases...")
         register_orm = get_register_orm()
         async with register_orm(self):
-
-            # 3. Initialize LLM servers (using the new configuration system)
-            print("🤖 Initializing LLM servers...")
-            llm_manager = get_llm_manager()
-            await llm_manager.initialize_servers()
-            print(f"  ✅ Active servers: {llm_manager.get_active_servers_count()}/{llm_manager.get_all_servers_count()}")
 
             # Store config manager in app state for access in endpoints
             self.state.config_manager = config_manager

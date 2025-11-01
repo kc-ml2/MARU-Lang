@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
 import asyncio
 
-config = get_system_config()
 
 
 def run_with_orm_context(coro: Callable[..., Awaitable], *args, **kwargs):
@@ -17,6 +16,7 @@ def run_with_orm_context(coro: Callable[..., Awaitable], *args, **kwargs):
 
 
 def get_register_orm():
+    config = get_system_config()
     # partial을 사용해서 미리 설정된 RegisterTortoise를 반환
     return partial(
         RegisterTortoise,
@@ -31,6 +31,8 @@ def get_register_orm():
 
 @asynccontextmanager
 async def orm_context():
+    config = get_system_config()
+
     await Tortoise.init(
         db_url=config.database.get_database_url(),
         modules={"models": [
@@ -38,6 +40,11 @@ async def orm_context():
         use_tz=True,
     )
     await Tortoise.generate_schemas()
+
+    # Admin 사용자 자동 생성
+    from maru_lang.services.admin import ensure_admin_user
+    await ensure_admin_user()
+
     try:
         yield
     finally:

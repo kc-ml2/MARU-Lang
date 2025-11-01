@@ -1,22 +1,25 @@
 """
 Retriever: 검색 로직 관리 (VectorDB + Embedder + Reranker 조합)
 """
-from typing import List, Optional, Literal, Tuple, Dict
 import logging
 import numpy as np
+from typing import List, Optional, Literal, Tuple, Dict
+from maru_lang.pluggable.embedders import Embedder, get_embedder
 from konlpy.tag import Okt
 from rank_bm25 import BM25Okapi
 from maru_lang.core.vector_db.base import VectorDB, RetrieveDocument
-from maru_lang.configs import EmbedderConfig, get_config_manager
-from maru_lang.pluggable.embedders import get_embedder, Embedder
+from maru_lang.configs import get_config_manager
 from maru_lang.pluggable.rerankers import get_reranker, Reranker
 from maru_lang.pluggable.models.reranker import RerankerConfig
 from maru_lang.pluggable.models.rag import RagConfig
-from maru_lang.utils.distribution import allocate_by_weight, normalized_groups_weights
+from maru_lang.services.document import get_all_descendant_group_names
+from maru_lang.pluggable.agents.agent_factory import AgentFactory
+from maru_lang.configs import get_config_manager
+
 
 logger = logging.getLogger(__name__)
 
-SearchMethod = Literal["vector", "bm25", "ensemble"]
+RetriveMethod = Literal["vector", "ensemble"]
 
 # 기본값 상수 정의
 DEFAULT_QUERY_TYPE_WEIGHTS = {
@@ -56,12 +59,10 @@ class Retriever:
         reranker: Optional[Reranker] = None,
         reranker_config: Optional[RerankerConfig] = None,
         rag_config: Optional[RagConfig] = None,
-        embedder_config: Optional[EmbedderConfig] = None,
     ):
         """
         Args:
             vdb: VectorDB 인스턴스
-            embedder: Embedder 인스턴스 (None이면 자동 생성)
             reranker: Reranker 인스턴스 (method="model"일 때만 필요)
             reranker_config: Reranker 설정
         """
@@ -71,7 +72,6 @@ class Retriever:
         self.embedder = embedder or get_embedder()
         self.reranker = reranker or get_reranker()
         self.rag_config = rag_config or config_manager.get_rag_config()
-        self.embedder_config = embedder_config or config_manager.get_embedder_config()
         self.reranker_config = reranker_config or config_manager.get_reranker_config()
         self._representative_vectors = None
         self.okt: Optional[Okt] = None  # BM25용 형태소 분석기
@@ -79,134 +79,39 @@ class Retriever:
     async def search(
         self,
         query: str,
-        top_k: Optional[int] = None,
-        method: Optional[SearchMethod] = None,
-        document_group_map: Optional[Dict[str, List[str]]] = None,
-        document_group_weights: Optional[Dict[str,float]] = None,
-        use_reranking: Optional[bool] = None,
-        embedding_model: Optional[str] = None,
+        top_k: int,
+        embedding_model: str,
+        keywords: Optional[List[str]] = None,
+        document_groups: Optional[List[str]] = None,
+        retrive_method: Optional[RetriveMethod] = None,
         **kwargs,
-    ) -> Dict[str, List[RetrieveDocument]]:
+    ) -> List[RetrieveDocument]:
 
-        if method is None:
-            method = self.rag_config.retriever.default_method
-        if top_k is None:
-            top_k = self.rag_config.retriever.default_k
-    
-        all_results = {}
+        results: List[RetrieveDocument] = []
+        all_document_gruops = await get_all_descendant_group_names(document_groups)
 
-        if document_group_map is None:
-            document_groups = {"__all__": None}
-            allocated_group_counts = {}
+        # 검색 수행
+        if retrive_method == "vector":
+            results = self._vector_search(
+                query, top_k, embedding_model, all_document_gruops, **kwargs)
+        elif retrive_method == "ensemble":
+            results = self._ensemble_search(
+                query, top_k, keywords, embedding_model, all_document_gruops, **kwargs)
         else:
-            document_groups = document_group_map
-
-            # document_group_weights가 None이면 균등 분배
-            if document_group_weights is None:
-                uniform_weight = 1.0 / len(document_groups)
-                document_group_weights = {g: uniform_weight for g in document_groups.keys()}
-
-            normalized_group_weights = normalized_groups_weights(
-                list(document_groups.keys()),
-                document_group_weights
-            )
-            allocated_group_counts = allocate_by_weight(
-                normalized_group_weights,
-                top_k,
-            )
-        print(f"allocated_group_counts: {allocated_group_counts}")
-
-        for parent_group, all_inner_groups in document_groups.items():
-            # 할당된 k 값 가져오기
-            if not allocated_group_counts:
-                k = top_k
-            else:
-                k = allocated_group_counts.get(parent_group, 0)
-
-            print(f"parent_group: {parent_group}")
-            print(f"k: {k}")
-            print(f"all_inner_groups: {all_inner_groups}")
-
-            # k=0이면 검색 스킵 (빈 결과 반환)
-            if k <= 0:
-                print(f"⚠️  Skipping group '{parent_group}' (k={k})")
-                all_results[parent_group] = []
-                continue
-
-            # 그룹별 embedding model 가져오기 (파라미터로 명시되지 않은 경우에만)
-            group_embedding_model = embedding_model
-            if method in ("vector", "ensemble") and group_embedding_model is None:
-                group_embedding_model = self._get_default_embedding_model(parent_group)
-
-            # 검색 수행
-            if method == "vector":
-                results = self._vector_search(
-                    query, k, all_inner_groups, group_embedding_model, **kwargs
-                )
-            elif method == "bm25":
-                results = self._bm25_search(query, k, all_inner_groups, **kwargs)
-            elif method == "ensemble":
-                results = self._ensemble_search(
-                    query, k, all_inner_groups, group_embedding_model, **kwargs
-                )
-            else:
-                raise ValueError(f"Unknown search method: {method}")
-
-            all_results[parent_group] = results
-
-        # Reranking 적용 (옵션)
-        should_rerank = self._should_use_reranking(use_reranking)
-        if should_rerank and all_results:
-            return await self._rerank_results(query, all_results)
-        return all_results
-
-    def _get_default_embedding_model(
-        self,
-        document_group: Optional[str] = None
-    ) -> str:
-        """
-        Embedding model 자동 결정
-
-        모든 문서는 동일한 embedding space에 있어야 하므로
-        Global embedder config만 사용
-
-        Args:
-            document_group: 사용되지 않음 (하위 호환성 유지)
-
-        Returns:
-            embedding model name
-
-        Raises:
-            ValueError: 설정된 embedding model이 없는 경우
-        """
-
-        # Global default 사용
-        embedder_config = self.embedder_config
-        if embedder_config and embedder_config.default_model:
-            return embedder_config.default_model
-
-        # 설정 없으면 오류
-        raise ValueError(
-            "No embedding model configured. Please set default_model in embedder_config.yaml"
-        )
+            raise ValueError(f"Unknown search method: {retrive_method}")
+        
+        return results
 
     def _vector_search(
         self,
         query: str,
         k: int,
+        embedding_model: str,
         document_groups: Optional[List[str]],
-        embedding_model: Optional[str],
         **kwargs,
     ) -> List[RetrieveDocument]:
         """Vector similarity search"""
-        if not embedding_model:
-            raise ValueError("embedding_model is required for vector search")
-
-        # 쿼리 임베딩
-        query_embedding = self.embedder.encode(
-            [query], embedding_model, show_progress=False
-        )[0]
-
+        query_embedding = self.embedder.encode([query], embedding_model)[0]
         # VectorDB 검색
         return self.vdb.similarity_search(
             query_embedding=query_embedding,
@@ -285,26 +190,24 @@ class Retriever:
         self,
         query: str,
         k: int,
+        keywords: List[str],
+        embedding_model: str,
         document_groups: Optional[List[str]],
-        embedding_model: Optional[str],
         **kwargs,
     ) -> List[RetrieveDocument]:
         """Ensemble search (vector + BM25 with RRF fusion)"""
-        if not embedding_model:
-            raise ValueError("embedding_model is required for ensemble search")
-
-        # 쿼리 임베딩
-        query_embedding = self.embedder.encode(
-            [query], embedding_model, show_progress=False
-        )[0]
 
         # BM25 검색
         bm25_k = kwargs.pop("bm25_k", k)
+        # keywords가 리스트면 문자열로 join
+        bm25_query = ' '.join(keywords) if isinstance(keywords, list) else keywords
         bm25_docs = self._bm25_search(
-            query=query,
+            query=bm25_query,
             k=bm25_k,
             document_groups=document_groups,
         )
+
+        query_embedding = self.embedder.encode([query], embedding_model)[0]
 
         # Vector similarity 검색
         cosine_k = kwargs.pop("cosine_k", k)
@@ -393,20 +296,11 @@ class Retriever:
         )
         return sorted_docs[:k]
 
-    def _should_use_reranking(self, use_reranking: Optional[bool]) -> bool:
-        """Reranking 사용 여부 결정"""
-        # 명시적으로 지정된 경우 그대로 사용
-        if use_reranking is not None:
-            return use_reranking
+    def should_rerank(self) -> bool:
+        """Check if reranking should be performed"""
+        return self.reranker_config is not None and self.reranker_config.enabled
 
-        # Config에서 확인
-        if self.reranker_config:
-            return self.reranker_config.enabled
-
-        # 기본값: False
-        return False
-
-    async def _rerank_results(
+    async def rerank_results(
         self,
         query: str,
         all_results: Dict[str, List[RetrieveDocument]],
@@ -514,9 +408,6 @@ class Retriever:
         top_k: int,
     ) -> List[RetrieveDocument]:
         """Agent 기반 reranking (LLM 등)"""
-        import asyncio
-        from maru_lang.pluggable.agents.agent_factory import AgentFactory
-        from maru_lang.configs import get_config_manager
 
         try:
             # Agent 이름 확인
@@ -539,7 +430,6 @@ class Retriever:
                 return results
 
             # Agent 생성 및 실행
-            print(f"🔄 Starting LLM-based reranking with agent '{agent_name}' for {len(results)} documents...")
             factory = AgentFactory()
             agent = factory.create_agent(agent_name, agent_config)
             if not agent:
@@ -567,7 +457,6 @@ class Retriever:
                         doc.metadata["reranker_score"] = score
                         reranked_results.append(doc)
 
-                print(f"✅ LLM reranking completed: {len(results)} → {len(reranked_results)} documents (top scores: {[f'{s:.3f}' for _, s in agent_result.data[:3]]})")
                 return reranked_results
             else:
                 logger.error(
@@ -646,11 +535,9 @@ class Retriever:
                 self._representative_vectors = {}
                 for query_type, query_text in representative_queries.items():
                     embedding = self.embedder.encode(
-                        [query_text], embedding_model, show_progress=False
+                        [query_text], embedding_model
                     )[0]
                     self._representative_vectors[query_type] = embedding
-
-                print("✅ Representative query vectors initialized")
             except Exception as e:
                 print(f"⚠️ Failed to initialize representative vectors: {e}")
                 return None
@@ -710,7 +597,6 @@ class Retriever:
     def _get_representative_queries_from_config(self) -> dict:
         """Config에서 대표 쿼리 로드"""
         try:
-            from maru_lang.configs import get_config_manager
 
             config_manager = get_config_manager()
             rag_config = config_manager.get_rag_config()

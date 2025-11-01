@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.panel import Panel
 from rich.markdown import Markdown
+from maru_lang.pipelines.base import PipelineMessage, MessageType
 from maru_lang.dependencies.chat import get_chat_manager
 from maru_lang.pipelines.chat import ChatPipeline
 from maru_lang.models.agents import AgentSelection, ExecutionResult, ChatResult, ChatProcess
@@ -189,6 +190,16 @@ async def chat_session(
                         chat_history=chat_history,
                         forced_groups=forced_groups if forced_groups != ["__all__"] else None
                     ):
+
+                        if isinstance(step_result, PipelineMessage):
+                            if step_result.message_type == MessageType.INFO:
+                                console.print(
+                                    f"[dim]  → {step_result.message}[/dim]")
+                            elif step_result.message_type == MessageType.ERROR:
+                                console.print(f"[red]❌ {step_result.message}[/red]")
+                            elif step_result.message_type == MessageType.WARNING:
+                                console.print(f"[yellow]  ⚠️ {step_result.message}[/yellow]")
+                            continue
                         step = step_result.step
 
                         # 단계별 상태 표시

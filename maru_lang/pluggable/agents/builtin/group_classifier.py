@@ -1,8 +1,12 @@
 """Group Classifier Agent - Classifies user questions into appropriate document groups"""
 import json
-from typing import Dict, Any, Optional, List
+import asyncio
+from typing import Dict, Any, Optional, List, Tuple
+from maru_lang.configs import RagConfig
+from maru_lang.pipelines.base import PipelineMessage
 from maru_lang.pluggable.agents.base import BaseAgent, AgentResult
 from maru_lang.configs.manager import get_config_manager
+from maru_lang.utils.distribution import allocate_by_weight
 
 
 class GroupClassifierAgent(BaseAgent):
@@ -14,6 +18,7 @@ class GroupClassifierAgent(BaseAgent):
     ):
         super().__init__(**kwargs)
         self.available_groups: Dict[str, Any] = {}
+        self.rag_config: RagConfig = None
         self.keyword_mappings = {}
 
     async def _setup(self) -> None:
@@ -21,25 +26,14 @@ class GroupClassifierAgent(BaseAgent):
         config_manager = get_config_manager()
         config_manager.ensure_loaded()
 
-        rag_loader = getattr(config_manager, "rag_loader", None)
-
-        if not rag_loader:
-            print("⚠️  RagConfig loader is not available; no document groups loaded")
-            self.available_groups = {}
-            self.base_group_weights = {}
-            return
-
-        # Ensure groups are loaded from rag configuration
-        if not getattr(rag_loader, "all_groups", None):
-            rag_loader.reload()
-
-        rag_groups = getattr(rag_loader, "all_groups", {}) or {}
-        self.available_groups = dict(rag_groups)
+        self.rag_config = config_manager.get_rag_config()
+        self.embedder_config = config_manager.get_embedder_config()
 
     async def execute(
         self,
         question: str,
         metadata: Optional[Dict[str, Any]] = {},
+        progress_queue: Optional[asyncio.Queue] = None,
         **kwargs
     ) -> AgentResult:
         """
@@ -51,25 +45,25 @@ class GroupClassifierAgent(BaseAgent):
             **kwargs: Additional parameters
 
         Returns:
-            AgentResult containing classified groups
+            AgentResult containing classified groups 
         """
         forced_groups = metadata.get('forced_groups', None)
         if forced_groups:
             # check forced_groups is valid
             for group in forced_groups:
-                if group not in self.available_groups:
+                if group not in self.rag_config.groups:
                     # # TODO notify warning
                     pass
 
-
         # Use the complete set of managed groups
-        if not self.available_groups:
+        if not self.rag_config.groups:
             return AgentResult(
-                success=True,
-                result="",
+                success=False,
                 data={
-                    'selected_groups': [],
-                    'confidence': 0.1,
+                    'selected_groups': {},
+                    'total_retrieval_count': self.rag_config.retriever.default_k,
+                    'default_embedding_model': self._get_embedding_model(),
+                    'confidence': 0.0,
                     'reasoning': 'No document groups available'
                 }
             )
@@ -79,11 +73,12 @@ class GroupClassifierAgent(BaseAgent):
             available_groups_str = self._format_available_groups(forced_groups)
             if not available_groups_str:
                 return AgentResult(
-                    success=True,
-                    result="",
+                    success=False,
                     data={
-                        'selected_groups': [],
-                        'confidence': 0.1,
+                        'selected_groups': {},
+                        'total_retrieval_count': self.rag_config.retriever.default_k,
+                        'default_embedding_model': self._get_embedding_model(),
+                        'confidence': 0.0,
                         'reasoning': 'No available groups provided'
                     }
                 )
@@ -93,50 +88,147 @@ class GroupClassifierAgent(BaseAgent):
                 available_groups_str,
             )
 
-            # 모든 그룹 목록으로 검증
-            processed_result = self._process_classification_result(
-                classification_result,
-                list(self.available_groups.keys())
-            )
+            selected_groups, confidence, reasoning, group_confidences = self._parse_classification_result(classification_result)
+            if not selected_groups:
+                return AgentResult(
+                    success=False,
+                    data={
+                        'selected_groups': {},
+                        'total_retrieval_count': self.rag_config.retriever.default_k,
+                        'default_embedding_model': self._get_embedding_model(),
+                        'confidence': confidence,
+                        'reasoning': 'No selected groups provided'
+                    })
+            
+            group_with_weights_str = [f"{group_name}: {group_confidence}" for group_name, group_confidence in zip(selected_groups, group_confidences)]
+            selected_group_message = f"Selected groups: {group_with_weights_str}"
+            if progress_queue:
+                await progress_queue.put(PipelineMessage.info(selected_group_message))
+                await progress_queue.put(PipelineMessage.info(f"Confidence: {confidence} and threshold: {self._get_confidence_threshold()}"))
+                await progress_queue.put(PipelineMessage.info(f"Reasoning: {reasoning}"))
+            # 2) 길이 보정 + 타입/음수 방어
+            safe_confidences = []
+            for v in group_confidences:
+                try:
+                    fv = float(v)
+                    if fv < 0:
+                        fv = 0.0
+                except (TypeError, ValueError):
+                    fv = 0.0
+                safe_confidences.append(fv)
 
-            selected_groups = processed_result.get('selected_groups', [])
+            if len(selected_groups) != len(safe_confidences):
+                safe_confidences = (
+                    safe_confidences[:len(selected_groups)]
+                    + [0.0] * max(0, len(selected_groups) - len(safe_confidences))
+                )
+
+            # 3) 합 0 방지 + 정규화
+            total = sum(safe_confidences)
+            if total <= 0:
+                # 점수가 전부 0이면 우선 균등분포
+                safe_confidences = [1.0 / len(selected_groups)] * len(selected_groups)
+            else:
+                safe_confidences = [v / total for v in safe_confidences]
+
+            # 4) 전체 신뢰도 임계치 체크
+            if confidence < self._get_confidence_threshold():
+                # 전반 신뢰도가 낮으면 균등분포로 ‘내려앉기’
+                # normalized_scores: Dict[str, float] = {
+                #     group: 1.0 / len(selected_groups) for group in selected_groups
+                # }
+                normalized_scores = {
+                    group: 1.0 if group == selected_groups[0] else 0.0 for group in selected_groups
+                }
+                # 전반 신뢰가 낮으면 가장 높은 [1]번 그룹을 1로 선택 나머지는 0으로 선택
+                if progress_queue:
+                    await progress_queue.put(PipelineMessage.info("Confidence is too low, selected the highest confidence group and set the rest to 0"))
+                return AgentResult(
+                    success=True,
+                    data={
+                        'selected_groups': self._group_result_package(selected_groups, normalized_scores),
+                        'total_retrieval_count': self.rag_config.retriever.default_k,
+                        'default_embedding_model': self._get_embedding_model(),
+                        'confidence': confidence,
+                        'reasoning': reasoning + 'Confidence is too low',
+                    })
+
+            # 5) 신뢰도 충분: 정규화한 점수 사용
             return AgentResult(
                 success=True,
-                result=', '.join(selected_groups),
-                data=processed_result,
-                metadata={
-                    'classification_method': 'llm_with_tools',
-                }
-            )
+                data={
+                    'selected_groups': self._group_result_package(selected_groups, safe_confidences),
+                    'total_retrieval_count': self.rag_config.retriever.default_k,
+                    'confidence': confidence,
+                    'reasoning': reasoning,
+                })      
+            
 
         except Exception as e:
             # Fallback to default group on error
             return AgentResult(
-                success=True,
-                result="",
+                success=False,
                 data={
-                    'selected_groups': [],
-                    'confidence': 0.1,
-                    'reasoning': f'Fallback due to error: {str(e)}',
-                    'fallback_used': True
-                },
-                metadata={
-                    'classification_method': 'fallback',
-                    'error': str(e)
+                    'selected_groups': {},
+                    'total_retrieval_count': self.rag_config.retriever.default_k,
+                    'confidence': 0.0,
+                    'reasoning': f'Fallback due to error: {str(e)}'
                 }
             )
 
     def _format_available_groups(self, forced_groups: List[str] = None) -> str:
         """Format all available groups for LLM prompt"""
         group_descriptions = []
-        for group_name, group_config in self.available_groups.items():
+        for group_name, group_config in self.rag_config.groups.items():
             if forced_groups and group_name not in forced_groups:
                 continue
-            description = getattr(group_config, 'description', '') or 'No description provided.'
+            description = group_config.description or 'No description provided.'
             desc = f"- {group_name}: {description}"
             group_descriptions.append(desc)
 
         return "\n".join(group_descriptions)
+
+    def _group_result_package(
+        self,
+        gruop_names: list[str],
+        group_confidences: list[float],
+    ):
+
+        allocated_results = allocate_by_weight(
+            groups_with_weights=[(group_name, group_confidence) for group_name, group_confidence in zip(gruop_names, group_confidences)],
+            max_results=self.rag_config.retriever.default_k,
+        )
+        return {
+            group_name: {
+                'embedding_model': self._get_embedding_model(group_name),
+                'retrieval_count': allocated_results[group_name],
+            }
+            for group_name in gruop_names
+        }
+
+    def _parse_classification_result(self, result: Dict[str, Any]) -> Tuple[List[str], float, str, List[float]]:
+
+        # Extract arguments from tool_calls structure
+        tool_calls = result.get('tool_calls', [])
+        if tool_calls:
+            # Get arguments from first tool call
+            arguments = tool_calls[0].get('function', {}).get('arguments', {})
+            # If arguments is a string, parse it
+            if isinstance(arguments, str):
+                arguments = json.loads(arguments)
+        else:
+            # Fallback: assume result is already the arguments
+            arguments = result
+
+
+        # Extract and validate groups
+        selected_groups = arguments.get('selected_groups', [])
+        confidence = arguments.get('confidence', 0.0)
+        reasoning = arguments.get('reasoning', 'No reasoning provided')
+        group_confidences = arguments.get('group_confidences', [])
+
+        return selected_groups, confidence, reasoning, group_confidences
+
 
     async def _classify_with_llm(
         self,
@@ -174,139 +266,7 @@ class GroupClassifierAgent(BaseAgent):
 
         return response
 
-    def _process_classification_result(
-        self,
-        result: Dict[str, Any],
-        available_group_names: List[str]
-    ) -> Dict[str, Any]:
-        """Process and validate classification result"""
-        # Extract arguments from tool_calls structure
-        tool_calls = result.get('tool_calls', [])
-        if tool_calls:
-            # Get arguments from first tool call
-            arguments = tool_calls[0].get('function', {}).get('arguments', {})
-            # If arguments is a string, parse it
-            if isinstance(arguments, str):
-                arguments = json.loads(arguments)
-        else:
-            # Fallback: assume result is already the arguments
-            arguments = result
-
-        print(f"🧭[GroupClassifier][arguments] {arguments}")
-
-        # Extract and validate groups
-        selected_groups = arguments.get('selected_groups', [])
-        confidence = arguments.get('confidence', 0.0)
-        reasoning = arguments.get('reasoning', 'No reasoning provided')
-        group_scores_raw = arguments.get('group_confidences') or arguments.get('group_scores')
-
-        normalized_scores: Dict[str, float] = {}
-
-        threshold = self._get_confidence_threshold()
-
-        # If overall confidence is high enough, trust the selected groups directly
-        if selected_groups and confidence >= threshold:
-            print(
-                f"🧭[GroupClassifier][confidence_override] confidence={confidence} >= {threshold}, "
-                f"using selected_groups={selected_groups}"
-            )
-            normalized_scores = {group: 0.0 for group in available_group_names}
-            primary_group = selected_groups[0]
-            if primary_group in normalized_scores:
-                normalized_scores[primary_group] = 1.0
-
-            return {
-                'selected_groups': selected_groups,
-                'confidence': confidence,
-                'group_confidences': normalized_scores,
-                'group_weights': normalized_scores,
-                'reasoning': reasoning,
-            }
-
-        # Case 1: LLM returns list of confidences aligned with selected_groups
-        if isinstance(group_scores_raw, list) and selected_groups:
-            confidences_list = []
-            try:
-                confidences_list = [float(score) for score in group_scores_raw]
-            except (TypeError, ValueError):
-                confidences_list = []
-
-            if len(confidences_list) != len(selected_groups):
-                # Length mismatch: pad or trim to match selected_groups
-                confidences_list = (
-                    confidences_list[:len(selected_groups)]
-                    + [0.0] * max(0, len(selected_groups) - len(confidences_list))
-                )
-
-            # Map confidences to corresponding selected groups
-            for group_name, score in zip(selected_groups, confidences_list):
-                if group_name in available_group_names:
-                    normalized_scores[group_name] = max(float(score), 0.0)
-
-        # Case 2: dictionary input (fallback for older format)
-        elif isinstance(group_scores_raw, dict):
-            for group_name, score in group_scores_raw.items():
-                try:
-                    normalized_scores[group_name] = max(float(score), 0.0)
-                except (TypeError, ValueError):
-                    normalized_scores[group_name] = 0.0
-
-        # Ensure every available group has a score (default 0)
-        normalized_scores = {
-            group_name: normalized_scores.get(group_name, 0.0)
-            for group_name in available_group_names
-        }
-
-        total_score = sum(normalized_scores.values())
-        if total_score > 0:
-            normalized_scores = {
-                group: score / total_score for group, score in normalized_scores.items()
-            }
-        elif normalized_scores:
-            equal_score = 1.0 / len(normalized_scores)
-            normalized_scores = {group: equal_score for group in normalized_scores}
-
-        print(
-            f"🧭[GroupClassifier][normalized_scores] selected={selected_groups}, "
-            f"scores={normalized_scores}"
-        )
-
-        # Determine priority order (respect LLM-selected order)
-        prioritized_groups: List[str] = []
-        seen = set()
-        for group in selected_groups:
-            if group not in seen:
-                prioritized_groups.append(group)
-                seen.add(group)
-
-        # Then, add remaining groups by descending normalized score
-        for group, _ in sorted(
-            normalized_scores.items(), key=lambda item: item[1], reverse=True
-        ):
-            if group not in seen:
-                prioritized_groups.append(group)
-                seen.add(group)
-
-        valid_groups: List[str] = []
-        invalid_groups: List[str] = []
-        for group in prioritized_groups:
-            if group not in available_group_names:
-                invalid_groups.append(group)
-                continue
-            if normalized_scores.get(group, 0.0) > 0:
-                valid_groups.append(group)
-
-        if invalid_groups:
-            reasoning += f" (Excluded invalid groups: {', '.join(invalid_groups)})"
-
-        return {
-            'selected_groups': valid_groups,
-            'confidence': confidence,
-            'group_confidences': normalized_scores,
-            'group_weights': normalized_scores,
-            'reasoning': reasoning,
-        }
-
+       
     def _get_confidence_threshold(self) -> float:
         """Retrieve confidence threshold from configuration with fallback"""
         try:
@@ -321,3 +281,11 @@ class GroupClassifierAgent(BaseAgent):
             name: config.description
             for name, config in self.available_groups.items()
         }
+
+    def _get_embedding_model(self, group_name: Optional[str] = None) -> str:
+        """Get embedding model from configuration"""
+        if group_name:
+            group_config = self.rag_config.groups.get(group_name, None)
+            if group_config and group_config.components and group_config.components.embedding_model:
+                return group_config.components.embedding_model
+        return self.embedder_config.default_model

@@ -176,9 +176,11 @@ class SystemConfigLoader:
             # Pattern: ${ENV:VAR_NAME} or ${ENV:VAR_NAME:default}
             pattern = r'\$\{ENV:([A-Z0-9_]+)(?::([^}]*))?\}'
 
-            def replacer(match):
-                var_name = match.group(1)
-                default_value = match.group(2)
+            # Check if the entire string is a single env var substitution
+            full_match = re.fullmatch(pattern, data)
+            if full_match:
+                var_name = full_match.group(1)
+                default_value = full_match.group(2)
 
                 env_value = os.getenv(var_name)
 
@@ -198,15 +200,24 @@ class SystemConfigLoader:
                     try:
                         return int(default_value)
                     except ValueError:
-                        return default_value if default_value else None
+                        return default_value if default_value else ""
                 else:
-                    return None
+                    return ""
 
-            result = re.sub(pattern, replacer, data)
-            # Handle the case where the entire string is a substitution
-            if result != data:
-                return result
-            return data
+            # If not a full match, do string substitution (returns string only)
+            def replacer(match):
+                var_name = match.group(1)
+                default_value = match.group(2)
+
+                env_value = os.getenv(var_name)
+                if env_value is not None:
+                    return env_value
+                elif default_value is not None:
+                    return default_value
+                else:
+                    return ""
+
+            return re.sub(pattern, replacer, data)
         else:
             return data
 
@@ -292,12 +303,9 @@ class SystemConfigLoader:
     def load(self) -> SystemConfig:
         """Load system configuration from YAML file"""
         if not self.config_path.exists():
-            logger.warning(
-                f"System config file not found: {self.config_path}. "
-                "Using default configuration."
-            )
-            # Return default configuration
-            return SystemConfig(
+            # Silently return default configuration
+            # (no warning needed as defaults are sufficient)
+            self.config = SystemConfig(
                 server=ServerConfig(),
                 environment=EnvironmentConfig(),
                 database=DatabaseConfig(),
@@ -305,6 +313,7 @@ class SystemConfigLoader:
                 email=EmailConfig(),
                 vector_db=VectorDBConfig()
             )
+            return self.config
 
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
