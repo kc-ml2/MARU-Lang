@@ -45,8 +45,12 @@ class GroupClassifierAgent(BaseAgent):
             **kwargs: Additional parameters
 
         Returns:
-            AgentResult containing classified groups 
+            AgentResult containing classified groups
         """
+        # Set progress queue if provided
+        if progress_queue:
+            self.set_progress_queue(progress_queue)
+
         forced_groups = metadata.get('forced_groups', None)
         if forced_groups:
             # check forced_groups is valid
@@ -102,10 +106,9 @@ class GroupClassifierAgent(BaseAgent):
             
             group_with_weights_str = [f"{group_name}: {group_confidence}" for group_name, group_confidence in zip(selected_groups, group_confidences)]
             selected_group_message = f"Selected groups: {group_with_weights_str}"
-            if progress_queue:
-                await progress_queue.put(PipelineMessage.info(selected_group_message))
-                await progress_queue.put(PipelineMessage.info(f"Confidence: {confidence} and threshold: {self._get_confidence_threshold()}"))
-                await progress_queue.put(PipelineMessage.info(f"Reasoning: {reasoning}"))
+            await self.log_info(selected_group_message)
+            await self.log_info(f"Confidence: {confidence} and threshold: {self._get_confidence_threshold()}")
+            await self.log_info(f"Reasoning: {reasoning}")
             # 2) 길이 보정 + 타입/음수 방어
             safe_confidences = []
             for v in group_confidences:
@@ -141,8 +144,7 @@ class GroupClassifierAgent(BaseAgent):
                     group: 1.0 if group == selected_groups[0] else 0.0 for group in selected_groups
                 }
                 # 전반 신뢰가 낮으면 가장 높은 [1]번 그룹을 1로 선택 나머지는 0으로 선택
-                if progress_queue:
-                    await progress_queue.put(PipelineMessage.info("Confidence is too low, selected the highest confidence group and set the rest to 0"))
+                await self.log_info("Confidence is too low, selected the highest confidence group and set the rest to 0")
                 return AgentResult(
                     success=True,
                     data={

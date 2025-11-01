@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional, Type
 from maru_lang.pluggable.agents.base import BaseAgent
 from maru_lang.models.agents import AgentResult, AgentSelection, ExecutionResult, ExecutionContext
 from maru_lang.pluggable.agents.agent_factory import AgentFactory
+from maru_lang.pipelines.base import PipelineMessage
 
 
 class AgentExecutor:
@@ -37,30 +38,43 @@ class AgentExecutor:
         for agent in agents:
             self.register_agent(agent)
 
-    async def _initialize_agent(self, agent_name: str) -> bool:
+    async def _initialize_agent(
+        self,
+        agent_name: str,
+        progress_queue: Optional[asyncio.Queue] = None
+    ) -> tuple[bool, Optional[str]]:
         """
         Initialize an agent if not already initialized
 
         Args:
             agent_name: Name of the agent to initialize
+            progress_queue: Optional queue for progress messages
 
         Returns:
-            True if successful, False otherwise
+            Tuple of (success, error_message)
         """
         if agent_name not in self.agent_registry:
-            return False
+            return False, f"Agent '{agent_name}' not found in registry"
 
         if agent_name not in self._initialized_agents:
             try:
                 agent = self.agent_registry[agent_name]
                 await agent.initialize()
                 self._initialized_agents.add(agent_name)
-                return True
+                if progress_queue:
+                    await progress_queue.put(
+                        PipelineMessage.info(f"✓ Agent '{agent_name}' initialized successfully")
+                    )
+                return True, None
             except Exception as e:
-                print(f"Failed to initialize agent {agent_name}: {e}")
-                return False
+                error_msg = f"Failed to initialize agent '{agent_name}': {str(e)}"
+                if progress_queue:
+                    await progress_queue.put(
+                        PipelineMessage.error(f"❌ {error_msg}")
+                    )
+                return False, error_msg
 
-        return True
+        return True, None
 
     async def execute(
         self,
@@ -81,26 +95,39 @@ class AgentExecutor:
         agent_results = {}
         errors = {}
         executed_order = []
+        progress_queue = execution_context.progress_queue
+
+        # Send start message
+        if progress_queue:
+            await progress_queue.put(
+                PipelineMessage.info(f"Initializing agents: {', '.join(selection.selected_agents)}")
+            )
 
         # Initialize all selected agents
         for agent_name in selection.selected_agents:
             if agent_name not in self.agent_registry:
-                errors[agent_name] = f"Agent not registered: {agent_name}"
-                print(
-                    f"[DEBUG Executor] Agent {agent_name} not in registry. Available: {list(self.agent_registry.keys())}")
+                error_msg = f"Agent '{agent_name}' not registered (available: {', '.join(list(self.agent_registry.keys()))})"
+                errors[agent_name] = error_msg
+                if progress_queue:
+                    await progress_queue.put(
+                        PipelineMessage.error(error_msg)
+                    )
                 continue
 
-            success = await self._initialize_agent(agent_name)
+            success, error = await self._initialize_agent(agent_name, progress_queue)
             if not success:
-                errors[agent_name] = f"Failed to initialize agent: {agent_name}"
-                print(
-                    f"[DEBUG Executor] Failed to initialize agent: {agent_name}")
+                errors[agent_name] = error or f"Failed to initialize agent: {agent_name}"
 
         # Prepare agent-specific parameters from selection
         agent_params = selection.parameters or {}
 
         # Use execution_order if provided, otherwise fall back to selected_agents
         execution_order = selection.execution_order if selection.execution_order else selection.selected_agents
+
+        if progress_queue:
+            await progress_queue.put(
+                PipelineMessage.info(f"Executing agents in order: {' → '.join(execution_order)}")
+            )
 
         # Execute agents sequentially
         try:
@@ -111,8 +138,14 @@ class AgentExecutor:
                 errors
             )
         except Exception as e:
-            print(f"[DEBUG AgentExecutor] Error: {e}")
-            errors[agent_name] = str(e)
+            error_msg = f"Execution failed: {str(e)}"
+            if progress_queue:
+                await progress_queue.put(
+                    PipelineMessage.error(error_msg)
+                )
+            # Use last agent name if available, otherwise 'unknown'
+            last_agent = execution_order[-1] if execution_order else "unknown"
+            errors[last_agent] = error_msg
 
         return ExecutionResult(
             agent_results=agent_results,
@@ -134,6 +167,7 @@ class AgentExecutor:
         """
         results = {}
         executed = []
+        progress_queue = context.progress_queue
 
         # Save original question before any modification
         if "original_question" not in context.metadata:
@@ -142,14 +176,34 @@ class AgentExecutor:
         for agent_name in execution_order:
             if agent_name in errors:
                 # Agent failed to initialize, stop execution
+                if progress_queue:
+                    await progress_queue.put(
+                        PipelineMessage.warning(
+                            f"⚠️  Skipping agent '{agent_name}' due to initialization error"
+                        )
+                    )
                 break
 
             agent = self.agent_registry.get(agent_name)
             if not agent:
-                errors[agent_name] = f"Agent not found: {agent_name}"
+                error_msg = f"Agent not found: {agent_name}"
+                errors[agent_name] = error_msg
+                if progress_queue:
+                    await progress_queue.put(
+                        PipelineMessage.error(error_msg)
+                    )
                 break
 
             try:
+                # Set progress queue on agent
+                agent.set_progress_queue(progress_queue)
+
+                # Notify agent execution start
+                if progress_queue:
+                    await progress_queue.put(
+                        PipelineMessage.info(f"▶️  Executing agent '{agent_name}'...")
+                    )
+
                 # Merge context with agent-specific params
                 agent_context = context.to_dict()
                 if agent_name in params:
@@ -162,9 +216,21 @@ class AgentExecutor:
 
                 # If agent failed, stop execution chain
                 if not result.success:
-                    errors[agent_name] = result.error or "Agent execution failed"
-                    print(f"[DEBUG AgentExecutor] Agent {agent_name} failed, stopping execution chain")
+                    error_msg = result.error or "Agent execution failed"
+                    errors[agent_name] = error_msg
+                    if progress_queue:
+                        await progress_queue.put(
+                            PipelineMessage.error(
+                                f"Agent '{agent_name}' failed: {error_msg}"
+                            )
+                        )
                     break
+
+                # Success notification
+                if progress_queue:
+                    await progress_queue.put(
+                        PipelineMessage.info(f"✓ Agent '{agent_name}' completed successfully")
+                    )
 
                 # Chain result to next agent: update question with current result
                 if result.result:
@@ -175,13 +241,17 @@ class AgentExecutor:
                         context.metadata[f"{agent_name}_data"] = result.data
 
             except Exception as e:
-                print(f"[DEBUG AgentExecutor] Exception in agent {agent_name}: {e}")
+                error_msg = f"Exception in agent {agent_name}: {str(e)}"
                 errors[agent_name] = str(e)
                 results[agent_name] = AgentResult(
                     success=False,
                     result="",
                     error=str(e)
                 )
+                if progress_queue:
+                    await progress_queue.put(
+                        PipelineMessage.error(error_msg)
+                    )
                 # Stop execution on exception
                 break
 

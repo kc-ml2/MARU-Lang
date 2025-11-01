@@ -228,10 +228,25 @@ async def chat_session(
                             execution_data: ExecutionResult = step_result.data
                             agents_executed = list(
                                 execution_data.agent_results.keys())
-                            
+
                             if agents_executed:
-                                console.print(
-                                    f"[dim]  → Running: {', '.join(agents_executed)}[/dim]")
+                                # Check if execution was successful
+                                if execution_data.success:
+                                    console.print(
+                                        f"[dim]  → [green]✓[/green] Completed: {', '.join(agents_executed)}[/dim]")
+                                else:
+                                    # Show failed agents
+                                    failed_agents = [name for name in agents_executed
+                                                   if not execution_data.agent_results[name].success]
+                                    if failed_agents:
+                                        console.print(
+                                            f"[dim]  → [red]✗[/red] Failed: {', '.join(failed_agents)}[/dim]")
+                                    # Show successful agents if any
+                                    success_agents = [name for name in agents_executed
+                                                    if execution_data.agent_results[name].success]
+                                    if success_agents:
+                                        console.print(
+                                            f"[dim]  → [green]✓[/green] Completed: {', '.join(success_agents)}[/dim]")
 
                             status.update(
                                 "[cyan]✍️  Generating answer...[/cyan]")
