@@ -34,20 +34,30 @@ class ChromaVectorDB(VectorDB):
         embeddings: list[list[float]],
     ) -> None:
         """
-        문서를 VectorDB에 추가
+        문서를 VectorDB에 추가 (ChromaDB 배치 크기 제한을 자동 처리)
 
         Args:
             documents: 문서 리스트 (id, content, metadata 포함)
             embeddings: 임베딩 벡터 리스트 (외부에서 생성)
         """
-        contents = [doc["content"] for doc in documents]
+        # ChromaDB 내부 배치 크기 제한 (5461) 고려
+        CHROMA_MAX_BATCH_SIZE = 5000  # 안전 마진
 
-        self.collection.add(
-            documents=contents,
-            embeddings=embeddings,
-            ids=[doc["id"] for doc in documents],
-            metadatas=[doc["metadata"] for doc in documents]
-        )
+        contents = [doc["content"] for doc in documents]
+        ids = [doc["id"] for doc in documents]
+        metadatas = [doc["metadata"] for doc in documents]
+
+        # 배치 크기가 제한을 초과하면 자동 분할
+        total_items = len(documents)
+        for i in range(0, total_items, CHROMA_MAX_BATCH_SIZE):
+            end_idx = min(i + CHROMA_MAX_BATCH_SIZE, total_items)
+
+            self.collection.add(
+                documents=contents[i:end_idx],
+                embeddings=embeddings[i:end_idx],
+                ids=ids[i:end_idx],
+                metadatas=metadatas[i:end_idx]
+            )
 
     def sync_documents(self) -> None:
         # Chroma는 일반적으로 flush 필요 없음
