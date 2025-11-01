@@ -9,7 +9,7 @@ class FixedSizeChunker(BaseChunker):
     name = "fixed_size"
     description = "고정 크기로 청킹하며 오버랩 지원"
 
-    def __init__(self, chunk_size: int = 500, overlap: int = 200):
+    def __init__(self, chunk_size: int = 1000, overlap: int = 200):
         self.chunk_size = chunk_size
         self.overlap = overlap
 

@@ -12,7 +12,7 @@
 chunkers:
   # Paragraph-based chunker
   paragraph:
-    max_chunk_size: 500
+    max_chunk_size: 2000
 
   # Sentence-based chunker
   sentence:
@@ -20,7 +20,7 @@ chunkers:
 
   # Fixed-size chunker
   fixed_size:
-    chunk_size: 500
+    chunk_size: 1000
     overlap: 200
 
 # Example for custom chunkers:
