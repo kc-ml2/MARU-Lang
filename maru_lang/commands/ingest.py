@@ -14,12 +14,14 @@ from maru_lang.services.user_group import (
 )
 from maru_lang.services.document import get_all_descendant_group_names
 from maru_lang.core.relation_db.models.documents import PermissionAction
+from maru_lang.services.admin import get_or_create_admin_user
 
 
 async def ingest_function(
     path: Path,
     user_groups: Optional[List[str]] = None,
     max_batch_size_mb: int = 1000,
+    re_embed: bool = False,
     verbose: bool = False,
 ):
     """
@@ -29,6 +31,7 @@ async def ingest_function(
         path: ingest할 디렉토리 경로 (폴더 이름이 DocumentGroup 이름으로 사용됨)
         user_groups: 권한을 부여할 UserGroup 리스트
         max_batch_size_mb: 배치당 최대 메모리 크기 (MB, 기본: 10MB)
+        re_embed: 기존 임베딩을 삭제하고 처음부터 다시 임베딩할지 여부
         verbose: 자세한 출력 모드 (모든 처리되는 문서 표시)
     """
     # ========== 입력 검증 ==========
@@ -92,13 +95,19 @@ async def ingest_function(
                 raise typer.Exit(0)
             typer.echo()
 
+    # ========== Admin 사용자 가져오기 ==========
+    admin_user = await get_or_create_admin_user()
+
     # ========== IngestPipeline 실행 ==========
     typer.echo("\n" + "=" * 50)
     typer.secho("🚀 Starting Ingest Pipeline", fg=typer.colors.CYAN, bold=True)
     typer.echo("=" * 50)
     typer.echo(f"📂 Path: {path}")
     typer.echo(f"📦 Group: {group}")
+    typer.echo(f"👤 Manager: {admin_user.name} ({admin_user.email})")
     typer.echo(f"🧠 Batch size: {max_batch_size_mb}MB")
+    if re_embed:
+        typer.echo(f"🔄 Re-embed: True (기존 임베딩 삭제 후 재생성)")
     typer.echo()
 
     import time
@@ -114,7 +123,9 @@ async def ingest_function(
             path=path,
             group_name=group,
             vdb_config=vdb_config,
+            manager_id=admin_user.id,
             max_batch_size_mb=max_batch_size_mb,
+            re_embed=re_embed,
             verbose=verbose,
         )
 

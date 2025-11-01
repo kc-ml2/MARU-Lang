@@ -74,11 +74,3 @@ config:
   timeout: 60
   retry_count: 2
   max_context_length: 12000
-
-  # Search configuration
-  search_config:
-    internal_search:
-      max_results: 8
-      search_all_on_empty: true  # Search all documents when no groups are provided
-    web_search:
-      enabled: false

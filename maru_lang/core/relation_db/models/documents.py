@@ -37,9 +37,29 @@ class DocumentGroup(Model):
         max_length=500,
         unique=True,  # 같은 파일시스템 경로는 단일 DocumentGroup만 존재
     )
-    embedder = fields.CharField(
-        max_length=255,
+
+    # Version ID for VDB chunk filtering and version management
+    version_id = fields.CharField(
+        max_length=64,
+        null=True,  # 임베딩 완료 전에는 null
+        index=True  # 검색 성능을 위한 인덱스
     )
+
+    # Manager (owner) of this document group
+    manager = fields.ForeignKeyField(
+        "models.User",
+        related_name="managed_document_groups",
+        on_delete=fields.RESTRICT  # Manager가 있는 DocumentGroup이 있으면 User 삭제 불가
+    )
+
+    # Pluggable component configurations (used during ingestion)
+    loader = fields.CharField(max_length=255, null=True)           # 사용된 loader 이름
+    chunker = fields.CharField(max_length=255, null=True)          # 사용된 chunker 이름
+    embedding_model = fields.CharField(max_length=255, null=True)  # 사용된 embedding model 이름
+
+    # Configuration snapshot (for detecting changes)
+    config_snapshot = fields.JSONField(null=True, default=dict)  # 사용된 설정의 스냅샷
+
     minhash_signature = fields.JSONField(null=True) # MinHash 시그니처 (128개 정수 배열)
     signature_updated_at = fields.DatetimeField(auto_now=True)
 

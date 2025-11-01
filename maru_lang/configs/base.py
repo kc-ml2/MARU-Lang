@@ -130,10 +130,10 @@ class DefaultConfigLoader(ABC, Generic[T]):
         """Get the name/identifier of a configuration"""
         pass
 
-    @abstractmethod
     def validate_config(self, data: Dict[str, Any]) -> bool:
-        """Validate configuration data"""
-        pass
+        """Validate configuration data - override in subclass if needed"""
+        # Default implementation: return True if data is a dict
+        return isinstance(data, dict)
 
     def load_all(self) -> Dict[str, T]:
         """Load all configurations (base + user)"""

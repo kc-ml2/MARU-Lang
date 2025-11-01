@@ -19,7 +19,11 @@ class AgentConfigLoader(DefaultConfigLoader[AgentConfig]):
     def __init__(self):
         super().__init__(ConfigType.AGENTS)
         # Files to exclude from agent config loading
-        self.exclude_files = {'build_selector.yaml', 'README.md'}
+        self.exclude_files = {
+            'build_selector.yaml',
+            'reranker_config.yaml',  # Reranker configuration, not an agent
+            'README.md'
+        }
 
     def load_all(self) -> Dict[str, AgentConfig]:
         """Load configurations from user directory ONLY (no base configs)"""

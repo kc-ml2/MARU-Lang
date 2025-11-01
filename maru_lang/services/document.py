@@ -21,25 +21,47 @@ async def get_document_group_name(document: Document) -> List[str]:
     return [membership.group.name for membership in group_membership]
 
 
-async def upsert_document_group(name: str, base_path: str, embedder: str) -> DocumentGroup:
+async def upsert_document_group(
+    name: str,
+    base_path: str,
+    embedding_model: str,
+    manager_id: int,
+    loader: str = None,
+    chunker: str = None,
+    config_snapshot: dict = None
+) -> DocumentGroup:
     """
     DocumentGroup을 upsert (base_path 기준으로 찾아서 업데이트 또는 생성)
 
     Args:
         name: 그룹 이름 (디렉토리명)
         base_path: 파일시스템 경로 (unique)
-        embedder: 임베딩 모델명
+        embedding_model: 임베딩 모델명
+        manager_id: 관리자 User ID
+        loader: 사용된 loader 이름
+        chunker: 사용된 chunker 이름
+        config_snapshot: 사용된 설정의 스냅샷 (변경 감지용)
 
     Returns:
         DocumentGroup 인스턴스
     """
     # base_path가 unique이므로 이걸로 upsert
+    defaults = {
+        "name": name.lower(),
+        "embedding_model": embedding_model,
+        "manager_id": manager_id,
+    }
+
+    if loader is not None:
+        defaults["loader"] = loader
+    if chunker is not None:
+        defaults["chunker"] = chunker
+    if config_snapshot is not None:
+        defaults["config_snapshot"] = config_snapshot
+
     doc_group, _ = await DocumentGroup.update_or_create(
         base_path=base_path,
-        defaults={
-            "name": name.lower(),
-            "embedder": embedder
-        }
+        defaults=defaults
     )
     return doc_group
 
@@ -82,12 +104,14 @@ async def get_all_descendant_group_names(
     Returns:
         List of group names including every descendant.
     """
+
     if not group_names:
         return []
 
+    # 1. Look up DocumentGroup instances by name (convert to lowercase for matching)
+    normalized_names = [name.lower() for name in group_names]
 
-    # 1. Look up DocumentGroup instances by name
-    groups = await DocumentGroup.filter(name__in=group_names).all()
+    groups = await DocumentGroup.filter(name__in=normalized_names).all()
     if not groups:
         return []
 
@@ -102,6 +126,8 @@ async def get_all_descendant_group_names(
 
     # 4. Convert IDs back to names
     all_groups = await DocumentGroup.filter(id__in=all_group_ids).all()
-    return [group.name for group in all_groups]
+    result_names = [group.name for group in all_groups]
+
+    return result_names
 
 

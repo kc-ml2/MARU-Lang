@@ -148,15 +148,6 @@ class ConfigManager:
 
         return status
 
-    def get_summary(self) -> Dict[str, Any]:
-        """Get summary of all configurations"""
-        return {
-            'llm': self.llm_loader.get_summary(),
-            'rag': self.rag_loader.get_summary(),
-            'agent': self.agent_loader.get_summary(),
-            'loaded': self._loaded
-        }
-
     def ensure_loaded(self):
         """Ensure configurations are loaded"""
         if not self._loaded:

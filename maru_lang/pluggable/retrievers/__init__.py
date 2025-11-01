@@ -3,11 +3,11 @@
 from .manager import (
     Retriever,
     get_retriever,
-    SearchMethod,
+    RetriveMethod,
 )
 
 __all__ = [
     "Retriever",
     "get_retriever",
-    "SearchMethod",
+    "RetriveMethod",
 ]

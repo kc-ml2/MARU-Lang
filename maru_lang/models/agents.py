@@ -64,6 +64,7 @@ class ExecutionContext:
         # exclude progress_queue
         return {
             "question": self.question,
+            "progress_queue": self.progress_queue,
             "chat_history": self.chat_history,
             "metadata": self.metadata
         }
@@ -126,27 +127,5 @@ class GenerateAnswerResult:
     success: bool = True
     confidence: Optional[float] = None
     metadata: Optional[Dict[str, Any]] = None
-
-
-@dataclass
-class WebSearchResult:
-    """Result from web search"""
-    title: str
-    url: str
-    content: str
-    snippet: str = ""
-    relevance_score: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
-        return {
-            "title": self.title,
-            "url": self.url,
-            "content": self.content,
-            "snippet": self.snippet,
-            "relevance_score": self.relevance_score,
-            "metadata": self.metadata
-        }
 
 

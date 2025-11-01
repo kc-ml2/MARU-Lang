@@ -82,22 +82,20 @@ class IngestPipeline(BasePipeline):
         config_manager.ensure_loaded()
         self.rag_config = config_manager.get_rag_config()
 
-        # Embedding model 결정: Global default만 사용
-        # 모든 문서는 동일한 embedding space에 있어야 검색 시 비교 가능
-        embedder_config = config_manager.get_embedder_config()
-
-        if embedder_config and embedder_config.default_model:
-            self.embedder = embedder_config.default_model
-        else:
+        # Embedding model 설정 저장
+        self.embedder_config = config_manager.get_embedder_config()
+        if not self.embedder_config or not self.embedder_config.default_model:
             raise ValueError(
                 "No embedding model configured. Please set default_model in embedder_config.yaml"
             )
+        self.default_embedding_model = self.embedder_config.default_model
 
         # 중간 결과 저장
         self.all_files = []
         self.supported_files = []
         self.file_hierarchies = []
         self.group_cache = {}
+        self.changed_groups = set()  # 설정이 변경된 그룹들
         self.documents_to_process = []  # 재처리 필요한 문서만
         self.doc_to_group = {}  # document_id -> group_name 매핑
 
@@ -120,8 +118,8 @@ class IngestPipeline(BasePipeline):
 
             # 2. 파일 스캔
             await self._scan_files()
-            # 3. 그룹 생성
-            await self._create_groups()
+            # 3. 그룹 동기화 및 설정 변경 감지
+            await self._sync_groups()
 
             # 4. VDB 설정
             await self._setup_vdb()
@@ -143,6 +141,25 @@ class IngestPipeline(BasePipeline):
             await self.queue.put(PipelineMessage.error(f"Pipeline failed: {str(e)}"))
             await self.queue.put(PipelineComplete(data=None))
             raise
+
+    # ========== Helper Methods ==========
+
+    def _get_embedding_model_for_group(self, group_name: str) -> str:
+        """
+        그룹별 embedding model 결정
+
+        Args:
+            group_name: 그룹 이름
+
+        Returns:
+            embedding model 이름 (그룹 설정이 있으면 그것 사용, 없으면 default)
+        """
+        if self.rag_config:
+            group_config = self.rag_config.groups.get(group_name)
+            if group_config and group_config.components and group_config.components.embedding_model:
+                return group_config.components.embedding_model
+
+        return self.default_embedding_model
 
     # ========== 입력 검증 ==========
 
@@ -232,11 +249,17 @@ class IngestPipeline(BasePipeline):
         self.files = self.supported_files
         await self.queue.put(PipelineMessage.info(f"✓ File scan completed"))
 
-    # ========== DocumentGroup 계층 생성 ==========
+    # ========== DocumentGroup 계층 동기화 ==========
 
-    async def _create_groups(self):
-        """DocumentGroup 계층 생성 (services/document.py 활용)"""
-        await self.queue.put(PipelineMessage.info("🏗️  Building group hierarchy..."))
+    async def _sync_groups(self):
+        """
+        DocumentGroup 계층 동기화 및 설정 변경 감지
+
+        - 파일 시스템 구조에 맞춰 그룹 생성/업데이트
+        - 그룹별 RAG 설정 저장 (loader, chunker, embedding_model)
+        - 설정 변경 시 해당 그룹의 모든 문서를 재처리 대상으로 표시
+        """
+        await self.queue.put(PipelineMessage.info("🏗️  Syncing group hierarchy..."))
 
         # 1. 모든 파일의 그룹 계층 정보 수집
         for f in self.files:
@@ -259,12 +282,52 @@ class IngestPipeline(BasePipeline):
             PipelineMessage.info(f"Creating {len(unique_groups)} document group(s)...")
         )
 
-        # 3. 그룹 생성 (upsert: base_path로 찾아서 업데이트 또는 생성)
+        # 3. 그룹 생성 및 설정 변경 감지
         for path, name in unique_groups.items():
+            # 그룹별 RAG config 조회
+            group_config = None
+            loader_name = None
+            chunker_name = None
+            embedding_model = self._get_embedding_model_for_group(name)
+
+            if self.rag_config:
+                group_config = self.rag_config.groups.get(name)
+                if group_config and group_config.components:
+                    loader_name = group_config.components.loader
+                    chunker_name = group_config.components.chunker
+
+            # 현재 설정 스냅샷 생성
+            config_snapshot = {
+                "loader": loader_name,
+                "chunker": chunker_name,
+                "embedding_model": embedding_model,
+            }
+
+            # 기존 그룹 조회 (변경 감지용)
+            existing_group = await DocumentGroup.get_or_none(base_path=path)
+            config_changed = False
+
+            if existing_group and existing_group.config_snapshot:
+                # 설정 변경 감지
+                old_snapshot = existing_group.config_snapshot
+                if old_snapshot != config_snapshot:
+                    config_changed = True
+                    self.changed_groups.add(name)
+                    await self.queue.put(
+                        PipelineMessage.info(
+                            f"⚠️  Config changed for group '{name}': "
+                            f"{old_snapshot} → {config_snapshot}"
+                        )
+                    )
+
+            # 그룹 upsert
             group = await upsert_document_group(
                 name=name,
                 base_path=path,
-                embedder=self.embedder
+                embedding_model=embedding_model,
+                loader=loader_name,
+                chunker=chunker_name,
+                config_snapshot=config_snapshot,
             )
             self.group_cache[path] = group
 
@@ -278,12 +341,21 @@ class IngestPipeline(BasePipeline):
                 self.group_cache[parent_path], self.group_cache[child_path]
             )
 
-        # 5. base 그룹 설정
+        # 4. base 그룹 설정
         base_path_str = str(self.path.absolute())
         self.group = self.group_cache[base_path_str]
         self.unique_groups = unique_groups
 
-        await self.queue.put(PipelineMessage.info(f"✓ Group hierarchy created"))
+        await self.queue.put(PipelineMessage.info(f"✓ Group hierarchy synced"))
+
+        # 5. 설정 변경 요약
+        if self.changed_groups:
+            await self.queue.put(
+                PipelineMessage.info(
+                    f"📋 Config changed for {len(self.changed_groups)} group(s): "
+                    f"{', '.join(sorted(self.changed_groups))}"
+                )
+            )
 
         # 6. 그룹별 RAG 컴포넌트 설정 출력
         await self._print_group_components()
@@ -312,8 +384,6 @@ class IngestPipeline(BasePipeline):
                     parts.append(f"loader={components.loader}")
                 if components.chunker:
                     parts.append(f"chunker={components.chunker}")
-                if components.reranker:
-                    parts.append(f"reranker={components.reranker}")
 
                 if parts:
                     await self.queue.put(
@@ -385,7 +455,7 @@ class IngestPipeline(BasePipeline):
             self.vdb.health_check()
             await self.queue.put(
                 PipelineMessage.info(
-                    f"✓ VDB connected (embedder: {self.embedder})"
+                    f"✓ VDB connected (default embedder: {self.default_embedding_model})"
                 )
             )
         except Exception as e:
@@ -512,9 +582,19 @@ class IngestPipeline(BasePipeline):
 
                 all_documents.append(doc)
 
-                # 4. 재처리 필요한 문서만 별도 저장
-                if needs_reprocessing:
+                # 4. 재처리 필요 여부 판단
+                # - 파일이 변경된 경우 (needs_reprocessing)
+                # - 그룹 설정이 변경된 경우 (changed_groups에 포함)
+                group_config_changed = doc_group.name in self.changed_groups
+                if needs_reprocessing or group_config_changed:
                     documents_to_process.append(doc)
+                    if group_config_changed and not needs_reprocessing:
+                        # 파일은 변경 안 됐지만 그룹 설정만 변경된 경우
+                        await self.queue.put(
+                            PipelineMessage.info(
+                                f"Reprocessing '{doc.name}' due to group config change"
+                            )
+                        )
 
             except Exception as e:
                 # 개별 파일 처리 실패는 로깅만 하고 계속 진행
@@ -812,9 +892,9 @@ class IngestPipeline(BasePipeline):
             )
         )
 
-        # 임베딩
+        # 임베딩 (현재는 default embedding model 사용, 추후 그룹별로 분리 가능)
         vectors = embedder.encode(
-            batch_texts, self.embedder, show_progress=False
+            batch_texts, self.default_embedding_model, show_progress=False
         )
 
         # VDB 저장

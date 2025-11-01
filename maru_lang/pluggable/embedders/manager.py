@@ -27,7 +27,7 @@ class Embedder:
         self,
         texts: List[str],
         model_name: str,
-        show_progress: bool = True,
+        show_progress: bool = False,
     ) -> List[List[float]]:
         """
         텍스트를 임베딩 벡터로 변환
@@ -70,13 +70,9 @@ class Embedder:
             SentenceTransformer: 로드된 모델 인스턴스
         """
         if model_name not in self.model_cache:
-            print(f"Loading embedding model: {model_name}...")
             self.model_cache[model_name] = SentenceTransformer(
                 model_name, device=self.device
             )
-            dim = self.model_cache[model_name].get_sentence_embedding_dimension()
-            device_info = f"device={self.device}" if self.device else "auto"
-            print(f"✅ Model loaded: {model_name} (dim={dim}, {device_info})")
 
         return self.model_cache[model_name]
 
