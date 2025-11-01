@@ -3,9 +3,8 @@ Ingest Pipeline - 로컬 파일 시스템을 ingest하는 파이프라인
 """
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 from dataclasses import dataclass
-
 from maru_lang.pipelines.base import BasePipeline, PipelineMessage, PipelineComplete
 from maru_lang.core.relation_db.models.documents import (
     Document,
@@ -19,17 +18,17 @@ from maru_lang.services.document import (
     set_document_group_inclusion,
     get_all_descendant_group_ids,
 )
-from maru_lang.core.vector_db.factory import get_vector_db
+from maru_lang.core.vector_db.factory import get_vector_db, VectorDB
 from maru_lang.configs.system_config import get_system_config
 from maru_lang.pluggable.loaders import get_loader
-
-config = get_system_config()
 from maru_lang.pluggable.chunkers import get_chunker
 from maru_lang.configs import get_config_manager
-
-from maru_lang.models.vector_db import ChromaDBConfig
+from maru_lang.pluggable.embedders import get_embedder, Embedder
+from maru_lang.models.vector_db import BaseVectorDBConfig
 from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
 from tortoise.transactions import in_transaction
+
+config = get_system_config()
 
 
 @dataclass
@@ -50,23 +49,29 @@ class IngestPipeline(BasePipeline):
         self,
         path: Path,
         group_name: str,
-        vdb_config: ChromaDBConfig,
+        vdb_config: BaseVectorDBConfig,
+        manager_id: int,
         max_batch_size_mb: int = 1000,
+        re_embed: bool = False,
         verbose: bool = False,
     ):
         """
         Args:
             path: ingest할 디렉토리 경로
             group_name: 최상위 DocumentGroup 이름
-            vdb_config: ChromaDB 설정
+            vdb_config: VectorDB 설정 (ChromaDB, Milvus 등)
+            manager_id: 관리자 User ID
             max_batch_size_mb: 배치당 최대 메모리 크기 (MB, 기본: 1000MB)
+            re_embed: 기존 임베딩을 삭제하고 처음부터 다시 임베딩할지 여부
             verbose: 자세한 출력 모드 (모든 처리되는 문서 표시)
         """
         super().__init__()
         self.path = path
         self.group_name = group_name
         self.vdb_config = vdb_config
+        self.manager_id = manager_id
         self.max_batch_size_mb = max_batch_size_mb
+        self.re_embed = re_embed
         self.verbose = verbose
         # MB를 chars로 변환 (대략 1 char = 1 byte 가정)
         self.max_chars_per_batch = max_batch_size_mb * 1024 * 1024
@@ -124,8 +129,8 @@ class IngestPipeline(BasePipeline):
             # 4. VDB 설정
             await self._setup_vdb()
 
-            # 5. Document 생성
-            await self._create_documents()
+            # 5. Document 동기화
+            await self._sync_documents()
 
             # 6. 파싱, 청킹, 임베딩, VDB 저장
             await self._process_documents()
@@ -156,10 +161,50 @@ class IngestPipeline(BasePipeline):
         """
         if self.rag_config:
             group_config = self.rag_config.groups.get(group_name)
-            if group_config and group_config.components and group_config.components.embedding_model:
-                return group_config.components.embedding_model
+            if group_config and group_config.components and group_config.components.embedder:
+                return group_config.components.embedder
 
         return self.default_embedding_model
+
+    async def _print_group_components(self):
+        """그룹별 RAG 컴포넌트 설정 출력"""
+        if not self.rag_config or not self.rag_config.groups:
+            await self.queue.put(
+                PipelineMessage.info("📦 RAG Components: Using default settings for all groups")
+            )
+            return
+
+        await self.queue.put(PipelineMessage.info("📦 RAG Components Configuration:"))
+
+        # 생성된 그룹 이름들 추출
+        created_group_names = set(self.unique_groups.values())
+
+        for group_name in sorted(created_group_names):
+            group_config = self.rag_config.groups.get(group_name)
+
+            if group_config and group_config.components:
+                components = group_config.components
+                parts = []
+
+                if components.loader:
+                    parts.append(f"loader={components.loader}")
+                if components.chunker:
+                    parts.append(f"chunker={components.chunker}")
+                if components.embedder:
+                    parts.append(f"embedder={components.embedder}")
+
+                if parts:
+                    await self.queue.put(
+                        PipelineMessage.info(f"   {group_name}: {', '.join(parts)}")
+                    )
+                else:
+                    await self.queue.put(
+                        PipelineMessage.info(f"   {group_name}: using default components")
+                    )
+            else:
+                await self.queue.put(
+                    PipelineMessage.info(f"   {group_name}: using default components")
+                )
 
     # ========== 입력 검증 ==========
 
@@ -179,48 +224,7 @@ class IngestPipeline(BasePipeline):
             )
             raise ValueError(f"Path is not a directory: {self.path}")
 
-        # 경로 충돌 검사
-        await self._check_path_conflicts()
-
         await self.queue.put(PipelineMessage.info(f"✓ Directory validated: {self.path}"))
-
-    async def _check_path_conflicts(self):
-        """경로 충돌 검사 - 상위 경로에 DocumentGroup이 있는지 확인"""
-        all_groups = await DocumentGroup.all()
-
-        existing_subgroups = []
-
-        for group in all_groups:
-            existing_path = Path(group.base_path).resolve()
-            new_path = self.path.resolve()
-
-            # 같은 경로면 스킵 (재ingest 허용)
-            if existing_path == new_path:
-                continue
-
-            # 케이스 1: 새 경로가 기존 경로의 하위
-            # → 에러: 상위 그룹에서 ingest 해야 함
-            if new_path.is_relative_to(existing_path):
-                error_msg = (
-                    f"경로 충돌: '{new_path}'는 기존 그룹 '{group.name}' ({existing_path})의 하위 경로입니다.\n"
-                    f"→ 상위 경로에서 Ingest를 실행해주세요."
-                )
-                await self.queue.put(PipelineMessage.error(error_msg))
-                raise ValueError(error_msg)
-
-            # 케이스 2: 기존 경로가 새 경로의 하위
-            # → 허용: 하위 그룹들을 자동으로 업데이트
-            if existing_path.is_relative_to(new_path):
-                existing_subgroups.append(f"'{group.name}' ({existing_path})")
-
-        # 하위 그룹이 있으면 정보 메시지 출력
-        if existing_subgroups:
-            await self.queue.put(
-                PipelineMessage.info(
-                    f"ℹ️  하위에 기존 그룹 발견: {', '.join(existing_subgroups)}\n"
-                    f"   → 자동으로 업데이트됩니다."
-                )
-            )
 
     # ========== 파일 스캔 ==========
 
@@ -267,8 +271,6 @@ class IngestPipeline(BasePipeline):
             self.file_hierarchies.append((f, hierarchy))
 
         # 2. 고유한 그룹들과 부모-자식 관계 추출
-        # unique_groups: {(name, path)} 형태
-        # parent_child_pairs: {(parent_path, child_path)} 형태
         unique_groups = {}  # path -> name
         parent_child_pairs = set()
 
@@ -285,7 +287,6 @@ class IngestPipeline(BasePipeline):
         # 3. 그룹 생성 및 설정 변경 감지
         for path, name in unique_groups.items():
             # 그룹별 RAG config 조회
-            group_config = None
             loader_name = None
             chunker_name = None
             embedding_model = self._get_embedding_model_for_group(name)
@@ -305,13 +306,11 @@ class IngestPipeline(BasePipeline):
 
             # 기존 그룹 조회 (변경 감지용)
             existing_group = await DocumentGroup.get_or_none(base_path=path)
-            config_changed = False
 
             if existing_group and existing_group.config_snapshot:
                 # 설정 변경 감지
                 old_snapshot = existing_group.config_snapshot
                 if old_snapshot != config_snapshot:
-                    config_changed = True
                     self.changed_groups.add(name)
                     await self.queue.put(
                         PipelineMessage.info(
@@ -325,28 +324,55 @@ class IngestPipeline(BasePipeline):
                 name=name,
                 base_path=path,
                 embedding_model=embedding_model,
+                manager_id=self.manager_id,
                 loader=loader_name,
                 chunker=chunker_name,
                 config_snapshot=config_snapshot,
             )
             self.group_cache[path] = group
 
+            # Re-embed 모드: 해당 그룹의 기존 임베딩 삭제
+            if self.re_embed:
+                group_documents = (
+                    await Document.filter(group_memberships__group_id=group.id)
+                    .distinct()
+                    .all()
+                )
+
+                if group_documents:
+                    await self.queue.put(
+                        PipelineMessage.info(
+                            f"🔄 Re-embed: Deleting {len(group_documents)} document(s) embeddings from group '{name}'..."
+                        )
+                    )
+
+                    vdb = get_vector_db(self.vdb_config)
+                    total_deleted = 0
+                    for doc in group_documents:
+                        deleted_count = vdb.delete_all_chunks_by_document_id(doc.id)
+                        total_deleted += deleted_count
+
+                    await self.queue.put(
+                        PipelineMessage.info(
+                            f"   ✓ Deleted {total_deleted} chunk(s) from VectorDB"
+                        )
+                    )
+
+        # 4. 부모-자식 관계 설정
         await self.queue.put(
             PipelineMessage.info(f"Setting up {len(parent_child_pairs)} group relationship(s)...")
         )
 
-        # 4. 부모-자식 관계 설정
         for parent_path, child_path in parent_child_pairs:
             await set_document_group_inclusion(
                 self.group_cache[parent_path], self.group_cache[child_path]
             )
 
-        # 4. base 그룹 설정
         base_path_str = str(self.path.absolute())
         self.group = self.group_cache[base_path_str]
         self.unique_groups = unique_groups
 
-        await self.queue.put(PipelineMessage.info(f"✓ Group hierarchy synced"))
+        await self.queue.put(PipelineMessage.info("✓ Group hierarchy synced"))
 
         # 5. 설정 변경 요약
         if self.changed_groups:
@@ -359,44 +385,6 @@ class IngestPipeline(BasePipeline):
 
         # 6. 그룹별 RAG 컴포넌트 설정 출력
         await self._print_group_components()
-
-    async def _print_group_components(self):
-        """그룹별 RAG 컴포넌트 설정 출력"""
-        if not self.rag_config or not self.rag_config.groups:
-            await self.queue.put(
-                PipelineMessage.info("📦 RAG Components: Using default settings for all groups")
-            )
-            return
-
-        await self.queue.put(PipelineMessage.info("📦 RAG Components Configuration:"))
-
-        # 생성된 그룹 이름들 추출
-        created_group_names = set(self.unique_groups.values())
-
-        for group_name in sorted(created_group_names):
-            group_config = self.rag_config.groups.get(group_name)
-
-            if group_config and group_config.components:
-                components = group_config.components
-                parts = []
-
-                if components.loader:
-                    parts.append(f"loader={components.loader}")
-                if components.chunker:
-                    parts.append(f"chunker={components.chunker}")
-
-                if parts:
-                    await self.queue.put(
-                        PipelineMessage.info(f"  [{group_name}] {', '.join(parts)}")
-                    )
-                else:
-                    await self.queue.put(
-                        PipelineMessage.info(f"  [{group_name}] default settings")
-                    )
-            else:
-                await self.queue.put(
-                    PipelineMessage.info(f"  [{group_name}] default settings")
-                )
 
     def _get_group_hierarchy_for_file(
         self, file_path: Path
@@ -548,7 +536,7 @@ class IngestPipeline(BasePipeline):
                 )
             )
 
-    async def _create_documents(self):
+    async def _sync_documents(self):
         """Document 생성 및 그룹 연결 (변경 감지)"""
         await self.queue.put(PipelineMessage.info("📄 Creating documents..."))
 
@@ -583,12 +571,21 @@ class IngestPipeline(BasePipeline):
                 all_documents.append(doc)
 
                 # 4. 재처리 필요 여부 판단
+                # - re_embed 모드인 경우 (모든 문서 재처리)
                 # - 파일이 변경된 경우 (needs_reprocessing)
                 # - 그룹 설정이 변경된 경우 (changed_groups에 포함)
                 group_config_changed = doc_group.name in self.changed_groups
-                if needs_reprocessing or group_config_changed:
+                if self.re_embed or needs_reprocessing or group_config_changed:
                     documents_to_process.append(doc)
-                    if group_config_changed and not needs_reprocessing:
+                    if self.re_embed and not needs_reprocessing and not group_config_changed:
+                        # re_embed 모드로 재처리되는 경우 (파일/설정 변경 없음)
+                        if self.verbose:
+                            await self.queue.put(
+                                PipelineMessage.info(
+                                    f"Re-embedding '{doc.name}' (forced by --re-embed)"
+                                )
+                            )
+                    elif group_config_changed and not needs_reprocessing:
                         # 파일은 변경 안 됐지만 그룹 설정만 변경된 경우
                         await self.queue.put(
                             PipelineMessage.info(
@@ -649,8 +646,6 @@ class IngestPipeline(BasePipeline):
 
     async def _process_documents(self):
         """파싱 → 청킹 → 임베딩 → VDB 저장 (스트리밍으로 메모리 효율적)"""
-        import hashlib
-        from maru_lang.pluggable.embedders import get_embedder
 
         if not self.documents_to_process:
             await self.queue.put(
@@ -859,7 +854,7 @@ class IngestPipeline(BasePipeline):
         batch_metadata: list,
         batch_docs: list,
         current_batch_chars: int,
-        embedder,
+        embedder: Embedder,
         is_final: bool = False
     ):
         """
@@ -868,12 +863,14 @@ class IngestPipeline(BasePipeline):
         Args:
             batch_number: 배치 번호
             batch_texts: 배치에 포함된 텍스트 리스트
-            batch_metadata: 배치 메타데이터
+            batch_metadata: (doc, chunk_input, idx) 튜플 리스트
             batch_docs: 배치에 포함된 문서 이름 리스트
             current_batch_chars: 현재 배치의 문자 수
             embedder: 임베더 인스턴스
             is_final: 마지막 배치 여부
         """
+        import hashlib
+
         # 문서 목록 포맷팅
         if self.verbose:
             docs_str = ", ".join(batch_docs)
@@ -892,24 +889,24 @@ class IngestPipeline(BasePipeline):
             )
         )
 
-        # 임베딩 (현재는 default embedding model 사용, 추후 그룹별로 분리 가능)
-        vectors = embedder.encode(
-            batch_texts, self.default_embedding_model, show_progress=False
+        # 임베딩 (비동기로 실행하여 UI 블로킹 방지)
+        import asyncio
+        await self.queue.put(
+            PipelineMessage.info(f"   ⏳ Generating embeddings...")
         )
 
-        # VDB 저장
-        self._save_batch_to_vdb(batch_metadata, vectors)
+        vectors = await asyncio.to_thread(
+            embedder.encode,
+            batch_texts,
+            self.default_embedding_model,
+            show_progress=False
+        )
 
-    def _save_batch_to_vdb(self, batch_metadata, vectors) -> int:
-        """
-        배치를 VDB에 저장 (헬퍼 메서드)
+        await self.queue.put(
+            PipelineMessage.info(f"   ✓ Embeddings generated, saving to VDB...")
+        )
 
-        Args:
-            batch_metadata: (doc, chunk_input, idx) 튜플 리스트
-            vectors: 임베딩 벡터 리스트 (이미 Embedder로 생성됨)
-        """
-        import hashlib
-
+        # VDB 저장 준비
         vdb_documents = []
         for (doc, chunk_input, idx), vector in zip(batch_metadata, vectors):
             chunk_id = hashlib.blake2b(
@@ -930,37 +927,21 @@ class IngestPipeline(BasePipeline):
                 },
             })
 
-        # VectorDB에 문서와 임베딩 벡터 함께 전달
-        self.vdb.add_documents(
+        # VectorDB에 문서와 임베딩 벡터 함께 저장 (비동기로 실행)
+        await asyncio.to_thread(
+            self.vdb.add_documents,
             documents=vdb_documents,
             embeddings=vectors,
         )
-        return len(vdb_documents)
-
-    # ========== 마무리 ==========
-
-    async def _update_document_status(self):
-        """재처리된 Document만 ACTIVE로 업데이트"""
-        await self.queue.put(PipelineMessage.info("✅ Updating document status..."))
-
-        if not self.documents_to_process:
-            await self.queue.put(PipelineMessage.info("No documents to update"))
-            return
-
-        for doc in self.documents_to_process:
-            doc.status = DocumentStatus.ACTIVE
-            await doc.save()
 
         await self.queue.put(
-            PipelineMessage.info(
-                f"✅ Updated {len(self.documents_to_process)} document(s) to ACTIVE"
-            )
+            PipelineMessage.info(f"   ✓ Batch #{batch_number} saved to VDB")
         )
 
     # ========== Helper Methods ==========
 
-    @staticmethod
     async def upsert_document_from_file(
+        self,
         name: str,
         path: str,
         size: int,
@@ -1022,7 +1003,12 @@ class IngestPipeline(BasePipeline):
             )
             return new_doc, True
 
-    async def verify_vdb_rdb_sync(self, group: DocumentGroup, documents_to_process: List[Document], vdb):
+    async def verify_vdb_rdb_sync(
+        self, 
+        group: DocumentGroup,
+        documents_to_process: List[Document],
+        vdb: VectorDB,
+    ) -> dict:
         """
         VDB와 RDB 동기화 상태 검증 및 불일치 해결
 
@@ -1096,6 +1082,24 @@ class IngestPipeline(BasePipeline):
                     pass
 
         return stats
+
+    async def _update_document_status(self):
+        """재처리된 Document만 ACTIVE로 업데이트"""
+        await self.queue.put(PipelineMessage.info("✅ Updating document status..."))
+
+        if not self.documents_to_process:
+            await self.queue.put(PipelineMessage.info("No documents to update"))
+            return
+
+        for doc in self.documents_to_process:
+            doc.status = DocumentStatus.ACTIVE
+            await doc.save()
+
+        await self.queue.put(
+            PipelineMessage.info(
+                f"✅ Updated {len(self.documents_to_process)} document(s) to ACTIVE"
+            )
+        )
 
     def _get_result(self) -> IngestResult:
         """결과 반환 (헬퍼 메서드)"""
