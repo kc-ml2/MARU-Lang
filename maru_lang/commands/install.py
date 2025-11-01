@@ -174,12 +174,6 @@ def create_config_directories(base_path: Path, force: bool = False) -> bool:
                             py_path.write_text(py_content)
                             console.print(f"  ✅ Created {relative_path}")
 
-        # Create main README
-        main_readme = base_path / "README.md"
-        if not main_readme.exists() or force:
-            main_readme.write_text(get_main_readme_content())
-            console.print(f"  ✅ Created main README.md")
-
         # Create main.py
         main_py = base_path / "main.py"
         if main_py.exists() and not force:
