@@ -17,6 +17,7 @@ def create_ingest_pipeline(
     group_name: str,
     manager_id: int,
     re_embed: bool = False,
+    all_files_list: Optional[list] = None,
 ) -> IngestPipeline:
     """
     Create IngestPipeline instance for file ingestion.
@@ -26,7 +27,7 @@ def create_ingest_pipeline(
         group_name: Document group name (usually folder name)
         manager_id: User ID who manages this group
         re_embed: Whether to re-embed existing documents
-        verbose: Verbose output mode
+        all_files_list: Complete list of all file paths (for batch upload deletion detection)
 
     Returns:
         IngestPipeline instance
@@ -45,6 +46,7 @@ def create_ingest_pipeline(
         max_batch_size_mb=1000,  # 1GB batch size
         re_embed=re_embed,
         virtual_path=Path(group_name),  # DB 저장용 가상 경로
+        all_files_list=all_files_list,  # 전체 파일 목록 (배치 업로드 삭제 판단용)
     )
 
     return pipeline

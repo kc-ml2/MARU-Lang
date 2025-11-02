@@ -79,17 +79,23 @@ async def check_sync_status(
 @router.post("/sync/upload")
 async def upload_and_ingest(
     folderPath: str = Form(..., description="프로젝트 폴더명"),
-    files: List[UploadFile] = File(..., description="업로드할 파일 배열"),
+    files: List[UploadFile] = File(..., description="업로드할 파일 배열 (현재 배치)"),
     fileMetadata: str = Form(None, description="파일 메타데이터 (JSON 배열: [{fileName, createdAt, relativePath, size}])"),
+    allFilesList: str = Form(None, description="전체 파일 목록 (JSON 배열: [relativePath, ...]) - 배치 업로드 시 삭제 판단용"),
     userGroupIds: str = Form(None, description="사용자 그룹 ID 목록 (JSON 배열 문자열)"),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR))
 ):
     """
     Upload files and process them with IngestPipeline.
 
+    Batch Upload Support:
+    - Client can send files in batches (e.g., 100 files per batch)
+    - allFilesList should contain the complete file list across all batches
+    - This prevents IngestPipeline from deleting files from previous batches
+    - Fingerprint-based deduplication automatically skips already processed files
+
     Processing:
     - Files are uploaded and immediately processed by IngestPipeline
-    - Fingerprint-based deduplication automatically skips already processed files
     - SSE stream provides real-time progress
 
     Returns SSE stream with the following events:
@@ -102,8 +108,9 @@ async def upload_and_ingest(
 
     Args:
         folderPath: Project folder name (used as document group name)
-        files: Files to upload
-        fileMetadata: JSON string of file metadata array
+        files: Files to upload (current batch)
+        fileMetadata: JSON string of file metadata array (current batch)
+        allFilesList: JSON string of all file paths (across all batches) for deletion detection
         userGroupIds: JSON string of user group IDs
         user: Authenticated user
 
@@ -140,6 +147,19 @@ async def upload_and_ingest(
                     error_event = {
                         "type": "error",
                         "data": {"message": f"Invalid fileMetadata format: {str(e)}"}
+                    }
+                    yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+                    return
+
+            # Parse allFilesList from JSON string (for batch upload deletion detection)
+            all_files_list = []
+            if allFilesList:
+                try:
+                    all_files_list = json.loads(allFilesList)
+                except json.JSONDecodeError as e:
+                    error_event = {
+                        "type": "error",
+                        "data": {"message": f"Invalid allFilesList format: {str(e)}"}
                     }
                     yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
                     return
@@ -243,6 +263,7 @@ async def upload_and_ingest(
                 group_name=group_name,  # Use {username}/{folderPath}
                 manager_id=user.id,
                 re_embed=False,
+                all_files_list=all_files_list if all_files_list else None,
             )
 
             # Stream IngestPipeline progress
