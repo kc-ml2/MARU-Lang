@@ -80,14 +80,20 @@ async def check_sync_status(
 async def upload_and_ingest(
     folderPath: str = Form(..., description="프로젝트 폴더명"),
     files: List[UploadFile] = File(..., description="업로드할 파일 배열"),
-    fileMetadata: str = Form(None, description="파일 메타데이터 (JSON 배열: [{fileName, createdAt}])"),
+    fileMetadata: str = Form(None, description="파일 메타데이터 (JSON 배열: [{fileName, createdAt, relativePath, size}])"),
     userGroupIds: str = Form(None, description="사용자 그룹 ID 목록 (JSON 배열 문자열)"),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR))
 ):
     """
-    Upload files and process them with IngestPipeline streaming.
+    Upload files and process them with IngestPipeline.
+
+    Processing:
+    - Files are uploaded and immediately processed by IngestPipeline
+    - Fingerprint-based deduplication automatically skips already processed files
+    - SSE stream provides real-time progress
 
     Returns SSE stream with the following events:
+    - upload_started: Upload started
     - upload_progress: File upload progress
     - ingest_started: Ingestion started
     - ingest_progress: Ingestion progress messages (info, warning, error)
@@ -96,7 +102,9 @@ async def upload_and_ingest(
 
     Args:
         folderPath: Project folder name (used as document group name)
-        files: Files to upload and process
+        files: Files to upload
+        fileMetadata: JSON string of file metadata array
+        userGroupIds: JSON string of user group IDs
         user: Authenticated user
 
     Returns:
@@ -145,16 +153,16 @@ async def upload_and_ingest(
             upload_dir.mkdir(parents=True, exist_ok=True)
 
             # Send upload started event
-            start_event = {
+            upload_start_event = {
                 "type": "upload_started",
                 "data": {
                     "folderPath": folderPath,
                     "groupName": group_name,
                     "totalFiles": len(files),
-                    "message": "파일 업로드를 시작합니다..."
+                    "message": f"{len(files)}개 파일 업로드 시작..."
                 }
             }
-            yield f"data: {json.dumps(start_event, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps(upload_start_event, ensure_ascii=False)}\n\n"
 
             # Upload files
             uploaded_count = 0
