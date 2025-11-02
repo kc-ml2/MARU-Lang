@@ -10,6 +10,8 @@ from maru_lang.schemas.auth import (
     VerifyCodeRequest,
     SignUpRequest,
     LogoutRequest,
+    UserGroupsResponse,
+    UserGroupResponse,
 )
 from maru_lang.services.auth import (
     generate_token,
@@ -17,6 +19,7 @@ from maru_lang.services.auth import (
     create_or_get_user,
     delete_token,
     generate_OTP,
+    get_user_groups,
 )
 
 
@@ -104,3 +107,35 @@ async def verify_code(
 @router.get("/verify")
 async def verify(_=Depends(get_user)):
     return {"message": "ok"}
+
+
+@router.get("/user/groups", response_model=UserGroupsResponse)
+async def get_current_user_groups(
+    user=Depends(get_user)
+):
+    """
+    Get user groups that the authenticated user belongs to.
+
+    Returns:
+        UserGroupsResponse: List of user groups with total count
+    """
+    try:
+        # Get user groups using service function
+        groups = await get_user_groups(user)
+
+        # Convert to response format
+        group_responses = [
+            UserGroupResponse(
+                id=group.id,
+                name=group.name
+            )
+            for group in groups
+        ]
+        return UserGroupsResponse(
+            groups=group_responses,
+            total=len(group_responses)
+        )
+
+    except Exception as e:
+        print(f"❌ Error fetching user groups: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

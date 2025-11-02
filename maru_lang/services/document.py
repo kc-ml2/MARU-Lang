@@ -4,7 +4,10 @@ from maru_lang.core.relation_db.models.documents import (
     DocumentGroup,
     DocumentGroupMembership,
     DocumentGroupInclusion,
+    GroupPermission,
+    PermissionAction,
 )
+from maru_lang.core.relation_db.models.auth import UserGroup
 from maru_lang.utils.document import new_ulid
 
 
@@ -139,5 +142,59 @@ async def get_all_descendant_group_names(
     result_names = [group.name for group in all_groups]
 
     return result_names
+
+
+# ========== Permission helpers ==========
+
+async def set_user_group_permissions(
+    document_group: DocumentGroup,
+    user_group_ids: List[int],
+    actions: List[PermissionAction] = None,
+    replace: bool = True
+) -> dict:
+    """
+    Set permissions for user groups on a document group.
+
+    Args:
+        document_group: DocumentGroup to set permissions on
+        user_group_ids: List of UserGroup IDs to grant permissions
+        actions: List of permission actions (default: [READ, WRITE])
+        replace: If True, remove existing permissions before adding new ones (default: True)
+
+    Returns:
+        Dict with 'created' and 'deleted' counts
+    """
+    if actions is None:
+        actions = [PermissionAction.READ, PermissionAction.WRITE]
+    permissions_created = 0
+    permissions_deleted = 0
+    # Replace mode: 기존 권한 삭제
+    try:
+        if replace:
+            deleted_count = await GroupPermission.filter(
+                document_group=document_group
+            ).delete()
+            permissions_deleted = deleted_count
+
+        # 새로운 권한 추가
+        for user_group_id in user_group_ids:
+            user_group = await UserGroup.get_or_none(id=user_group_id)
+            if not user_group:
+                continue
+            for action in actions:
+                _, created = await GroupPermission.get_or_create(
+                    user_group=user_group,
+                    document_group=document_group,
+                    action=action
+                )
+                if created:
+                    permissions_created += 1
+    except Exception as e:
+        print(f"Error setting user group permissions: {e}")
+        raise e
+    return {
+        "created": permissions_created,
+        "deleted": permissions_deleted
+    }
 
 

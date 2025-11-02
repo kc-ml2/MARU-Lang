@@ -1,16 +1,22 @@
 import os
+import json
+import shutil
 import tempfile
 from pathlib import Path
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from maru_lang.enums.auth import UserRoleCode
 from maru_lang.dependencies.auth import get_user_with_role, User
+from maru_lang.dependencies.ingest import create_ingest_pipeline
+from maru_lang.pipelines.base import PipelineMessage, PipelineComplete
 from maru_lang.schemas.ingest import (
     SyncCheckRequest,
     SyncCheckResponse,
     SyncUploadResponse,
 )
 from maru_lang.services.ingest import check_files_to_upload, get_or_create_document_group
+from maru_lang.services.document import set_user_group_permissions
 from maru_lang.configs.system_config import get_system_config
 
 config = get_system_config()
@@ -39,19 +45,23 @@ async def check_sync_status(
         List of files that need to be uploaded
     """
     try:
+        # Create group name with user identifier: {username}/{folderPath}
+        group_name = f"{user.email.split('@')[0]}/{request.folderPath}"
+
         # Convert FileInfo objects to dict format for service function
         files_data = [
             {
                 "fileName": file_info.fileName,
                 "createdAt": file_info.createdAt,
-                "relativePath": file_info.relativePath
+                "relativePath": file_info.relativePath,
+                "size": file_info.size
             }
             for file_info in request.files
         ]
 
-        # Check which files need to be uploaded
+        # Check which files need to be uploaded (using user-scoped group name)
         files_to_upload = await check_files_to_upload(
-            folder_path=request.folderPath,
+            folder_path=group_name,  # Use {username}/{folderPath}
             files=files_data
         )
 
@@ -66,110 +76,258 @@ async def check_sync_status(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/sync/upload", response_model=SyncUploadResponse)
-async def upload_batch(
+@router.post("/sync/upload")
+async def upload_and_ingest(
     folderPath: str = Form(..., description="프로젝트 폴더명"),
-    batchIndex: int = Form(..., description="현재 배치 번호 (0부터 시작)"),
-    totalBatches: int = Form(..., description="전체 배치 개수"),
-    files: List[UploadFile] = File(..., description="업로드할 파일 배열 (최대 10개)"),
+    files: List[UploadFile] = File(..., description="업로드할 파일 배열"),
+    fileMetadata: str = Form(None, description="파일 메타데이터 (JSON 배열: [{fileName, createdAt}])"),
+    userGroupIds: str = Form(None, description="사용자 그룹 ID 목록 (JSON 배열 문자열)"),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR))
 ):
     """
-    Upload files in batches (max 10 files per batch).
+    Upload files and process them with IngestPipeline streaming.
 
-    Saves files to a temporary upload directory and creates Document records.
-    The IngestPipeline will process these files asynchronously.
-
-    Batch processing example for 35 files:
-    - Batch 0: 10 files
-    - Batch 1: 10 files
-    - Batch 2: 10 files
-    - Batch 3: 5 files (last batch)
+    Returns SSE stream with the following events:
+    - upload_progress: File upload progress
+    - ingest_started: Ingestion started
+    - ingest_progress: Ingestion progress messages (info, warning, error)
+    - ingest_completed: Ingestion completed
+    - error: Unrecoverable error
 
     Args:
-        folderPath: Project folder name
-        batchIndex: Current batch number (0-indexed)
-        totalBatches: Total number of batches
-        files: File array to upload (max 10 files)
+        folderPath: Project folder name (used as document group name)
+        files: Files to upload and process
         user: Authenticated user
 
     Returns:
-        Upload status with count and message
+        SSE stream with real-time progress
     """
-    try:
-        # Validate batch size
-        if len(files) > 10:
-            raise HTTPException(
-                status_code=400,
-                detail="배치당 최대 10개의 파일만 업로드 가능합니다."
+    async def event_generator():
+        """Generate SSE events for upload and ingestion"""
+        upload_dir = None
+        try:
+            # Parse userGroupIds from JSON string
+            user_group_id_list = []
+            if userGroupIds:
+                try:
+                    user_group_id_list = json.loads(userGroupIds)
+                except json.JSONDecodeError:
+                    error_event = {
+                        "type": "error",
+                        "data": {"message": "Invalid userGroupIds format"}
+                    }
+                    yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+                    return
+            # Parse fileMetadata from JSON string
+            file_metadata_map = {}
+            if fileMetadata:
+                try:
+                    metadata_list = json.loads(fileMetadata)
+                    # Create map: relativePath -> createdAt
+                    file_metadata_map = {
+                        item["relativePath"]: item["createdAt"]
+                        for item in metadata_list
+                    }
+                except (json.JSONDecodeError, KeyError) as e:
+                    error_event = {
+                        "type": "error",
+                        "data": {"message": f"Invalid fileMetadata format: {str(e)}"}
+                    }
+                    yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+                    return
+
+            # Create group name with user identifier: {username}/{folderPath}
+            group_name = f"{user.email.split('@')[0]}/{folderPath}"
+
+            # Create upload directory
+            upload_base_dir = Path(tempfile.gettempdir()) / "maru_lang_uploads"
+            upload_dir = upload_base_dir / group_name
+            upload_dir.mkdir(parents=True, exist_ok=True)
+
+            # Send upload started event
+            start_event = {
+                "type": "upload_started",
+                "data": {
+                    "folderPath": folderPath,
+                    "groupName": group_name,
+                    "totalFiles": len(files),
+                    "message": "파일 업로드를 시작합니다..."
+                }
+            }
+            yield f"data: {json.dumps(start_event, ensure_ascii=False)}\n\n"
+
+            # Upload files
+            uploaded_count = 0
+            for idx, uploaded_file in enumerate(files):
+                try:
+                    filename = uploaded_file.filename
+                    if not filename:
+                        continue
+
+                    # Save file
+                    file_path = upload_dir / filename
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    content = await uploaded_file.read()
+                    with open(file_path, "wb") as f:
+                        f.write(content)
+
+                    # Set original mtime if provided
+                    if filename in file_metadata_map:
+                        from datetime import datetime
+                        created_at_str = file_metadata_map[filename]
+                        # Parse ISO format datetime
+                        created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                        timestamp = created_at.timestamp()
+                        # Set both atime and mtime to original created time
+                        os.utime(file_path, (timestamp, timestamp))
+
+                    uploaded_count += 1
+
+                    # Send progress event
+                    progress_event = {
+                        "type": "upload_progress",
+                        "data": {
+                            "filename": filename,
+                            "current": idx + 1,
+                            "total": len(files),
+                            "size": len(content)
+                        }
+                    }
+                    yield f"data: {json.dumps(progress_event, ensure_ascii=False)}\n\n"
+
+                except Exception as e:
+                    error_event = {
+                        "type": "upload_error",
+                        "data": {
+                            "filename": uploaded_file.filename,
+                            "error": str(e)
+                        }
+                    }
+                    yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+
+            # Upload completed
+            upload_complete_event = {
+                "type": "upload_completed",
+                "data": {
+                    "uploadedCount": uploaded_count,
+                    "totalFiles": len(files),
+                    "message": f"{uploaded_count}개 파일 업로드 완료"
+                }
+            }
+            yield f"data: {json.dumps(upload_complete_event, ensure_ascii=False)}\n\n"
+
+            # Start ingestion
+            ingest_start_event = {
+                "type": "ingest_started",
+                "data": {
+                    "folderPath": folderPath,
+                    "groupName": group_name,
+                    "uploadDir": str(upload_dir),
+                    "message": "문서 처리를 시작합니다..."
+                }
+            }
+            yield f"data: {json.dumps(ingest_start_event, ensure_ascii=False)}\n\n"
+
+            # Create and run IngestPipeline with user-scoped group name
+            pipeline = create_ingest_pipeline(
+                upload_path=upload_dir,
+                group_name=group_name,  # Use {username}/{folderPath}
+                manager_id=user.id,
+                re_embed=False,
             )
 
-        # Validate batch index
-        if batchIndex < 0 or batchIndex >= totalBatches:
-            raise HTTPException(
-                status_code=400,
-                detail=f"배치 인덱스가 올바르지 않습니다. (0-{totalBatches-1} 범위)"
-            )
+            # Stream IngestPipeline progress
+            async for item in pipeline.run():
+                if isinstance(item, PipelineMessage):
+                    # Progress message
+                    message_event = {
+                        "type": "ingest_progress",
+                        "data": {
+                            "level": item.message_type.value,
+                            "message": item.message,
+                            "data": item.data
+                        }
+                    }
+                    yield f"data: {json.dumps(message_event, ensure_ascii=False)}\n\n"
 
-        # Create upload directory
-        # Use a persistent directory for uploaded files
-        upload_base_dir = Path(tempfile.gettempdir()) / "maru_lang_uploads"
-        upload_dir = upload_base_dir / folderPath
-        upload_dir.mkdir(parents=True, exist_ok=True)
+                elif isinstance(item, PipelineComplete):
+                    # Ingestion completed
+                    result = item.data
+                    # Set permissions if userGroupIds provided
+                    if result and user_group_id_list:
+                        try:
+                            # Get the DocumentGroup that was created/updated
+                            document_group = result.group
+                            # Set permissions using service function (replace mode)
+                            perm_result = await set_user_group_permissions(
+                                document_group=document_group,
+                                user_group_ids=user_group_id_list,
+                                replace=True  # 기존 권한 삭제 후 새로 설정
+                            )
+                            # Send permission setup event
+                            message_parts = []
+                            if perm_result["deleted"] > 0:
+                                message_parts.append(f"{perm_result['deleted']}개 기존 권한 삭제")
+                            if perm_result["created"] > 0:
+                                message_parts.append(f"{perm_result['created']}개 권한 생성")
+                            permission_event = {
+                                "type": "ingest_progress",
+                                "data": {
+                                    "level": "info",
+                                    "message": f"✓ {len(user_group_id_list)}개 사용자 그룹에 권한 설정 완료 ({', '.join(message_parts)})",
+                                    "data": None
+                                }
+                            }
+                            yield f"data: {json.dumps(permission_event, ensure_ascii=False)}\n\n"
+                        except Exception as e:
+                            error_event = {
+                                "type": "ingest_progress",
+                                "data": {
+                                    "level": "warning",
+                                    "message": f"⚠️ 권한 설정 실패: {str(e)}",
+                                    "data": None
+                                }
+                            }
+                            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
 
-        uploaded_files = []
+                    complete_event = {
+                        "type": "ingest_completed",
+                        "data": {
+                            "success": result is not None,
+                            "totalFiles": result.total_files if result else 0,
+                            "processedFiles": result.processed_files if result else 0,
+                            "skippedFiles": result.skipped_files if result else 0,
+                            "message": "문서 처리가 완료되었습니다."
+                        }
+                    }
+                    yield f"data: {json.dumps(complete_event, ensure_ascii=False)}\n\n"
 
-        # Save uploaded files
-        for uploaded_file in files:
-            try:
-                # Get original filename
-                filename = uploaded_file.filename
-                if not filename:
-                    continue
+        except Exception as e:
+            print(f"❌ Upload/Ingest error: {str(e)}")
+            error_event = {
+                "type": "error",
+                "data": {
+                    "message": str(e)
+                }
+            }
+            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
 
-                # Create full file path
-                file_path = upload_dir / filename
+        finally:
+            # Clean up uploaded files
+            if upload_dir and upload_dir.exists():
+                try:
+                    shutil.rmtree(upload_dir)
+                    print(f"🗑️  Cleaned up upload directory: {upload_dir}")
+                except Exception as e:
+                    print(f"⚠️  Failed to clean up {upload_dir}: {str(e)}")
 
-                # Ensure parent directory exists
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-
-                # Save file
-                content = await uploaded_file.read()
-                with open(file_path, "wb") as f:
-                    f.write(content)
-
-                uploaded_files.append(filename)
-
-                print(f"   ✓ Saved: {filename} ({len(content)} bytes)")
-
-            except Exception as e:
-                print(f"   ✗ Failed to save {uploaded_file.filename}: {str(e)}")
-                # Continue with other files even if one fails
-
-        # Log upload completion
-        print(f"📁 Batch upload: {folderPath}")
-        print(f"   Batch {batchIndex + 1}/{totalBatches}")
-        print(f"   Files saved: {len(uploaded_files)}/{len(files)}")
-        print(f"   Upload directory: {upload_dir}")
-        print(f"   User: {user.email}")
-
-        # TODO: Trigger IngestPipeline for final batch
-        # if batchIndex == totalBatches - 1:
-        #     # All batches uploaded, trigger ingestion
-        #     await trigger_ingestion(upload_dir, folderPath, user.id)
-
-        return SyncUploadResponse(
-            success=True,
-            message=f"배치 {batchIndex + 1}/{totalBatches} 업로드 완료",
-            uploadedCount=len(uploaded_files),
-            errors=[f"Failed: {f.filename}" for f in files if f.filename not in uploaded_files] if len(uploaded_files) < len(files) else None
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Upload error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"배치 {batchIndex + 1}/{totalBatches} 업로드에 실패했습니다: {str(e)}"
-        )
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )

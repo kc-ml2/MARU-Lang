@@ -90,8 +90,18 @@ class Retriever:
 
         results: List[RetrieveDocument] = []
 
+        # 방어: document_groups가 없으면 검색하지 않음 (보안)
+        if not document_groups:
+            print("⚠️ No document_groups provided - refusing to search all documents")
+            return []
+
+        print(f"document_groups: {document_groups}")
         # 1. 그룹 이름으로부터 version_ids 추출
         all_group_names = await get_all_descendant_group_names(document_groups)
+        print(f"all_group_names: {all_group_names}")
+        if not all_group_names:
+            print("⚠️ No valid groups found after expansion")
+            return []
 
         # 2. 그룹 이름으로 DocumentGroup 조회하여 version_ids 추출
         version_ids = []
@@ -99,6 +109,10 @@ class Retriever:
             groups = await DocumentGroup.filter(name__in=all_group_names).all()
             version_ids = [group.version_id for group in groups if group.version_id]
 
+        # 방어: version_ids가 없으면 검색하지 않음
+        if not version_ids:
+            print("⚠️ No valid version_ids found - refusing to search")
+            return []
         # 검색 수행
         if retrive_method == "vector":
             results = self._vector_search(

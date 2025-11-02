@@ -123,7 +123,19 @@ class MaruLangApp(FastAPI):
     async def _default_shutdown(self):
         """Default shutdown routine."""
         # Clean up resources such as database connections
-        pass
+        print("🔄 Shutting down application...")
+
+        # Close Tortoise ORM connections
+        from tortoise import Tortoise
+        await Tortoise.close_connections()
+        print("✓ Database connections closed")
+
+        # Reset ChatPipeline singleton
+        from maru_lang.dependencies.chat import ChatPipelineManager
+        ChatPipelineManager.reset()
+        print("✓ ChatPipeline reset")
+
+        print("✨ Shutdown complete")
 
     def _setup_middleware(self):
         """Configure middleware."""

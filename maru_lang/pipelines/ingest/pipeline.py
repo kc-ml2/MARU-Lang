@@ -53,18 +53,21 @@ class IngestPipeline(BasePipeline):
         manager_id: int,
         max_batch_size_mb: int = 1000,
         re_embed: bool = False,
+        virtual_path: Optional[Path] = None,
     ):
         """
         Args:
-            path: ingest할 디렉토리 경로
+            path: ingest할 디렉토리 경로 (실제 파일 작업용)
             group_name: 최상위 DocumentGroup 이름
             vdb_config: VectorDB 설정 (ChromaDB, Milvus 등)
             manager_id: 관리자 User ID
             max_batch_size_mb: 배치당 최대 메모리 크기 (MB, 기본: 1000MB)
             re_embed: 기존 임베딩을 삭제하고 처음부터 다시 임베딩할지 여부
+            virtual_path: DB 저장용 가상 경로 (None이면 path 사용, API upload용)
         """
         super().__init__()
-        self.path = path
+        self.path = path  # 실제 파일 작업용 (파싱, 스캔 등)
+        self.virtual_path = virtual_path or path  # DB 저장용 (file_path, base_path 등)
         self.group_name = group_name
         self.vdb_config = vdb_config
         self.manager_id = manager_id
@@ -146,6 +149,13 @@ class IngestPipeline(BasePipeline):
             raise
 
     # ========== Helper Methods ==========
+
+    def _get_base_path_str(self) -> str:
+        """
+        Get base path string for DocumentGroup.
+        Uses virtual_path for DB storage.
+        """
+        return str(self.virtual_path.absolute())
 
     def _get_embedding_model_for_group(self, group_name: str) -> str:
         """
@@ -300,6 +310,13 @@ class IngestPipeline(BasePipeline):
             existing_group = await DocumentGroup.get_or_none(base_path=path)
             config_changed = False
 
+            # 기존 그룹이 있고 manager가 다른 경우 권한 확인
+            if existing_group and existing_group.manager_id != self.manager_id:
+                raise PermissionError(
+                    f"Access denied: User {self.manager_id} does not have permission to update DocumentGroup '{name}' "
+                    f"(managed by user {existing_group.manager_id})"
+                )
+
             if existing_group and existing_group.config_snapshot:
                 # 설정 변경 감지
                 old_snapshot = existing_group.config_snapshot
@@ -376,7 +393,7 @@ class IngestPipeline(BasePipeline):
                 self.group_cache[parent_path], self.group_cache[child_path]
             )
 
-        base_path_str = str(self.path.absolute())
+        base_path_str = self._get_base_path_str()
         self.group = self.group_cache[base_path_str]
         self.unique_groups = unique_groups
 
@@ -414,13 +431,13 @@ class IngestPipeline(BasePipeline):
         Returns:
             List of (parent_path, name, current_path) tuples
             - parent_path: 부모 그룹의 base_path (None이면 최상위)
-            - name: 현재 그룹 이름 (디렉토리명)
+            - name: 현재 그룹의 full path 이름 (unique 식별자)
             - current_path: 현재 그룹의 base_path
         """
         relative_path = file_path.relative_to(self.path)
         parts = relative_path.parts[:-1]  # 파일명 제외
 
-        base_path_str = str(self.path.absolute())
+        base_path_str = self._get_base_path_str()
 
         # 최상위 그룹 (base)
         if not parts:
@@ -430,19 +447,21 @@ class IngestPipeline(BasePipeline):
 
         # 하위 그룹들
         for i, part in enumerate(parts):
-            # 현재 디렉토리의 실제 경로
-            current_path = self.path / Path(*parts[: i + 1])
+            # virtual_path 기준으로 경로 구성
+            current_path = self.virtual_path / Path(*parts[: i + 1])
             current_path_str = str(current_path.absolute())
 
             # 부모 경로
             if i == 0:
                 parent_path_str = base_path_str
             else:
-                parent_path = self.path / Path(*parts[:i])
+                parent_path = self.virtual_path / Path(*parts[:i])
                 parent_path_str = str(parent_path.absolute())
 
-            # 이름은 디렉토리명만
-            name = part
+            # 이름은 full path (최상위 그룹명 + "/" + 하위 경로)
+            # 예: "jihoon7/cinfact" + "/" + "docs/legal" = "jihoon7/cinfact/docs/legal"
+            subpath = "/".join(parts[: i + 1])
+            name = f"{self.group_name}/{subpath}"
 
             hierarchy.append((parent_path_str, name, current_path_str))
 
@@ -543,9 +562,19 @@ class IngestPipeline(BasePipeline):
             try:
                 # 1. Document 생성 및 변경 감지
                 stat = file_path.stat()
+
+                # DB 저장용 경로 계산
+                if self.virtual_path != self.path:
+                    # API upload: virtual_path 기준 상대 경로
+                    relative_path = str(file_path.relative_to(self.path))
+                    db_file_path = str(self.virtual_path / relative_path)
+                else:
+                    # CLI: 절대 경로 유지
+                    db_file_path = str(file_path)
+
                 doc, needs_reprocessing = await self.upsert_document_from_file(
                     name=file_path.stem,
-                    path=str(file_path),
+                    path=db_file_path,  # DB 저장용 경로
                     size=stat.st_size,
                     mtime_ns=stat.st_mtime_ns,
                     metadata={"original_filename": file_path.name},
@@ -561,8 +590,14 @@ class IngestPipeline(BasePipeline):
                     document=doc, group=doc_group
                 )
 
-                # 4. Document → Group 매핑 저장 (VectorDB metadata용)
-                self.doc_to_group[doc.id] = doc_group.name
+                # 4. 계층 경로 생성 (VectorDB metadata용)
+                # hierarchy에서 모든 그룹의 full path name을 추출하여 "_"로 연결
+                # 예: ["jihoon7/cinfact", "jihoon7/cinfact/docs"] → "jihoon7/cinfact_jihoon7/cinfact/docs"
+                group_path_parts = [h[1] for h in hierarchy]  # h[1] = name (full path)
+                hierarchical_group_name = "_".join(group_path_parts)
+
+                # 5. Document → Group 매핑 저장 (VectorDB metadata용)
+                self.doc_to_group[doc.id] = hierarchical_group_name
                 self.doc_to_version_id[doc.id] = doc_group.version_id
 
                 all_documents.append(doc)
@@ -703,8 +738,14 @@ class IngestPipeline(BasePipeline):
 
             for doc in docs_in_group:
                 try:
-                    # file_path를 Path 객체로 변환
-                    file_path = Path(doc.file_path)
+                    # doc.file_path를 실제 파일 경로로 변환
+                    if self.virtual_path != self.path:
+                        # virtual_path 사용 시: virtual_path 제거 후 self.path와 결합
+                        relative_path = Path(doc.file_path).relative_to(self.virtual_path)
+                        file_path = self.path / relative_path
+                    else:
+                        # 기본: doc.file_path가 절대 경로
+                        file_path = Path(doc.file_path)
 
                     # 파싱: 그룹별 loader 설정 적용
                     loader_name = None
@@ -963,23 +1004,48 @@ class IngestPipeline(BasePipeline):
             "wrong_version_chunks_deleted": 0,
         }
 
-        # 1. RDB에서 이 그룹의 모든 문서 ID 가져오기
+        # 1. RDB에서 이 그룹 및 모든 하위 그룹의 문서 ID 가져오기
+        all_group_ids = await get_all_descendant_group_ids(
+            [group.id],
+            inclusion_model=DocumentGroupInclusion
+        )
         rdb_documents = await Document.filter(
-            group_memberships__group=group
+            group_memberships__group_id__in=all_group_ids
         ).distinct().all()
         rdb_doc_ids = {doc.id for doc in rdb_documents}
 
-        # 2. VDB에서 이 그룹의 모든 청크 메타데이터 가져오기 (그룹 필터 적용)
+        # 2. VDB에서 이 그룹 계층의 모든 청크 메타데이터 가져오기
+        # group.name은 unique하고 full path이므로 명확한 매칭 가능
+        # 예: "jihoon7/cinfact" → "jihoon7/cinfact" 또는 "jihoon7/cinfact_jihoon7/cinfact/docs"
         try:
-            # ChromaDB의 get_all_metadata는 where 파라미터를 받지 않으므로
-            # collection.get()을 직접 사용
-            result = vdb.collection.get(
-                where={"group": group.name},
-                include=["metadatas", "ids"]
-            )
+            # version_id로 필터링 (가장 정확함)
+            if group.version_id:
+                result = vdb.collection.get(
+                    where={"version_id": group.version_id},
+                    include=["metadatas", "ids"]
+                )
+            else:
+                # version_id가 없으면 전체 조회 후 필터링
+                result = vdb.collection.get(
+                    include=["metadatas", "ids"]
+                )
+
             all_metadata = result.get("metadatas", [])
             all_ids = result.get("ids", [])
-            vdb_doc_ids = {meta.get("document_id") for meta in all_metadata if meta.get("document_id")}
+
+            # 계층 경로가 이 그룹으로 시작하는 청크들만 필터링
+            # group.name이 unique full path이므로 정확한 prefix 매칭
+            # 예: group.name="jihoon7/cinfact"
+            #     → "jihoon7/cinfact" (정확히 일치)
+            #     → "jihoon7/cinfact_jihoon7/cinfact/docs" (하위 그룹)
+            #     → "jihoon7/cinfact_jihoon7/cinfact/legal" (하위 그룹)
+            vdb_doc_ids = set()
+            for meta in all_metadata:
+                if meta.get("document_id"):
+                    chunk_group = meta.get("group", "")
+                    # 계층 경로가 현재 그룹의 full path로 시작하면 포함
+                    if chunk_group == group.name or chunk_group.startswith(f"{group.name}_"):
+                        vdb_doc_ids.add(meta.get("document_id"))
         except Exception as e:
             # VDB 메타데이터 조회 실패 시 검증 스킵
             return stats

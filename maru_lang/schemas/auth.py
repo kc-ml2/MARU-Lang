@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import List
 
 
 class SignUpRequest(BaseModel):
@@ -13,3 +14,16 @@ class VerifyCodeRequest(BaseModel):
     device_id: str
     email: str
     code: str
+
+
+class UserGroupResponse(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        from_attributes = True
+
+
+class UserGroupsResponse(BaseModel):
+    groups: List[UserGroupResponse]
+    total: int

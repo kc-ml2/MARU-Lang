@@ -20,6 +20,11 @@ async def get_user(
     # device-id는 헤더 또는 쿼리스트링(device-id)로 전달 받을 수 있도록 확장
     device_id_in_header = request.headers.get("device-id") or request.query_params.get("device-id")
 
+    # 토큰은 헤더(Authorization) 또는 쿼리 파라미터(token)에서 받을 수 있음
+    # SSE/EventSource는 커스텀 헤더를 지원하지 않으므로 쿼리 파라미터 지원 필요
+    if not token:
+        token = request.query_params.get("token")
+
     payload = decode_token(token) if token else None
 
     if payload is None:
