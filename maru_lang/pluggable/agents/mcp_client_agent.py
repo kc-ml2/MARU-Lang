@@ -197,11 +197,26 @@ class MCPClientAgent(BaseAgent):
                     name=tool_name,
                     arguments=arguments
                 )
-                results.append({
-                    "tool": tool_name,
-                    "success": True,
-                    "result": result.content if hasattr(result, 'content') else str(result)
-                })
+
+                # Check if result contains error messages
+                content = result.content if hasattr(result, 'content') else str(result)
+                is_error = self._check_if_error_result(content)
+
+                if is_error:
+                    # Extract error message
+                    error_msg = self._extract_error_message(content)
+                    results.append({
+                        "tool": tool_name,
+                        "success": False,
+                        "error": error_msg,
+                        "result": content  # Keep original content for reference
+                    })
+                else:
+                    results.append({
+                        "tool": tool_name,
+                        "success": True,
+                        "result": content
+                    })
 
             except Exception as e:
                 results.append({
@@ -210,6 +225,61 @@ class MCPClientAgent(BaseAgent):
                     "error": str(e)
                 })
         return results
+
+    def _check_if_error_result(self, content: Any) -> bool:
+        """Check if tool result contains error messages"""
+        # Check if content is a list of TextContent
+        if isinstance(content, list):
+            for item in content:
+                if hasattr(item, 'text'):
+                    text = item.text.lower()
+                    # Common error patterns
+                    if any(pattern in text for pattern in [
+                        'execution failed:',
+                        'unauthorized:',
+                        'invalid token',
+                        'error:',
+                        'failed:',
+                        'exception:'
+                    ]):
+                        return True
+        # Check if content has text attribute
+        elif hasattr(content, 'text'):
+            text = content.text.lower()
+            if any(pattern in text for pattern in [
+                'execution failed:',
+                'unauthorized:',
+                'invalid token',
+                'error:',
+                'failed:',
+                'exception:'
+            ]):
+                return True
+        # Check string content
+        elif isinstance(content, str):
+            text = content.lower()
+            if any(pattern in text for pattern in [
+                'execution failed:',
+                'unauthorized:',
+                'invalid token',
+                'error:',
+                'failed:',
+                'exception:'
+            ]):
+                return True
+        return False
+
+    def _extract_error_message(self, content: Any) -> str:
+        """Extract error message from content"""
+        if isinstance(content, list):
+            for item in content:
+                if hasattr(item, 'text'):
+                    return item.text
+            return str(content)
+        elif hasattr(content, 'text'):
+            return content.text
+        else:
+            return str(content)
 
     def _convert_mcp_tools_to_llm_format(
         self,
