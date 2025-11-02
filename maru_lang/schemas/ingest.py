@@ -8,6 +8,7 @@ class FileInfo(BaseModel):
     fileName: str = Field(..., description="파일 이름")
     createdAt: datetime = Field(..., description="파일 생성 시간")
     relativePath: str = Field(..., description="상대 경로 (프로젝트폴더명/경로/파일명)")
+    size: int = Field(..., description="파일 크기 (bytes)")
 
 
 class SyncCheckRequest(BaseModel):

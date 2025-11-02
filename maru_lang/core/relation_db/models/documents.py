@@ -32,7 +32,7 @@ class Document(Model):
 
 class DocumentGroup(Model):
     id = fields.IntField(pk=True)
-    name = fields.CharField(max_length=255)
+    name = fields.CharField(max_length=255, unique=True)  # Full path로 unique 식별
     base_path = fields.CharField(
         max_length=500,
         unique=True,  # 같은 파일시스템 경로는 단일 DocumentGroup만 존재
@@ -106,7 +106,7 @@ class GroupPermission(Model):
         "models.DocumentGroup",
         related_name="permissions",
         on_delete=fields.CASCADE)
-    action = fields.CharEnumField(PermissionAction)
+    action = fields.IntEnumField(PermissionAction)
 
     class Meta:
         table = "group_permission"

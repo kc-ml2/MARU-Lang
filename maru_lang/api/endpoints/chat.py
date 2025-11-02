@@ -95,7 +95,7 @@ async def handle_chat_request(
             # Variables to store for final conversation save
             final_answer = None
             final_documents = []
-
+            print(f"accessible_groups: {accessible_groups}")
             # Process stream and yield events
             async for step_result in chat_pipeline.process_stream(
                 question=request.content,

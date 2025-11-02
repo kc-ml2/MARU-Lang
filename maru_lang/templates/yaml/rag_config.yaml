@@ -5,7 +5,6 @@
 # Retriever global settings
 # ============================================================
 retriever:
-  search_on_empty_groups: true     # Search on empty groups
   # Default search parameters
   default_k: 5              # Number of search results to return
   default_method: "vector"  # Choose among vector, bm25, or ensemble

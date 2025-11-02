@@ -85,11 +85,20 @@ class KnowledgeSearchAgent(BaseAgent):
         try:
             # Check if forced_groups exists in metadata
             forced_groups = metadata.get('forced_groups', {})
-            retrive_method = self.rag_config.retriever.default_method
 
-            if forced_groups:
-                forced_groups_message = f"Selected groups from metadata: {forced_groups}"
-                await self.log_info(forced_groups_message)
+            # forced_groups가 없으면 검색할 수 없으므로 바로 리턴
+            if not forced_groups:
+                await self.log_warning("No accessible document groups - skipping knowledge search")
+                return AgentResult(
+                    success=True,
+                    result="No document groups available for search.",
+                    metadata={}
+                )
+
+            retrive_method = self.rag_config.retriever.default_method
+            print(f"forced_groups: {forced_groups}")
+            forced_groups_message = f"Selected groups from metadata: {forced_groups}"
+            await self.log_info(forced_groups_message)
             await self.log_info(f"Retrieve method: {retrive_method}")
             # Step 1: Execute preprocessing agents in parallel
             preprocessing_results = await self._execute_preprocessing_agents(
@@ -133,7 +142,7 @@ class KnowledgeSearchAgent(BaseAgent):
 
 
             if not selected_groups:
-                # forced_groups가 있으면 그것 사용 (search_all_on_empty_groups 무시)
+                # forced_groups가 있으면 그것 사용
                 if forced_groups:
                     selected_groups = {
                         group: {
@@ -142,10 +151,9 @@ class KnowledgeSearchAgent(BaseAgent):
                         }
                         for group in forced_groups
                     }
-            if not selected_groups and self.rag_config.retriever.search_on_empty_groups:
-                await self.log_warning("Search on empty groups is enabled, searching all documents")
 
-            if selected_groups or self.rag_config.retriever.search_on_empty_groups:
+            # forced_groups 기반으로만 검색 (selected_groups가 없으면 검색 안함)
+            if selected_groups:
                 internal_results = await self._search_internal_documents(
                     search_query,
                     search_keywords,
@@ -153,7 +161,6 @@ class KnowledgeSearchAgent(BaseAgent):
                     total_retrieval_count,
                     retrive_method,
                     default_embedding_model,
-                    progress_queue,
                 )
 
                 # Send pre-reranking results to progress queue
@@ -179,7 +186,7 @@ class KnowledgeSearchAgent(BaseAgent):
                     await self.log_info(post_rerank_summary)
             else:
                 internal_results = {}
-                await self.log_warning("No search performed (no groups and search_on_empty_groups=False)")
+                await self.log_warning("No accessible document groups - skipping knowledge search")
 
             internal_context = self._format_internal_results(internal_results)
             internal_results_count = sum(len(docs) for docs in internal_results.values())
@@ -274,12 +281,10 @@ class KnowledgeSearchAgent(BaseAgent):
         total_retrieval_count: int,
         retrive_method: RetriveMethod,
         default_embedding_model: str,
-        progress_queue: Optional[asyncio.Queue] = None,
     ) -> Dict[str, List[RetrieveDocument]]:
         """Search internal documents and policies"""
         if not self.retriever:
             return {}
-
         # No groups specified
         if not selected_groups:
             await self.log_info(f"Searching all groups total {total_retrieval_count} documents with {default_embedding_model}")

@@ -59,7 +59,6 @@ class RetrieverConfig:
     """Retriever 전역 설정"""
     default_k: int = 5
     default_method: str = "vector"  # vector, bm25, ensemble
-    search_on_empty_groups: bool = True
     query_type_weights: Dict[str, QueryTypeWeights] = field(default_factory=dict)
     representative_queries: Dict[str, str] = field(default_factory=dict)
     fallback_logic: Optional[FallbackLogicConfig] = None
@@ -82,7 +81,6 @@ class RetrieverConfig:
         return cls(
             default_k=data.get('default_k', 5),
             default_method=data.get('default_method', 'vector'),
-            search_on_empty_groups=data.get('search_on_empty_groups', True),
             query_type_weights=query_type_weights,
             representative_queries=data.get('representative_queries', {}),
             fallback_logic=fallback_logic,

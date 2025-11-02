@@ -87,27 +87,6 @@ async def chat_session(
         # Always show configuration summary
         console.print("[green]✓ Configurations loaded successfully[/green]")
 
-        # LLM servers with names
-        llm_configs = config_results.get('llm', {})
-        llm_names = list(llm_configs.keys())[:3]  # 최대 3개
-        llm_display = ", ".join(llm_names)
-        if len(llm_configs) > 3:
-            llm_display += f" (+{len(llm_configs) - 3} more)"
-        console.print(
-            f"  - LLM Servers ({len(llm_configs)}): {llm_display}" if llm_configs else "  - LLM Servers: None")
-
-        # Agents with names (exclude builtin agents)
-        agent_configs = config_results.get('agent', {})
-        # Filter out builtin agents
-        user_agents = {name: config for name, config in agent_configs.items()
-                      if config.type != 'builtin'}
-        agent_names = list(user_agents.keys())[:3]  # 최대 3개
-        agent_display = ", ".join(agent_names)
-        if len(user_agents) > 3:
-            agent_display += f" (+{len(user_agents) - 3} more)"
-        console.print(
-            f"  - Agents ({len(user_agents)}): {agent_display}" if user_agents else "  - Agents: None")
-
         # Show warnings and errors if any exist
         warnings = config_status.get('warnings', [])
         errors = config_status.get('errors', [])
@@ -158,8 +137,58 @@ async def chat_session(
 
     console.print("[green]✓ Chat manager ready[/green]")
 
+    # Available agents from selector
+    if hasattr(chat_pipeline, 'agent_selector') and chat_pipeline.agent_selector:
+        available_agents = chat_pipeline.agent_selector._get_available_agents()
+        total_agents = len(available_agents)
+        agent_names = [agent['name'] for agent in available_agents[:3]]
+        agent_display = ", ".join(agent_names)
+        if total_agents > 3:
+            agent_display += f" (+{total_agents - 3} more)"
+        console.print(
+            f"[cyan]🤖 Available agents: {total_agents} - {agent_display}[/cyan]")
+
     # 세션 정보
-    chat_history = ChatHistory(max_turns=max_turns)  # 최근 0턴만 유지
+    chat_history = ChatHistory(max_turns=max_turns)
+
+    # 그룹 검증 (세션 시작 시 한 번만)
+    from maru_lang.core.relation_db.models.documents import DocumentGroup, DocumentGroupInclusion
+
+    if forced_groups == ["__all__"]:
+        # 모든 최상위 그룹 가져오기
+        top_level_groups = await DocumentGroup.filter(
+            included_by__isnull=True
+        ).distinct().values_list("name", flat=True)
+        actual_forced_groups = list(top_level_groups)
+        console.print(f"[dim]✓ Searching across {len(actual_forced_groups)} top-level groups[/dim]")
+    else:
+        # 특정 그룹이 명시된 경우: 존재하는 그룹인지 검증
+        existing_groups = await DocumentGroup.filter(
+            name__in=forced_groups
+        ).values_list("name", flat=True)
+        existing_groups = list(existing_groups)
+
+        invalid_groups = set(forced_groups) - set(existing_groups)
+        if invalid_groups:
+            console.print(f"[red]❌ Invalid groups: {', '.join(invalid_groups)}[/red]")
+
+            # 사용 가능한 모든 최상위 그룹 표시
+            all_top_level = await DocumentGroup.filter(
+                included_by__isnull=True
+            ).distinct().values_list("name", flat=True)
+
+            if all_top_level:
+                console.print("\n[cyan]Available top-level groups:[/cyan]")
+                for group in sorted(all_top_level):
+                    console.print(f"  - {group}")
+            else:
+                console.print("[yellow]No document groups found in database[/yellow]")
+            return  # 세션 종료
+
+        actual_forced_groups = existing_groups
+        if len(existing_groups) < len(forced_groups):
+            console.print(f"[yellow]⚠️  Some groups not found - using {len(existing_groups)} valid groups[/yellow]")
+        console.print(f"[dim]✓ Using groups: {', '.join(actual_forced_groups)}[/dim]")
 
     try:
         # 채팅 루프
@@ -184,11 +213,12 @@ async def chat_session(
                 # 채팅 처리 (yield 방식)
                 answer = ""
                 result: ChatResult = None
+
                 with console.status("[cyan]🤔 Selecting agents...[/cyan]", spinner="dots") as status:
                     async for step_result in chat_pipeline.process_stream(
                         question=question,
                         chat_history=chat_history,
-                        forced_groups=forced_groups if forced_groups != ["__all__"] else None
+                        forced_groups=actual_forced_groups
                     ):
 
                         if isinstance(step_result, PipelineMessage):

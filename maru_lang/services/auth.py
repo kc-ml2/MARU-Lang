@@ -12,11 +12,7 @@ from maru_lang.utils.security import (
     create_jwt_token,
     decode_token,
 )
-from maru_lang.core.relation_db.models.documents import (
-    DocumentGroup,
-    GroupPermission,
-    PermissionAction,
-)
+
 from maru_lang.core.relation_db.models.auth import (
     User,
     UserGroup,
@@ -38,20 +34,8 @@ async def create_or_get_user_group(name: str) -> UserGroup:
     name = name.lower()
     # 1. Check whether a user group with the same name already exists
     user_group, _ = await UserGroup.get_or_create(name=name)
-    # 2. If a document group with the same name exists (or is created), link permissions
-    doc_group, _ = await DocumentGroup.get_or_create(name=name)
-    await asyncio.gather(
-        GroupPermission.get_or_create(
-            user_group=user_group,
-            document_group=doc_group,
-            action=PermissionAction.READ
-        ),
-        GroupPermission.get_or_create(
-            user_group=user_group,
-            document_group=doc_group,
-            action=PermissionAction.WRITE
-        )
-    )
+
+
     return user_group
 
 
@@ -71,17 +55,19 @@ async def create_or_get_user(
         name=None,  # Defaults to None when not provided
         role=role_object
     )
+    try:
+        # 4. Optionally create and link a user group based on the email domain
+        if config.auth.auto_create_group_by_domain:
+            domain = email.split('@')[1].split('.')[0] if '@' in email else 'default'
+            group = await create_or_get_user_group(name=domain)
+            await UserGroupMembership.create(user=new_user, group=group)
 
-    # 4. Optionally create and link a user group based on the email domain
-    if config.auth.auto_create_group_by_domain:
-        domain = email.split('@')[1].split('.')[0] if '@' in email else 'default'
-        group = await create_or_get_user_group(name=domain)
-        await UserGroupMembership.create(user=new_user, group=group)
-
-    # 5. Ensure the user is added to the "public" group
-    public_group = await create_or_get_user_group(name="public")
-    await UserGroupMembership.create(user=new_user, group=public_group)
-
+        # 5. Ensure the user is added to the "public" group
+        public_group = await create_or_get_user_group(name="public")
+        await UserGroupMembership.create(user=new_user, group=public_group)
+    except Exception as e:
+        print(f"Error creating or getting user group: {e}")
+        raise e
     return new_user
 
 
