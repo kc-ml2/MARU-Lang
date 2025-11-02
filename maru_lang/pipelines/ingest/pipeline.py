@@ -54,6 +54,7 @@ class IngestPipeline(BasePipeline):
         max_batch_size_mb: int = 1000,
         re_embed: bool = False,
         virtual_path: Optional[Path] = None,
+        all_files_list: Optional[list] = None,
     ):
         """
         Args:
@@ -64,6 +65,7 @@ class IngestPipeline(BasePipeline):
             max_batch_size_mb: 배치당 최대 메모리 크기 (MB, 기본: 1000MB)
             re_embed: 기존 임베딩을 삭제하고 처음부터 다시 임베딩할지 여부
             virtual_path: DB 저장용 가상 경로 (None이면 path 사용, API upload용)
+            all_files_list: 전체 파일 목록 (배치 업로드 시 삭제 판단용, relativePath 배열)
         """
         super().__init__()
         self.path = path  # 실제 파일 작업용 (파싱, 스캔 등)
@@ -73,6 +75,7 @@ class IngestPipeline(BasePipeline):
         self.manager_id = manager_id
         self.max_batch_size_mb = max_batch_size_mb
         self.re_embed = re_embed
+        self.all_files_list = all_files_list  # 전체 파일 목록 (배치 업로드용)
         # MB를 chars로 변환 (대략 1 char = 1 byte 가정)
         self.max_chars_per_batch = max_batch_size_mb * 1024 * 1024
 
@@ -510,8 +513,24 @@ class IngestPipeline(BasePipeline):
             group_memberships__group_id__in=list(all_group_ids)
         ).distinct().all()
 
-        # 3. 현재 파일 시스템에 있는 문서 ID
-        current_doc_ids = {doc.id for doc in current_documents}
+        # 3. 현재 파일 시스템에 있는 문서 ID 결정
+        # 배치 업로드인 경우 all_files_list 사용, 아니면 current_documents 사용
+        if self.all_files_list:
+            # 배치 업로드: all_files_list로부터 전체 파일 경로 목록 생성
+            # all_files_list는 relativePath 배열이므로 virtual_path와 결합
+            # RDB에는 상대 경로로 저장되므로 절대 경로 변환하지 않음
+            expected_file_paths = {
+                str(self.virtual_path / file_path)
+                for file_path in self.all_files_list
+            }
+            # RDB 문서 중 expected_file_paths에 있는 것만 "존재하는 파일"로 간주
+            current_doc_ids = {
+                doc.id for doc in rdb_documents
+                if doc.file_path in expected_file_paths
+            }
+        else:
+            # 일반 업로드: current_documents 기준
+            current_doc_ids = {doc.id for doc in current_documents}
 
         # 4. 삭제된 문서 찾기
         deleted_documents = [doc for doc in rdb_documents if doc.id not in current_doc_ids]
