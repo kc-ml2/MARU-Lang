@@ -9,7 +9,7 @@ from rich.prompt import Prompt
 from rich.panel import Panel
 from rich.markdown import Markdown
 from maru_lang.pipelines.base import PipelineMessage, MessageType
-from maru_lang.dependencies.chat import get_chat_manager
+from maru_lang.dependencies.chat import get_chat_pipeline
 from maru_lang.pipelines.chat import ChatPipeline
 from maru_lang.models.agents import AgentSelection, ExecutionResult, ChatResult, ChatProcess
 from maru_lang.models.chat import ChatHistory
@@ -20,25 +20,25 @@ from maru_lang.enums.chat import ChatProcessStep
 console = Console()
 
 
-async def cleanup_resources(chat_manager: ChatPipeline):
+async def cleanup_resources(chat_pipeline: ChatPipeline):
     """Clean up resources on exit"""
     try:
-        if chat_manager:
+        if chat_pipeline:
             # Close LLM clients
-            if hasattr(chat_manager, 'agent_executor') and chat_manager.agent_executor:
+            if hasattr(chat_pipeline, 'agent_executor') and chat_pipeline.agent_executor:
                 from maru_lang.dependencies.llm import get_llm_manager
                 llm_manager = await get_llm_manager()
                 await llm_manager.close_all()
 
             # Close generate agent LLM client
-            if hasattr(chat_manager, 'generate_agent') and chat_manager.generate_agent:
-                if hasattr(chat_manager.generate_agent, 'llm_client'):
-                    await chat_manager.generate_agent.llm_client.close()
+            if hasattr(chat_pipeline, 'generate_agent') and chat_pipeline.generate_agent:
+                if hasattr(chat_pipeline.generate_agent, 'llm_client'):
+                    await chat_pipeline.generate_agent.llm_client.close()
 
             # Close agent selector LLM client
-            if hasattr(chat_manager, 'agent_selector') and chat_manager.agent_selector:
-                if hasattr(chat_manager.agent_selector, 'llm_client'):
-                    await chat_manager.agent_selector.llm_client.close()
+            if hasattr(chat_pipeline, 'agent_selector') and chat_pipeline.agent_selector:
+                if hasattr(chat_pipeline.agent_selector, 'llm_client'):
+                    await chat_pipeline.agent_selector.llm_client.close()
 
         console.print("[dim]Resources cleaned up[/dim]")
     except Exception as e:
@@ -151,8 +151,8 @@ async def chat_session(
 
     # ChatManager 가져오기
     console.print("[cyan]🤖 Initializing chat manager...[/cyan]")
-    chat_manager = await get_chat_manager()
-    if not chat_manager:
+    chat_pipeline = await get_chat_pipeline()
+    if not chat_pipeline:
         console.print("[red]❌ Error: Chat manager not available[/red]")
         return
 
@@ -185,7 +185,7 @@ async def chat_session(
                 answer = ""
                 result: ChatResult = None
                 with console.status("[cyan]🤔 Selecting agents...[/cyan]", spinner="dots") as status:
-                    async for step_result in chat_manager.process_stream(
+                    async for step_result in chat_pipeline.process_stream(
                         question=question,
                         chat_history=chat_history,
                         forced_groups=forced_groups if forced_groups != ["__all__"] else None
@@ -294,4 +294,4 @@ async def chat_session(
         console.print("\n[yellow]👋 Goodbye![/yellow]")
     finally:
         # Cleanup on exit
-        await cleanup_resources(chat_manager)
+        await cleanup_resources(chat_pipeline)

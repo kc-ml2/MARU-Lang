@@ -47,12 +47,12 @@ def canonicalize_text(s: str) -> str:
     return " ".join((s or "").split()).lower()
 
 
-def make_source_fingerprint_for_file(filename: str, size: int, mtime_ns: int) -> str:
+def make_source_fingerprint_for_file(file_path: str, size: int, mtime_ns: int) -> str:
     """
-    Generate a fingerprint that captures changes to file contents.
+    Generate a fingerprint that captures changes to file contents and location.
 
     Args:
-        filename: File name without the path component.
+        file_path: Full file path (used to distinguish same files in different locations).
         size: File size in bytes.
         mtime_ns: Modification time in nanoseconds.
 
@@ -60,11 +60,13 @@ def make_source_fingerprint_for_file(filename: str, size: int, mtime_ns: int) ->
         str: 32-character SHA256 hash.
 
     Note:
-        The filesystem path is excluded so the fingerprint remains stable when
-        files move between directories. Documents are identified by
-        ``file_path`` while the fingerprint captures content changes only.
+        The full file path is included to allow the same file to exist in different
+        directories as separate documents. This handles cases where:
+        - Files are copied to multiple locations
+        - Folder names are changed (creating a new document context)
+        - Backup or versioned copies exist in different paths
     """
-    raw = f"{filename.lower()}|{size}|{mtime_ns}"
+    raw = f"{file_path.lower()}|{size}|{mtime_ns}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]  # 128bit
 
 def make_chunk_uid(document_id: str, number: int, content: str) -> str:

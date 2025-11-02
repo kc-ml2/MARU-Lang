@@ -157,20 +157,20 @@ class ChromaVectorDB(VectorDB):
 
     def get_all_documents(
         self,
-        document_groups: list[str] | None = None
+        version_ids: list[str] | None = None
     ) -> list[RetrieveDocument]:
         """
-        Get all documents from VectorDB with optional group filter
+        Get all documents from VectorDB with optional version filter
 
         Args:
-            document_groups: Optional list of document groups to filter
+            version_ids: Optional list of version IDs to filter
 
         Returns:
-            List of all documents (or filtered by group)
+            List of all documents (or filtered by version)
         """
         # Build filter
-        if document_groups:
-            filter_where = {"group": {"$in": document_groups}}
+        if version_ids:
+            filter_where = {"version_id": {"$in": version_ids}}
         else:
             filter_where = None
 
@@ -197,20 +197,20 @@ class ChromaVectorDB(VectorDB):
         self,
         query_embedding: list[float],
         k: int,
-        document_groups: list[str] | None = None,
+        version_ids: list[str] | None = None,
         **kwargs: dict[str, Any],
     ) -> list[RetrieveDocument]:
         """
-        유사도 검색 (그룹 기반)
+        유사도 검색 (버전 기반)
 
         Args:
             query_embedding: 쿼리 임베딩 벡터 (외부에서 생성)
             k: 반환할 결과 개수
-            document_groups: 그룹 이름 필터 (None이면 전체 검색)
+            version_ids: 버전 ID 필터 (None이면 전체 검색)
         """
-        # 그룹 필터 생성
-        if document_groups:
-            filter = {"group": {"$in": document_groups}}
+        # 버전 필터 생성
+        if version_ids:
+            filter = {"version_id": {"$in": version_ids}}
         else:
             filter = None  # 전체 검색
 

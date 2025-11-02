@@ -5,6 +5,7 @@ from maru_lang.core.relation_db.models.documents import (
     DocumentGroupMembership,
     DocumentGroupInclusion,
 )
+from maru_lang.utils.document import new_ulid
 
 
 # ========== DocumentGroup helpers ==========
@@ -28,8 +29,9 @@ async def upsert_document_group(
     manager_id: int,
     loader: str = None,
     chunker: str = None,
-    config_snapshot: dict = None
-) -> DocumentGroup:
+    config_snapshot: dict = None,
+    force_new_version: bool = False
+) -> tuple[DocumentGroup, bool]:
     """
     DocumentGroup을 upsert (base_path 기준으로 찾아서 업데이트 또는 생성)
 
@@ -41,9 +43,10 @@ async def upsert_document_group(
         loader: 사용된 loader 이름
         chunker: 사용된 chunker 이름
         config_snapshot: 사용된 설정의 스냅샷 (변경 감지용)
+        force_new_version: True일 경우 새 version_id 생성 (re-embed, config 변경 등)
 
     Returns:
-        DocumentGroup 인스턴스
+        Tuple[DocumentGroup, bool]: (그룹 인스턴스, 신규 생성 여부)
     """
     # base_path가 unique이므로 이걸로 upsert
     defaults = {
@@ -59,11 +62,18 @@ async def upsert_document_group(
     if config_snapshot is not None:
         defaults["config_snapshot"] = config_snapshot
 
-    doc_group, _ = await DocumentGroup.update_or_create(
+    doc_group, created = await DocumentGroup.update_or_create(
         base_path=base_path,
         defaults=defaults
     )
-    return doc_group
+
+    # 신규 생성이거나 force_new_version이면 새 version_id 생성
+    if created or force_new_version:
+        if not doc_group.version_id or force_new_version:
+            doc_group.version_id = new_ulid()
+            await doc_group.save()
+
+    return doc_group, created
 
 async def set_document_group_inclusion(
     parent_group: DocumentGroup, 

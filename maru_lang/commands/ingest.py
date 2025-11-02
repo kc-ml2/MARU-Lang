@@ -22,7 +22,6 @@ async def ingest_function(
     user_groups: Optional[List[str]] = None,
     max_batch_size_mb: int = 1000,
     re_embed: bool = False,
-    verbose: bool = False,
 ):
     """
     디렉토리를 ingest (파싱, 청킹, 임베딩, VDB 저장)
@@ -32,7 +31,6 @@ async def ingest_function(
         user_groups: 권한을 부여할 UserGroup 리스트
         max_batch_size_mb: 배치당 최대 메모리 크기 (MB, 기본: 10MB)
         re_embed: 기존 임베딩을 삭제하고 처음부터 다시 임베딩할지 여부
-        verbose: 자세한 출력 모드 (모든 처리되는 문서 표시)
     """
     # ========== 입력 검증 ==========
     if not path.exists() or not path.is_dir():
@@ -126,7 +124,6 @@ async def ingest_function(
             manager_id=admin_user.id,
             max_batch_size_mb=max_batch_size_mb,
             re_embed=re_embed,
-            verbose=verbose,
         )
 
         result = None

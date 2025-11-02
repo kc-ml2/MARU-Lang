@@ -56,16 +56,16 @@ class VectorDB(ABC):
     @abstractmethod
     def get_all_documents(
         self,
-        document_groups: list[str] | None = None
+        version_ids: list[str] | None = None
     ) -> list[RetrieveDocument]:
         """
-        Get all documents from VectorDB with optional group filter
+        Get all documents from VectorDB with optional version filter
 
         Args:
-            document_groups: Optional list of document groups to filter
+            version_ids: Optional list of version IDs to filter
 
         Returns:
-            List of all documents (or filtered by group)
+            List of all documents (or filtered by version)
         """
         pass
 
@@ -74,7 +74,7 @@ class VectorDB(ABC):
         self,
         query_embedding: list[float],
         k: int,
-        document_groups: list[str] | None = None,
+        version_ids: list[str] | None = None,
         **kwargs: dict[str, Any]
     ) -> list[RetrieveDocument]:
         """
@@ -83,7 +83,7 @@ class VectorDB(ABC):
         Args:
             query_embedding: Query embedding vector
             k: Number of results to return
-            document_groups: Optional list of document groups to filter
+            version_ids: Optional list of version IDs to filter
             **kwargs: Additional search parameters
 
         Returns:

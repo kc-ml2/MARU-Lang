@@ -10,6 +10,7 @@ from maru_lang.dependencies.llm import get_llm_manager
 from maru_lang.configs.manager import get_config_manager
 from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.chat import router as chat_router
+from maru_lang.api.endpoints.ingest import router as ingest_router
 
 
 
@@ -161,6 +162,7 @@ class MaruLangApp(FastAPI):
         if self.include_default_routers:
             self.include_router(chat_router)
             self.include_router(auth_router)
+            self.include_router(ingest_router)
 
         # Run custom router hooks
         for hook in self._router_hooks:

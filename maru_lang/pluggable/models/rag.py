@@ -116,12 +116,14 @@ class GroupRagConfig:
         """딕셔너리로부터 생성"""
         # Components
         components = None
-        if 'components' in data:
-            components = GroupComponents(
-                loader=data['components'].get('loader'),
-                chunker=data['components'].get('chunker'),
-                embedding_model=data['components'].get('embedding_model'),
-            )
+        if 'components' in data and data['components'] is not None:
+            components_data = data['components']
+            if isinstance(components_data, dict):
+                components = GroupComponents(
+                    loader=components_data.get('loader'),
+                    chunker=components_data.get('chunker'),
+                    embedding_model=components_data.get('embedding_model'),
+                )
 
         return cls(
             name=name,

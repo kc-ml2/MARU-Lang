@@ -20,15 +20,26 @@ async def fetch_conversation_by_user_and_date(
     user: User,
     start_date: datetime = datetime.now(timezone.utc),
     limit: int = 3,
-) -> List[Dict[str, str]] | None:
-    return await Conversation.filter(
+) -> List[Conversation] | None:
+    """
+    Fetch conversations by user and date range.
+
+    Args:
+        user: User object
+        start_date: Start date for filtering conversations
+        limit: Maximum number of conversations to return
+
+    Returns:
+        List of Conversation objects or None
+    """
+    conversations = await Conversation.filter(
         user=user,
         created_at__gte=start_date,
     ).order_by(
         'created_at'
-    ).prefetch_related(
-        'references'
-    ).values('question', 'answer')[:limit]
+    ).limit(limit).all()
+
+    return conversations if conversations else None
 
 async def create_conversation(
     user: User,

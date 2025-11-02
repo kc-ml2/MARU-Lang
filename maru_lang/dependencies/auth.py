@@ -85,7 +85,6 @@ def get_user_with_role(
         ROLE_HIERARCHY = [
             UserRoleCode.EDITOR,
             UserRoleCode.ADMIN,
-            UserRoleCode.SUPER_ADMIN,
         ]
         # get user role
         user_role = await UserRole.get_or_none(

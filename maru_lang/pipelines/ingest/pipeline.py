@@ -53,7 +53,6 @@ class IngestPipeline(BasePipeline):
         manager_id: int,
         max_batch_size_mb: int = 1000,
         re_embed: bool = False,
-        verbose: bool = False,
     ):
         """
         Args:
@@ -63,7 +62,6 @@ class IngestPipeline(BasePipeline):
             manager_id: 관리자 User ID
             max_batch_size_mb: 배치당 최대 메모리 크기 (MB, 기본: 1000MB)
             re_embed: 기존 임베딩을 삭제하고 처음부터 다시 임베딩할지 여부
-            verbose: 자세한 출력 모드 (모든 처리되는 문서 표시)
         """
         super().__init__()
         self.path = path
@@ -72,7 +70,6 @@ class IngestPipeline(BasePipeline):
         self.manager_id = manager_id
         self.max_batch_size_mb = max_batch_size_mb
         self.re_embed = re_embed
-        self.verbose = verbose
         # MB를 chars로 변환 (대략 1 char = 1 byte 가정)
         self.max_chars_per_batch = max_batch_size_mb * 1024 * 1024
 
@@ -103,6 +100,7 @@ class IngestPipeline(BasePipeline):
         self.changed_groups = set()  # 설정이 변경된 그룹들
         self.documents_to_process = []  # 재처리 필요한 문서만
         self.doc_to_group = {}  # document_id -> group_name 매핑
+        self.doc_to_version_id = {}  # document_id -> version_id 매핑
 
         # VectorDB 인스턴스 (CRUD 직접 사용)
         self.vdb = None
@@ -161,17 +159,15 @@ class IngestPipeline(BasePipeline):
         """
         if self.rag_config:
             group_config = self.rag_config.groups.get(group_name)
-            if group_config and group_config.components and group_config.components.embedder:
-                return group_config.components.embedder
+            if group_config and group_config.components and group_config.components.embedding_model:
+                return group_config.components.embedding_model
 
         return self.default_embedding_model
 
     async def _print_group_components(self):
         """그룹별 RAG 컴포넌트 설정 출력"""
         if not self.rag_config or not self.rag_config.groups:
-            await self.queue.put(
-                PipelineMessage.info("📦 RAG Components: Using default settings for all groups")
-            )
+            # Default 설정일 경우 아무것도 출력하지 않음
             return
 
         await self.queue.put(PipelineMessage.info("📦 RAG Components Configuration:"))
@@ -190,8 +186,8 @@ class IngestPipeline(BasePipeline):
                     parts.append(f"loader={components.loader}")
                 if components.chunker:
                     parts.append(f"chunker={components.chunker}")
-                if components.embedder:
-                    parts.append(f"embedder={components.embedder}")
+                if components.embedding_model:
+                    parts.append(f"embedding_model={components.embedding_model}")
 
                 if parts:
                     await self.queue.put(
@@ -233,16 +229,9 @@ class IngestPipeline(BasePipeline):
         await self.queue.put(PipelineMessage.info("📂 Scanning files..."))
 
         self.all_files = sorted([f for f in self.path.rglob("*") if f.is_file()])
-        await self.queue.put(
-            PipelineMessage.info(f"Found {len(self.all_files)} total files")
-        )
-
         self.supported_files = [
             f for f in self.all_files if self.loader_manager.supports(f)
         ]
-        await self.queue.put(
-            PipelineMessage.info(f"Found {len(self.supported_files)} supported files")
-        )
 
         if not self.supported_files:
             await self.queue.put(
@@ -251,7 +240,11 @@ class IngestPipeline(BasePipeline):
             raise ValueError(f"No supported files found in: {self.path}")
 
         self.files = self.supported_files
-        await self.queue.put(PipelineMessage.info(f"✓ File scan completed"))
+        await self.queue.put(
+            PipelineMessage.info(
+                f"  ✓ Found {len(self.supported_files)} supported files ({len(self.all_files)} total)"
+            )
+        )
 
     # ========== DocumentGroup 계층 동기화 ==========
 
@@ -280,11 +273,10 @@ class IngestPipeline(BasePipeline):
                 if parent_path:
                     parent_child_pairs.add((parent_path, current_path))
 
-        await self.queue.put(
-            PipelineMessage.info(f"Creating {len(unique_groups)} document group(s)...")
-        )
-
         # 3. 그룹 생성 및 설정 변경 감지
+        created_count = 0
+        updated_count = 0
+
         for path, name in unique_groups.items():
             # 그룹별 RAG config 조회
             loader_name = None
@@ -306,21 +298,35 @@ class IngestPipeline(BasePipeline):
 
             # 기존 그룹 조회 (변경 감지용)
             existing_group = await DocumentGroup.get_or_none(base_path=path)
+            config_changed = False
 
             if existing_group and existing_group.config_snapshot:
                 # 설정 변경 감지
                 old_snapshot = existing_group.config_snapshot
                 if old_snapshot != config_snapshot:
+                    config_changed = True
                     self.changed_groups.add(name)
-                    await self.queue.put(
-                        PipelineMessage.info(
-                            f"⚠️  Config changed for group '{name}': "
-                            f"{old_snapshot} → {config_snapshot}"
-                        )
-                    )
 
-            # 그룹 upsert
-            group = await upsert_document_group(
+                    # 변경된 항목만 추출
+                    changes = []
+                    for key in ['loader', 'chunker', 'embedding_model']:
+                        old_val = old_snapshot.get(key)
+                        new_val = config_snapshot.get(key)
+                        if old_val != new_val:
+                            old_str = old_val if old_val else 'default'
+                            new_str = new_val if new_val else 'default'
+                            changes.append(f"{key}: {old_str} → {new_str}")
+
+                    if changes:
+                        await self.queue.put(
+                            PipelineMessage.info(
+                                f"  ⚠️  Config changed for '{name}': {', '.join(changes)}"
+                            )
+                        )
+
+            # 그룹 upsert (config 변경 또는 re-embed 시 새 version_id 생성)
+            force_new_version = config_changed or self.re_embed
+            group, created = await upsert_document_group(
                 name=name,
                 base_path=path,
                 embedding_model=embedding_model,
@@ -328,8 +334,14 @@ class IngestPipeline(BasePipeline):
                 loader=loader_name,
                 chunker=chunker_name,
                 config_snapshot=config_snapshot,
+                force_new_version=force_new_version,
             )
             self.group_cache[path] = group
+
+            if created:
+                created_count += 1
+            else:
+                updated_count += 1
 
             # Re-embed 모드: 해당 그룹의 기존 임베딩 삭제
             if self.re_embed:
@@ -359,10 +371,6 @@ class IngestPipeline(BasePipeline):
                     )
 
         # 4. 부모-자식 관계 설정
-        await self.queue.put(
-            PipelineMessage.info(f"Setting up {len(parent_child_pairs)} group relationship(s)...")
-        )
-
         for parent_path, child_path in parent_child_pairs:
             await set_document_group_inclusion(
                 self.group_cache[parent_path], self.group_cache[child_path]
@@ -372,7 +380,18 @@ class IngestPipeline(BasePipeline):
         self.group = self.group_cache[base_path_str]
         self.unique_groups = unique_groups
 
-        await self.queue.put(PipelineMessage.info("✓ Group hierarchy synced"))
+        # 요약 메시지
+        summary_parts = []
+        if created_count > 0:
+            summary_parts.append(f"{created_count} created")
+        if updated_count > 0:
+            summary_parts.append(f"{updated_count} updated")
+        if parent_child_pairs:
+            summary_parts.append(f"{len(parent_child_pairs)} relationships")
+
+        await self.queue.put(
+            PipelineMessage.info(f"  ✓ Groups synced: {', '.join(summary_parts)}")
+        )
 
         # 5. 설정 변경 요약
         if self.changed_groups:
@@ -433,8 +452,6 @@ class IngestPipeline(BasePipeline):
 
     async def _setup_vdb(self):
         """VectorDB 인스턴스 생성 (CRUD 직접 사용)"""
-        await self.queue.put(PipelineMessage.info("💾 Setting up vector database..."))
-
         # VectorDB 팩토리로 인스턴스 생성
         self.vdb = get_vector_db(self.vdb_config)
 
@@ -443,7 +460,7 @@ class IngestPipeline(BasePipeline):
             self.vdb.health_check()
             await self.queue.put(
                 PipelineMessage.info(
-                    f"✓ VDB connected (default embedder: {self.default_embedding_model})"
+                    f"💾 VDB connected (embedder: {self.default_embedding_model})"
                 )
             )
         except Exception as e:
@@ -454,8 +471,6 @@ class IngestPipeline(BasePipeline):
             )
             await self.queue.put(PipelineMessage.error(error_msg))
             raise ValueError(error_msg)
-
-        await self.queue.put(PipelineMessage.info(f"✓ VDB setup completed"))
 
     # ========== Document 생성 ==========
 
@@ -476,29 +491,14 @@ class IngestPipeline(BasePipeline):
             group_memberships__group_id__in=list(all_group_ids)
         ).distinct().all()
 
-        await self.queue.put(
-            PipelineMessage.info(f"📊 RDB documents: {len(rdb_documents)}, Current documents: {len(current_documents)}")
-        )
-
         # 3. 현재 파일 시스템에 있는 문서 ID
         current_doc_ids = {doc.id for doc in current_documents}
 
         # 4. 삭제된 문서 찾기
         deleted_documents = [doc for doc in rdb_documents if doc.id not in current_doc_ids]
 
-        await self.queue.put(
-            PipelineMessage.info(f"🔍 Checking deleted files: {len(deleted_documents)} candidates")
-        )
-
         if not deleted_documents:
-            await self.queue.put(PipelineMessage.info("✓ No deleted files found"))
             return
-
-        await self.queue.put(
-            PipelineMessage.info(
-                f"🗑️  Found {len(deleted_documents)} deleted file(s), cleaning up..."
-            )
-        )
 
         total_chunks_deleted = 0
 
@@ -520,25 +520,21 @@ class IngestPipeline(BasePipeline):
                     # RDB에서 문서 삭제 (DocumentGroupMembership도 CASCADE로 삭제됨)
                     await doc.delete()
 
-                    await self.queue.put(
-                        PipelineMessage.info(f"Deleted: {doc.name}")
-                    )
-
                 except Exception as e:
                     await self.queue.put(
                         PipelineMessage.warning(f"Failed to delete '{doc.name}': {str(e)}")
                     )
 
-        if total_chunks_deleted > 0:
-            await self.queue.put(
-                PipelineMessage.info(
-                    f"✓ Cleaned up {len(deleted_documents)} document(s) and {total_chunks_deleted} chunk(s)"
-                )
+        # 요약만 출력
+        await self.queue.put(
+            PipelineMessage.info(
+                f"  🗑️  Cleaned up: {len(deleted_documents)} deleted file(s), {total_chunks_deleted} chunk(s) removed"
             )
+        )
 
     async def _sync_documents(self):
         """Document 생성 및 그룹 연결 (변경 감지)"""
-        await self.queue.put(PipelineMessage.info("📄 Creating documents..."))
+        await self.queue.put(PipelineMessage.info("📄 Syncing documents..."))
 
         all_documents = []
         documents_to_process = []
@@ -567,6 +563,7 @@ class IngestPipeline(BasePipeline):
 
                 # 4. Document → Group 매핑 저장 (VectorDB metadata용)
                 self.doc_to_group[doc.id] = doc_group.name
+                self.doc_to_version_id[doc.id] = doc_group.version_id
 
                 all_documents.append(doc)
 
@@ -577,15 +574,7 @@ class IngestPipeline(BasePipeline):
                 group_config_changed = doc_group.name in self.changed_groups
                 if self.re_embed or needs_reprocessing or group_config_changed:
                     documents_to_process.append(doc)
-                    if self.re_embed and not needs_reprocessing and not group_config_changed:
-                        # re_embed 모드로 재처리되는 경우 (파일/설정 변경 없음)
-                        if self.verbose:
-                            await self.queue.put(
-                                PipelineMessage.info(
-                                    f"Re-embedding '{doc.name}' (forced by --re-embed)"
-                                )
-                            )
-                    elif group_config_changed and not needs_reprocessing:
+                    if group_config_changed and not needs_reprocessing:
                         # 파일은 변경 안 됐지만 그룹 설정만 변경된 경우
                         await self.queue.put(
                             PipelineMessage.info(
@@ -607,10 +596,16 @@ class IngestPipeline(BasePipeline):
         await self._cleanup_deleted_files(all_documents)
 
         # VDB-RDB 동기화 검증
-        await self.queue.put(PipelineMessage.info("🔍 Verifying VDB-RDB synchronization..."))
         sync_stats = await self.verify_vdb_rdb_sync(self.group, self.documents_to_process, self.vdb)
 
-        # 동기화 검증 결과 출력
+        # 동기화 검증 결과는 문제가 있을 때만 출력
+        if sync_stats["wrong_version_chunks_deleted"] > 0:
+            await self.queue.put(
+                PipelineMessage.info(
+                    f"  🗑️  Cleaned up {sync_stats['wrong_version_chunks_deleted']} wrong-version chunk(s) from VDB"
+                )
+            )
+
         if sync_stats["missing_in_vdb"] > 0:
             await self.queue.put(
                 PipelineMessage.warning(
@@ -621,23 +616,26 @@ class IngestPipeline(BasePipeline):
         if sync_stats["orphan_chunks_deleted"] > 0:
             await self.queue.put(
                 PipelineMessage.info(
-                    f"🗑️  Cleaned up {sync_stats['orphan_chunks_deleted']} orphan chunk(s) from VDB"
+                    f"  🗑️  Cleaned up {sync_stats['orphan_chunks_deleted']} orphan chunk(s) from VDB"
                 )
             )
 
-        if sync_stats["missing_in_vdb"] == 0 and sync_stats["orphan_in_vdb"] == 0:
-            await self.queue.put(PipelineMessage.info("✓ VDB-RDB sync verified"))
+        # 요약 출력
+        to_process = len(self.documents_to_process)
+        skipped = len(all_documents) - to_process
+        summary_parts = [f"{len(all_documents)} total"]
+        if to_process > 0:
+            summary_parts.append(f"{to_process} to process")
+        if skipped > 0:
+            summary_parts.append(f"{skipped} skipped")
 
-        # 재처리 통계 전달 (동기화 검증 후 업데이트된 documents_to_process 반영)
         await self.queue.put(
             PipelineMessage.info(
-                f"📊 Document Status: Total={len(all_documents)}, "
-                f"To Process={len(self.documents_to_process)}, "
-                f"Skipped={len(all_documents) - len(self.documents_to_process)}",
+                f"  ✓ Documents synced: {', '.join(summary_parts)}",
                 data={
                     "total": len(all_documents),
-                    "to_process": len(self.documents_to_process),
-                    "skipped": len(all_documents) - len(self.documents_to_process),
+                    "to_process": to_process,
+                    "skipped": skipped,
                 }
             )
         )
@@ -654,23 +652,22 @@ class IngestPipeline(BasePipeline):
             return
 
         # 1. 기존 VDB 청크 삭제
-        await self.queue.put(
-            PipelineMessage.info(
-                f"🗑️  Deleting old chunks for {len(self.documents_to_process)} document(s)..."
-            )
-        )
-
+        total_deleted = 0
         for doc in self.documents_to_process:
             try:
                 deleted_count = self.vdb.delete_all_chunks_by_document_id(doc.id)
-                if deleted_count > 0:
-                    await self.queue.put(
-                        PipelineMessage.info(f"Deleted {deleted_count} chunk(s) for '{doc.name}'")
-                    )
+                total_deleted += deleted_count
             except Exception as e:
                 await self.queue.put(
                     PipelineMessage.warning(f"Failed to delete chunks for {doc.name}: {str(e)}")
                 )
+
+        if total_deleted > 0:
+            await self.queue.put(
+                PipelineMessage.info(
+                    f"  🗑️  Deleted {total_deleted} old chunk(s) for {len(self.documents_to_process)} document(s)"
+                )
+            )
 
         # 2. 문서를 그룹별로 정리
         docs_by_group = {}
@@ -699,27 +696,10 @@ class IngestPipeline(BasePipeline):
         for group_name in sorted(docs_by_group.keys()):
             docs_in_group = docs_by_group[group_name]
 
-            # 그룹 헤더 출력
-            await self.queue.put(
-                PipelineMessage.info(f"\n📁 Group: [{group_name}] ({len(docs_in_group)} file(s))")
-            )
-
-            # 그룹별 RAG config 조회 및 출력
+            # 그룹별 RAG config 조회
             group_config = None
             if self.rag_config:
                 group_config = self.rag_config.groups.get(group_name)
-
-            loader_info = "auto"
-            chunker_info = "default"
-            if group_config and group_config.components:
-                if group_config.components.loader:
-                    loader_info = group_config.components.loader
-                if group_config.components.chunker:
-                    chunker_info = group_config.components.chunker
-
-            await self.queue.put(
-                PipelineMessage.info(f"   Loader: {loader_info}, Chunker: {chunker_info}")
-            )
 
             for doc in docs_in_group:
                 try:
@@ -765,25 +745,6 @@ class IngestPipeline(BasePipeline):
 
                     chunker = self.chunker_manager.get_chunker_or_default(chunker_name)
                     chunk_inputs = chunker.chunk(parse_result.content)
-
-                    # 파일별 출력
-                    if self.verbose:
-                        # verbose 모드: 상세 정보
-                        await self.queue.put(
-                            PipelineMessage.info(
-                                f"   ├─ {doc.name}\n"
-                                f"   │  → Loader: {loader_source}\n"
-                                f"   │  → Chunker: {chunker_source}\n"
-                                f"   │  → Chunks: {len(chunk_inputs)}"
-                            )
-                        )
-                    else:
-                        # 일반 모드: 파일명과 청크 개수만
-                        await self.queue.put(
-                            PipelineMessage.info(
-                                f"   ├─ {doc.name} ({len(chunk_inputs)} chunks)"
-                            )
-                        )
 
                     if not chunk_inputs:
                         await self.queue.put(
@@ -842,7 +803,7 @@ class IngestPipeline(BasePipeline):
 
         await self.queue.put(
             PipelineMessage.info(
-                f"✅ Total {total_chunks_saved} chunks saved to VDB",
+                f"  ✅ Saved {total_chunks_saved} chunks to VDB",
                 data={"total_chunks": total_chunks_saved}
             )
         )
@@ -871,39 +832,14 @@ class IngestPipeline(BasePipeline):
         """
         import hashlib
 
-        # 문서 목록 포맷팅
-        if self.verbose:
-            docs_str = ", ".join(batch_docs)
-        else:
-            # verbose가 아닐 때는 처음 3개만 표시
-            if len(batch_docs) <= 3:
-                docs_str = ", ".join(batch_docs)
-            else:
-                docs_str = ", ".join(batch_docs[:3]) + f" 외 {len(batch_docs) - 3}개"
-
-        prefix = "Embedding final batch" if is_final else f"Embedding batch #{batch_number}"
-        await self.queue.put(
-            PipelineMessage.info(
-                f"{prefix}: {len(batch_texts)} chunks (~{current_batch_chars:,} chars)\n"
-                f"   📄 Documents: {docs_str}"
-            )
-        )
-
         # 임베딩 (비동기로 실행하여 UI 블로킹 방지)
         import asyncio
-        await self.queue.put(
-            PipelineMessage.info(f"   ⏳ Generating embeddings...")
-        )
 
         vectors = await asyncio.to_thread(
             embedder.encode,
             batch_texts,
             self.default_embedding_model,
             show_progress=False
-        )
-
-        await self.queue.put(
-            PipelineMessage.info(f"   ✓ Embeddings generated, saving to VDB...")
         )
 
         # VDB 저장 준비
@@ -923,6 +859,7 @@ class IngestPipeline(BasePipeline):
                     "file_path": doc.file_path or "",
                     "chunk_number": idx,
                     "group": self.doc_to_group.get(doc.id, self.group.name),  # 실제 그룹 이름 사용
+                    "version_id": self.doc_to_version_id.get(doc.id),  # DocumentGroup의 version_id
                     **(chunk_input.meta or {}),
                 },
             })
@@ -932,10 +869,6 @@ class IngestPipeline(BasePipeline):
             self.vdb.add_documents,
             documents=vdb_documents,
             embeddings=vectors,
-        )
-
-        await self.queue.put(
-            PipelineMessage.info(f"   ✓ Batch #{batch_number} saved to VDB")
         )
 
     # ========== Helper Methods ==========
@@ -966,8 +899,7 @@ class IngestPipeline(BasePipeline):
             - 재처리필요 = True: 신규 생성 또는 파일 수정됨
             - 재처리필요 = False: 기존 파일이고 변경 없음
         """
-        filename = Path(path).name
-        fp = make_source_fingerprint_for_file(filename, size, mtime_ns)
+        fp = make_source_fingerprint_for_file(path, size, mtime_ns)
 
         async with in_transaction():
             # 1. 파일 경로로 기존 Document 조회
@@ -1004,7 +936,7 @@ class IngestPipeline(BasePipeline):
             return new_doc, True
 
     async def verify_vdb_rdb_sync(
-        self, 
+        self,
         group: DocumentGroup,
         documents_to_process: List[Document],
         vdb: VectorDB,
@@ -1022,11 +954,13 @@ class IngestPipeline(BasePipeline):
                 - missing_in_vdb: RDB에는 있지만 VDB에 없는 문서 수
                 - orphan_in_vdb: VDB에는 있지만 RDB에 없는 문서 수
                 - orphan_chunks_deleted: 삭제된 orphan 청크 수
+                - wrong_version_chunks_deleted: 잘못된 버전의 청크 수
         """
         stats = {
             "missing_in_vdb": 0,
             "orphan_in_vdb": 0,
             "orphan_chunks_deleted": 0,
+            "wrong_version_chunks_deleted": 0,
         }
 
         # 1. RDB에서 이 그룹의 모든 문서 ID 가져오기
@@ -1035,19 +969,45 @@ class IngestPipeline(BasePipeline):
         ).distinct().all()
         rdb_doc_ids = {doc.id for doc in rdb_documents}
 
-        # 2. VDB에서 이 그룹의 모든 청크 document_id 가져오기 (그룹 필터 적용)
+        # 2. VDB에서 이 그룹의 모든 청크 메타데이터 가져오기 (그룹 필터 적용)
         try:
             # ChromaDB의 get_all_metadata는 where 파라미터를 받지 않으므로
             # collection.get()을 직접 사용
             result = vdb.collection.get(
                 where={"group": group.name},
-                include=["metadatas"]
+                include=["metadatas", "ids"]
             )
             all_metadata = result.get("metadatas", [])
+            all_ids = result.get("ids", [])
             vdb_doc_ids = {meta.get("document_id") for meta in all_metadata if meta.get("document_id")}
         except Exception as e:
             # VDB 메타데이터 조회 실패 시 검증 스킵
             return stats
+
+        # 2.5. 버전 불일치 청크 감지 및 삭제
+        if group.version_id:
+            wrong_version_ids = []
+            for chunk_id, meta in zip(all_ids, all_metadata):
+                chunk_version = meta.get("version_id")
+                # version_id가 없거나 현재 그룹의 version_id와 다른 경우
+                if chunk_version != group.version_id:
+                    wrong_version_ids.append(chunk_id)
+
+            if wrong_version_ids:
+                try:
+                    vdb.collection.delete(ids=wrong_version_ids)
+                    stats["wrong_version_chunks_deleted"] = len(wrong_version_ids)
+                    # 삭제된 청크의 document_id들을 재처리 대상에 추가
+                    wrong_version_doc_ids = {
+                        meta.get("document_id")
+                        for chunk_id, meta in zip(all_ids, all_metadata)
+                        if chunk_id in wrong_version_ids and meta.get("document_id") in rdb_doc_ids
+                    }
+                    for doc in rdb_documents:
+                        if doc.id in wrong_version_doc_ids and doc not in documents_to_process:
+                            documents_to_process.append(doc)
+                except Exception:
+                    pass
 
         # 3. 불일치 감지 및 처리
         # 케이스 1: RDB에는 있지만 VDB에는 없는 문서 (청크 누락)
@@ -1085,10 +1045,7 @@ class IngestPipeline(BasePipeline):
 
     async def _update_document_status(self):
         """재처리된 Document만 ACTIVE로 업데이트"""
-        await self.queue.put(PipelineMessage.info("✅ Updating document status..."))
-
         if not self.documents_to_process:
-            await self.queue.put(PipelineMessage.info("No documents to update"))
             return
 
         for doc in self.documents_to_process:
@@ -1097,7 +1054,7 @@ class IngestPipeline(BasePipeline):
 
         await self.queue.put(
             PipelineMessage.info(
-                f"✅ Updated {len(self.documents_to_process)} document(s) to ACTIVE"
+                f"  ✅ Updated {len(self.documents_to_process)} document(s) to ACTIVE"
             )
         )
 
