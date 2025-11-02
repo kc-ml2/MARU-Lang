@@ -133,9 +133,15 @@ class KnowledgeSearchAgent(BaseAgent):
 
 
             if not selected_groups:
+                # forced_groups가 있으면 그것 사용 (search_all_on_empty_groups 무시)
                 if forced_groups:
-                    # forced_selected_groups가 있으면 그것 사용 (search_all_on_empty 무시)
-                    selected_groups = forced_groups
+                    selected_groups = {
+                        group: {
+                            'embedding_model': default_embedding_model,
+                            'retrieval_count': total_retrieval_count
+                        }
+                        for group in forced_groups
+                    }
             if not selected_groups and self.rag_config.retriever.search_on_empty_groups:
                 await self.log_warning("Search on empty groups is enabled, searching all documents")
 
