@@ -20,14 +20,33 @@ class AgentResult:
     error: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
 
+    def _serialize_value(self, value: Any) -> Any:
+        """Recursively serialize values to JSON-compatible format"""
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        elif isinstance(value, dict):
+            return {k: self._serialize_value(v) for k, v in value.items()}
+        elif isinstance(value, (list, tuple)):
+            return [self._serialize_value(item) for item in value]
+        elif hasattr(value, 'text'):
+            # Handle MCP TextContent objects
+            return value.text
+        elif hasattr(value, 'to_dict'):
+            return self._serialize_value(value.to_dict())
+        elif hasattr(value, '__dict__'):
+            return self._serialize_value(value.__dict__)
+        else:
+            # Fallback: convert to string
+            return str(value)
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
+        """Convert to dictionary with safe serialization"""
         return {
             "success": self.success,
             "result": self.result,
-            "data": self.data,
+            "data": self._serialize_value(self.data),
             "error": self.error,
-            "metadata": self.metadata
+            "metadata": self._serialize_value(self.metadata)
         }
 
 

@@ -219,3 +219,50 @@ async def get_document_groups_by_names(document_group_names: List[str]) -> List[
     """
     document_group_names = [name.lower() for name in document_group_names]
     return await DocumentGroup.filter(name__in=document_group_names).all()
+
+
+async def get_user_accessible_document_groups(user_id: int) -> List[str]:
+    """
+    Get all document group names that a user can access.
+
+    This includes:
+    1. Groups directly linked to user's groups via GroupPermission
+    2. All descendant document groups (via DocumentGroupInclusion)
+
+    Args:
+        user_id: User ID to check permissions for
+
+    Returns:
+        List of document group names the user can access
+    """
+    from maru_lang.core.relation_db.models.auth import User, UserGroupMembership
+
+    # Get user's group memberships
+    user_group_ids = await UserGroupMembership.filter(
+        user_id=user_id
+    ).values_list("group_id", flat=True)
+
+    if not user_group_ids:
+        return []
+
+    # Get all descendant user groups (including the user's direct groups)
+    all_user_group_ids = await get_all_descendant_user_group_ids(list(user_group_ids))
+
+    # Get document groups that these user groups have READ permission to
+    permitted_doc_group_ids = await GroupPermission.filter(
+        user_group_id__in=all_user_group_ids,
+        action=PermissionAction.READ
+    ).values_list("document_group_id", flat=True)
+
+    if not permitted_doc_group_ids:
+        return []
+
+    # Get all descendant document groups (including the directly permitted ones)
+    all_doc_group_ids = await get_all_descendant_document_group_ids(list(permitted_doc_group_ids))
+
+    # Get the names of all accessible document groups
+    doc_group_names = await DocumentGroup.filter(
+        id__in=all_doc_group_ids
+    ).values_list("name", flat=True)
+
+    return list(doc_group_names)

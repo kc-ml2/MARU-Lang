@@ -15,6 +15,7 @@ from maru_lang.pluggable.models.rag import RagConfig
 from maru_lang.services.document import get_all_descendant_group_names
 from maru_lang.pluggable.agents.agent_factory import AgentFactory
 from maru_lang.configs import get_config_manager
+from maru_lang.core.relation_db.models.documents import DocumentGroup
 
 
 logger = logging.getLogger(__name__)
@@ -88,18 +89,26 @@ class Retriever:
     ) -> List[RetrieveDocument]:
 
         results: List[RetrieveDocument] = []
-        all_document_gruops = await get_all_descendant_group_names(document_groups)
+
+        # 1. 그룹 이름으로부터 version_ids 추출
+        all_group_names = await get_all_descendant_group_names(document_groups)
+
+        # 2. 그룹 이름으로 DocumentGroup 조회하여 version_ids 추출
+        version_ids = []
+        if all_group_names:
+            groups = await DocumentGroup.filter(name__in=all_group_names).all()
+            version_ids = [group.version_id for group in groups if group.version_id]
 
         # 검색 수행
         if retrive_method == "vector":
             results = self._vector_search(
-                query, top_k, embedding_model, all_document_gruops, **kwargs)
+                query, top_k, embedding_model, version_ids, **kwargs)
         elif retrive_method == "ensemble":
             results = self._ensemble_search(
-                query, top_k, keywords, embedding_model, all_document_gruops, **kwargs)
+                query, top_k, keywords, embedding_model, version_ids, **kwargs)
         else:
             raise ValueError(f"Unknown search method: {retrive_method}")
-        
+
         return results
 
     def _vector_search(
@@ -107,7 +116,7 @@ class Retriever:
         query: str,
         k: int,
         embedding_model: str,
-        document_groups: Optional[List[str]],
+        version_ids: Optional[List[str]],
         **kwargs,
     ) -> List[RetrieveDocument]:
         """Vector similarity search"""
@@ -116,7 +125,7 @@ class Retriever:
         return self.vdb.similarity_search(
             query_embedding=query_embedding,
             k=k,
-            document_groups=document_groups,
+            version_ids=version_ids,
             **kwargs,
         )
 
@@ -124,7 +133,7 @@ class Retriever:
         self,
         query: str,
         k: int,
-        document_groups: Optional[List[str]],
+        version_ids: Optional[List[str]],
         **kwargs,
     ) -> List[RetrieveDocument]:
         """
@@ -133,7 +142,7 @@ class Retriever:
         Args:
             query: Search query
             k: Number of results to return
-            document_groups: Optional list of document groups to filter
+            version_ids: Optional list of version IDs to filter
             **kwargs: Additional parameters (target_field, etc.)
         """
         if not self.okt:
@@ -141,8 +150,8 @@ class Retriever:
 
         target_field = kwargs.get("target_field", "document_name")
 
-        # Get all documents from VectorDB with group filter
-        all_allowed_chunks = self.vdb.get_all_documents(document_groups=document_groups)
+        # Get all documents from VectorDB with version filter
+        all_allowed_chunks = self.vdb.get_all_documents(version_ids=version_ids)
 
         if not all_allowed_chunks:
             return []
@@ -192,7 +201,7 @@ class Retriever:
         k: int,
         keywords: List[str],
         embedding_model: str,
-        document_groups: Optional[List[str]],
+        version_ids: Optional[List[str]],
         **kwargs,
     ) -> List[RetrieveDocument]:
         """Ensemble search (vector + BM25 with RRF fusion)"""
@@ -204,7 +213,7 @@ class Retriever:
         bm25_docs = self._bm25_search(
             query=bm25_query,
             k=bm25_k,
-            document_groups=document_groups,
+            version_ids=version_ids,
         )
 
         query_embedding = self.embedder.encode([query], embedding_model)[0]
@@ -214,7 +223,7 @@ class Retriever:
         cosine_docs = self.vdb.similarity_search(
             query_embedding=query_embedding,
             k=cosine_k,
-            document_groups=document_groups,
+            version_ids=version_ids,
         )
 
         # Semantic weight 자동 계산 (명시적으로 제공되지 않은 경우)
