@@ -315,7 +315,7 @@ class BaseAgent(ABC):
             try:
                 # Log which LLM is being used
                 if idx == 0:
-                    await self.log_info(f"Using LLM with tools: {client.config.name}")
+                    await self.log_info(f"Using LLM with tools: '{client.config.name}'")
                 else:
                     await self.log_warning(f"Trying fallback LLM with tools: {client.config.name}")
 
