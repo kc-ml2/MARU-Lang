@@ -241,28 +241,24 @@ async def get_user_accessible_document_groups(user_id: int) -> List[str]:
     user_group_ids = await UserGroupMembership.filter(
         user_id=user_id
     ).values_list("group_id", flat=True)
-    print(f"user_group_ids: {user_group_ids}")
     if not user_group_ids:
         return []
 
     # Get all descendant user groups (including the user's direct groups)
     all_user_group_ids = await get_all_descendant_user_group_ids(list(user_group_ids))
-    print(f"all_user_group_ids: {all_user_group_ids}")
     # Get document groups that these user groups have READ permission to
     permitted_doc_group_ids = await GroupPermission.filter(
         user_group_id__in=all_user_group_ids,
         action=PermissionAction.READ
     ).values_list("document_group_id", flat=True)
-    print(f"permitted_doc_group_ids: {permitted_doc_group_ids}")
     if not permitted_doc_group_ids:
         return []
 
     # Get all descendant document groups (including the directly permitted ones)
     all_doc_group_ids = await get_all_descendant_document_group_ids(list(permitted_doc_group_ids))
-    print(f"all_doc_group_ids: {all_doc_group_ids}")
+
     # Get the names of all accessible document groups
     doc_group_names = await DocumentGroup.filter(
         id__in=all_doc_group_ids
     ).values_list("name", flat=True)
-    print(f"doc_group_names: {doc_group_names}")
     return list(doc_group_names)

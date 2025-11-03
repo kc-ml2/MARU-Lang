@@ -37,6 +37,7 @@ class DocumentGroup(Model):
         max_length=500,
         unique=True,  # 같은 파일시스템 경로는 단일 DocumentGroup만 존재
     )
+    description = fields.TextField(null=True)  # DocumentGroup 설명
 
     # Version ID for VDB chunk filtering and version management
     version_id = fields.CharField(

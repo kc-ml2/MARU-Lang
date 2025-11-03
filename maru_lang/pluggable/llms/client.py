@@ -299,7 +299,10 @@ class LLMServerClient:
             # Attempt to close the client in the background (may run in a sync context)
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._http_client.aclose())
+                # Create task and suppress the unawaited coroutine warning
+                task = loop.create_task(self._http_client.aclose())
+                # Add a callback to prevent the warning about unawaited task
+                task.add_done_callback(lambda t: None)
             except RuntimeError:
                 # If there is no running loop, close synchronously
                 try:

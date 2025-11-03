@@ -39,6 +39,32 @@ class ChatPipeline(BasePipeline):
             chat_history = self._chat_history
             forced_groups = self._forced_groups
 
+            # Check if LLM servers are available
+            from maru_lang.configs.manager import get_config_manager
+            config_manager = get_config_manager()
+            enabled_llms = config_manager.llm_loader.get_enabled_configs()
+
+            if not enabled_llms:
+                # No LLM servers available - return friendly message
+                await self.queue.put(PipelineMessage.warning("No enabled LLM servers found"))
+
+                # Skip agent selection and execution
+                no_llm_message = (
+                    "현재 사용 가능한 LLM 서버가 없습니다.\n\n"
+                    "LLM 서버를 등록하거나 활성화한 후 다시 시도해주세요.\n"
+                    "설정 방법은 공식 가이드를 참고해주세요."
+                )
+
+                await self.queue.put(ChatProcess(
+                    step=ChatStep.ANSWER_GENERATION,
+                    data=no_llm_message,
+                ))
+
+                await self.queue.put(PipelineComplete(
+                    data=ChatResult()
+                ))
+                return
+
             # Step 1: Select agents
             selection = await self.agent_selector.select_agents(
                 question=question,

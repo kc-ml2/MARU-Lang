@@ -95,10 +95,9 @@ class Retriever:
             print("⚠️ No document_groups provided - refusing to search all documents")
             return []
 
-        print(f"document_groups: {document_groups}")
         # 1. 그룹 이름으로부터 version_ids 추출
         all_group_names = await get_all_descendant_group_names(document_groups)
-        print(f"all_group_names: {all_group_names}")
+
         if not all_group_names:
             print("⚠️ No valid groups found after expansion")
             return []

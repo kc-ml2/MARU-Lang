@@ -25,6 +25,31 @@ async def get_document_group_name(document: Document) -> List[str]:
     return [membership.group.name for membership in group_membership]
 
 
+async def get_document_group_descriptions(group_names: List[str]) -> dict[str, str]:
+    """
+    Get descriptions for document groups from DB.
+
+    Args:
+        group_names: List of group names to fetch descriptions for
+
+    Returns:
+        Dict mapping group_name to description (only includes groups with descriptions)
+    """
+    if not group_names:
+        return {}
+
+    groups = await DocumentGroup.filter(
+        name__in=group_names
+    ).all()
+
+    # Filter out groups without descriptions
+    return {
+        group.name: group.description
+        for group in groups
+        if group.description
+    }
+
+
 async def upsert_document_group(
     name: str,
     base_path: str,
@@ -33,7 +58,8 @@ async def upsert_document_group(
     loader: str = None,
     chunker: str = None,
     config_snapshot: dict = None,
-    force_new_version: bool = False
+    force_new_version: bool = False,
+    description: str = None
 ) -> tuple[DocumentGroup, bool]:
     """
     DocumentGroup을 upsert (base_path 기준으로 찾아서 업데이트 또는 생성)
@@ -47,6 +73,7 @@ async def upsert_document_group(
         chunker: 사용된 chunker 이름
         config_snapshot: 사용된 설정의 스냅샷 (변경 감지용)
         force_new_version: True일 경우 새 version_id 생성 (re-embed, config 변경 등)
+        description: DocumentGroup 설명 (루트 그룹에만 사용)
 
     Returns:
         Tuple[DocumentGroup, bool]: (그룹 인스턴스, 신규 생성 여부)
@@ -64,6 +91,8 @@ async def upsert_document_group(
         defaults["chunker"] = chunker
     if config_snapshot is not None:
         defaults["config_snapshot"] = config_snapshot
+    if description is not None:
+        defaults["description"] = description
 
     doc_group, created = await DocumentGroup.update_or_create(
         base_path=base_path,

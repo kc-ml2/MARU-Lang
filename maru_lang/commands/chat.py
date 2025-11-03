@@ -113,20 +113,20 @@ async def chat_session(
         console.print(f"[red]❌ Configuration error: {str(e)}[/red]")
         return
 
-    # LLM 서버 상태 확인
+    # LLM 서버 상태 확인 및 표시
     enabled_llms = config_manager.llm_loader.get_enabled_configs()
-    if not enabled_llms:
-        console.print("[yellow]❌ No enabled LLM servers found[/yellow]")
-        return
-
     total_llms = len(config_manager.llm_loader.configs)
 
-    llm_names = [llm.name for llm in enabled_llms[:3]]
-    llm_display = ", ".join(llm_names)
-    if len(enabled_llms) > 3:
-        llm_display += f" (+{len(enabled_llms) - 3} more)"
-    console.print(
-        f"[cyan]📊 Active LLM servers: {len(enabled_llms)}/{total_llms} - {llm_display}[/cyan]")
+    if enabled_llms:
+        llm_names = [llm.name for llm in enabled_llms[:3]]
+        llm_display = ", ".join(llm_names)
+        if len(enabled_llms) > 3:
+            llm_display += f" (+{len(enabled_llms) - 3} more)"
+        console.print(
+            f"[cyan]📊 Active LLM servers: {len(enabled_llms)}/{total_llms} - {llm_display}[/cyan]")
+    else:
+        console.print("[yellow]⚠️  No enabled LLM servers found[/yellow]")
+        console.print("[dim]Chat will return a message until LLM servers are configured.[/dim]")
 
     # ChatManager 가져오기
     console.print("[cyan]🤖 Initializing chat manager...[/cyan]")
@@ -151,16 +151,20 @@ async def chat_session(
     # 세션 정보
     chat_history = ChatHistory(max_turns=max_turns)
 
-    # 그룹 검증 (세션 시작 시 한 번만)
+    # 그룹 검증 및 하위 그룹 포함 (세션 시작 시 한 번만)
     from maru_lang.core.relation_db.models.documents import DocumentGroup, DocumentGroupInclusion
+    from maru_lang.services.document import get_all_descendant_group_names
 
     if forced_groups == ["__all__"]:
         # 모든 최상위 그룹 가져오기
         top_level_groups = await DocumentGroup.filter(
             included_by__isnull=True
         ).distinct().values_list("name", flat=True)
-        actual_forced_groups = list(top_level_groups)
-        console.print(f"[dim]✓ Searching across {len(actual_forced_groups)} top-level groups[/dim]")
+        top_level_list = list(top_level_groups)
+
+        # 하위 그룹 포함하여 모든 그룹 가져오기
+        actual_forced_groups = await get_all_descendant_group_names(top_level_list)
+        console.print(f"[dim]✓ Searching across {len(top_level_list)} top-level group(s) (total: {len(actual_forced_groups)} including subgroups)[/dim]")
     else:
         # 특정 그룹이 명시된 경우: 존재하는 그룹인지 검증
         existing_groups = await DocumentGroup.filter(
@@ -185,10 +189,11 @@ async def chat_session(
                 console.print("[yellow]No document groups found in database[/yellow]")
             return  # 세션 종료
 
-        actual_forced_groups = existing_groups
+        # 하위 그룹 포함하여 모든 그룹 가져오기
+        actual_forced_groups = await get_all_descendant_group_names(existing_groups)
         if len(existing_groups) < len(forced_groups):
             console.print(f"[yellow]⚠️  Some groups not found - using {len(existing_groups)} valid groups[/yellow]")
-        console.print(f"[dim]✓ Using groups: {', '.join(actual_forced_groups)}[/dim]")
+        console.print(f"[dim]✓ Using groups: {', '.join(existing_groups)} (total: {len(actual_forced_groups)} including subgroups)[/dim]")
 
     try:
         # 채팅 루프

@@ -83,6 +83,7 @@ async def upload_and_ingest(
     fileMetadata: str = Form(None, description="파일 메타데이터 (JSON 배열: [{fileName, createdAt, relativePath, size}])"),
     allFilesList: str = Form(None, description="전체 파일 목록 (JSON 배열: [relativePath, ...]) - 배치 업로드 시 삭제 판단용"),
     userGroupIds: str = Form(None, description="사용자 그룹 ID 목록 (JSON 배열 문자열)"),
+    description: str = Form(None, description="DocumentGroup 설명"),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR))
 ):
     """
@@ -264,6 +265,7 @@ async def upload_and_ingest(
                 manager_id=user.id,
                 re_embed=False,
                 all_files_list=all_files_list if all_files_list else None,
+                description=description,  # DocumentGroup 설명
             )
 
             # Stream IngestPipeline progress
@@ -327,6 +329,8 @@ async def upload_and_ingest(
                             "totalFiles": result.total_files if result else 0,
                             "processedFiles": result.processed_files if result else 0,
                             "skippedFiles": result.skipped_files if result else 0,
+                            "failedFiles": result.failed_files if result else 0,
+                            "failedDetails": result.failed_details if result else None,
                             "message": "문서 처리가 완료되었습니다."
                         }
                     }
@@ -341,6 +345,21 @@ async def upload_and_ingest(
                 }
             }
             yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+
+            # Send ingest_completed event even on failure so client can finish processing
+            failure_complete_event = {
+                "type": "ingest_completed",
+                "data": {
+                    "success": False,
+                    "totalFiles": 0,
+                    "processedFiles": 0,
+                    "skippedFiles": 0,
+                    "failedFiles": 0,
+                    "failedDetails": None,
+                    "message": f"문서 처리 중 오류가 발생했습니다: {str(e)}"
+                }
+            }
+            yield f"data: {json.dumps(failure_complete_event, ensure_ascii=False)}\n\n"
 
         finally:
             # Clean up uploaded files

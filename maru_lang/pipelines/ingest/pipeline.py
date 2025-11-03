@@ -40,6 +40,8 @@ class IngestResult:
     total_files: int
     processed_files: int
     skipped_files: int
+    failed_files: int = 0
+    failed_details: dict = None  # {filename: error_message}
 
 
 class IngestPipeline(BasePipeline):
@@ -55,6 +57,7 @@ class IngestPipeline(BasePipeline):
         re_embed: bool = False,
         virtual_path: Optional[Path] = None,
         all_files_list: Optional[list] = None,
+        description: Optional[str] = None,
     ):
         """
         Args:
@@ -66,6 +69,7 @@ class IngestPipeline(BasePipeline):
             re_embed: 기존 임베딩을 삭제하고 처음부터 다시 임베딩할지 여부
             virtual_path: DB 저장용 가상 경로 (None이면 path 사용, API upload용)
             all_files_list: 전체 파일 목록 (배치 업로드 시 삭제 판단용, relativePath 배열)
+            description: DocumentGroup 설명
         """
         super().__init__()
         self.path = path  # 실제 파일 작업용 (파싱, 스캔 등)
@@ -76,6 +80,7 @@ class IngestPipeline(BasePipeline):
         self.max_batch_size_mb = max_batch_size_mb
         self.re_embed = re_embed
         self.all_files_list = all_files_list  # 전체 파일 목록 (배치 업로드용)
+        self.description = description  # DocumentGroup 설명
         # MB를 chars로 변환 (대략 1 char = 1 byte 가정)
         self.max_chars_per_batch = max_batch_size_mb * 1024 * 1024
 
@@ -107,6 +112,7 @@ class IngestPipeline(BasePipeline):
         self.documents_to_process = []  # 재처리 필요한 문서만
         self.doc_to_group = {}  # document_id -> group_name 매핑
         self.doc_to_version_id = {}  # document_id -> version_id 매핑
+        self.failed_documents = {}  # {filename: error_message} - 파싱 실패한 파일들
 
         # VectorDB 인스턴스 (CRUD 직접 사용)
         self.vdb = None
@@ -142,7 +148,19 @@ class IngestPipeline(BasePipeline):
             # 7. Document 상태 업데이트
             await self._update_document_status()
 
-            # 8. 완료
+            # 8. 실패한 파일 정보 전송 (있는 경우)
+            if self.failed_documents:
+                await self.queue.put(
+                    PipelineMessage.warning(
+                        f"  ⚠️  {len(self.failed_documents)} file(s) failed to process",
+                        data={
+                            "failed_files": len(self.failed_documents),
+                            "failed_details": self.failed_documents
+                        }
+                    )
+                )
+
+            # 9. 완료
             result = self._get_result()
             await self.queue.put(PipelineComplete(data=result))
 
@@ -346,6 +364,11 @@ class IngestPipeline(BasePipeline):
 
             # 그룹 upsert (config 변경 또는 re-embed 시 새 version_id 생성)
             force_new_version = config_changed or self.re_embed
+
+            # 루트 그룹에만 description 전달
+            is_root_group = (name == self.group_name)
+            group_description = self.description if is_root_group else None
+
             group, created = await upsert_document_group(
                 name=name,
                 base_path=path,
@@ -355,6 +378,7 @@ class IngestPipeline(BasePipeline):
                 chunker=chunker_name,
                 config_snapshot=config_snapshot,
                 force_new_version=force_new_version,
+                description=group_description,
             )
             self.group_cache[path] = group
 
@@ -847,9 +871,29 @@ class IngestPipeline(BasePipeline):
                     processed_docs += 1
 
                 except Exception as e:
+                    # 파싱 실패한 문서는 failed_documents에 추가
+                    error_msg = str(e)
+                    self.failed_documents[doc.name] = error_msg
                     await self.queue.put(
-                        PipelineMessage.error(f"   ├─ Error: {doc.name} - {str(e)}")
+                        PipelineMessage.error(f"   ├─ Error: {doc.name} - {error_msg}")
                     )
+
+                    # 실패한 문서는 documents_to_process에서 제거
+                    if doc in self.documents_to_process:
+                        self.documents_to_process.remove(doc)
+
+                    # DB에서도 삭제 (파싱 실패한 문서는 저장하지 않음)
+                    try:
+                        # DocumentGroupMembership도 CASCADE로 삭제됨
+                        await doc.delete()
+                        # all_documents 리스트에서도 제거
+                        if doc in self.documents:
+                            self.documents.remove(doc)
+                    except Exception as delete_error:
+                        await self.queue.put(
+                            PipelineMessage.warning(f"Failed to delete document {doc.name}: {str(delete_error)}")
+                        )
+
                     continue
 
         # 남은 배치 처리
@@ -1155,4 +1199,6 @@ class IngestPipeline(BasePipeline):
                 if self.documents and self.documents_to_process
                 else 0
             ),
+            failed_files=len(self.failed_documents),
+            failed_details=self.failed_documents if self.failed_documents else None,
         )

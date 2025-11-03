@@ -6,6 +6,7 @@ from maru_lang.configs import RagConfig
 from maru_lang.pipelines.base import PipelineMessage
 from maru_lang.pluggable.agents.base import BaseAgent, AgentResult
 from maru_lang.configs.manager import get_config_manager
+from maru_lang.services.document import get_document_group_descriptions
 from maru_lang.utils.distribution import allocate_by_weight
 
 
@@ -48,33 +49,15 @@ class GroupClassifierAgent(BaseAgent):
             AgentResult containing classified groups
         """
         # Set progress queue if provided
-        if progress_queue:
-            self.set_progress_queue(progress_queue)
-
-        forced_groups = metadata.get('forced_groups', None)
-        if forced_groups:
-            # check forced_groups is valid
-            for group in forced_groups:
-                if group not in self.rag_config.groups:
-                    # # TODO notify warning
-                    pass
-
-        # Use the complete set of managed groups
-        if not self.rag_config.groups:
-            return AgentResult(
-                success=False,
-                data={
-                    'selected_groups': {},
-                    'total_retrieval_count': self.rag_config.retriever.default_k,
-                    'default_embedding_model': self._get_embedding_model(),
-                    'confidence': 0.0,
-                    'reasoning': 'No document groups available'
-                }
-            )
-
         try:
+
+            if progress_queue:
+                self.set_progress_queue(progress_queue)
+
+            forced_groups = metadata.get('forced_groups', None)
+
             # 모든 사용 가능한 그룹으로 포맷
-            available_groups_str = self._format_available_groups(forced_groups)
+            available_groups_str = await self._format_available_groups(forced_groups)
             if not available_groups_str:
                 return AgentResult(
                     success=False,
@@ -161,6 +144,7 @@ class GroupClassifierAgent(BaseAgent):
                 data={
                     'selected_groups': self._group_result_package(selected_groups, safe_confidences),
                     'total_retrieval_count': self.rag_config.retriever.default_k,
+                    'default_embedding_model': self._get_embedding_model(),
                     'confidence': confidence,
                     'reasoning': reasoning,
                 })      
@@ -178,16 +162,31 @@ class GroupClassifierAgent(BaseAgent):
                 }
             )
 
-    def _format_available_groups(self, forced_groups: List[str] = None) -> str:
+    async def _format_available_groups(self, forced_groups: List[str] = None) -> str:
         """Format all available groups for LLM prompt"""
-        group_descriptions = []
+
+        # 1. Get descriptions from DocumentGroup DB (only non-null descriptions)
+        group_descriptions_dict = {}
+        if forced_groups:
+            db_descriptions = await get_document_group_descriptions(forced_groups)
+            group_descriptions_dict.update(db_descriptions)
+
+        # 2. Override with rag_config.groups descriptions if available
         for group_name, group_config in self.rag_config.groups.items():
             if forced_groups and group_name not in forced_groups:
                 continue
-            description = group_config.description or 'No description provided.'
-            desc = f"- {group_name}: {description}"
-            group_descriptions.append(desc)
+            if group_config.description:
+                # Override DB description with config description
+                group_descriptions_dict[group_name] = group_config.description
+            elif group_name not in group_descriptions_dict:
+                # No description in both DB and config
+                group_descriptions_dict[group_name] = 'No description provided.'
 
+        # 3. Format as list
+        group_descriptions = [
+            f"- {group_name}: {description}"
+            for group_name, description in group_descriptions_dict.items()
+        ]
         return "\n".join(group_descriptions)
 
     def _group_result_package(
@@ -290,4 +289,13 @@ class GroupClassifierAgent(BaseAgent):
             group_config = self.rag_config.groups.get(group_name, None)
             if group_config and group_config.components and group_config.components.embedding_model:
                 return group_config.components.embedding_model
-        return self.embedder_config.default_model
+
+        # Fallback to default model
+        if self.embedder_config and self.embedder_config.default_model:
+            return self.embedder_config.default_model
+
+        # Last resort fallback
+        raise ValueError(
+            f"No embedding model configured for group '{group_name}' and no default model available. "
+            "Please configure default_model in embedder_config.yaml"
+        )
