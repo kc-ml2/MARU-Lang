@@ -1,7 +1,7 @@
 name: firecrawl_mcp
 description: "Firecrawl MCP - Web scraping, crawling, and discovery. If crawling or searching is required, it finds information on the web."
 type: mcp_client
-enabled: true
+enabled: false
 version: "1.0.0"
 
 # Agent Tags
