@@ -50,20 +50,12 @@ async def handle_chat_request(
        - answer_generation: Final answer generated
        - completed: Request completed
 
-    2. message events (with "level" field):
-       - info: Information messages
-       - warning: Warning messages
-       - error: Error messages
-
-    3. error events:
+    2. error events:
        - Unrecoverable errors
-    """
-    if not chat_pipeline:
-        raise HTTPException(
-            status_code=503,
-            detail="현재 이용 가능한 AI 서버가 없습니다."
-        )
 
+    Note: Progress messages (info/warning/error from PipelineMessage) are logged
+    on the server side and not sent to the client.
+    """
     async def event_generator():
         """Generate SSE events from chat pipeline"""
         try:
@@ -95,7 +87,6 @@ async def handle_chat_request(
             # Variables to store for final conversation save
             final_answer = None
             final_documents = []
-            print(f"accessible_groups: {accessible_groups}")
             # Process stream and yield events
             async for step_result in chat_pipeline.process_stream(
                 question=request.content,
@@ -104,13 +95,19 @@ async def handle_chat_request(
             ):
                 # Handle different message types
                 if isinstance(step_result, PipelineMessage):
-                    # Error or status message
-                    event_data = {
-                        "type": "message",
-                        "level": step_result.message_type.value,
-                        "message": step_result.message
-                    }
-                    yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                    # Log progress messages on server side only (not sent to client)
+                    message_type = step_result.message_type.value
+                    message = step_result.message
+
+                    if message_type == "error":
+                        print(f"❌ [Chat Pipeline] {message}")
+                    elif message_type == "warning":
+                        print(f"⚠️  [Chat Pipeline] {message}")
+                    else:  # info
+                        print(f"ℹ️  [Chat Pipeline] {message}")
+
+                    # Continue to next iteration without sending to client
+                    continue
 
                 elif isinstance(step_result, ChatProcess):
                     step = step_result.step

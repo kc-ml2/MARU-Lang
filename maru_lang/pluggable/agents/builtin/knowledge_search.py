@@ -96,7 +96,6 @@ class KnowledgeSearchAgent(BaseAgent):
                 )
 
             retrive_method = self.rag_config.retriever.default_method
-            print(f"forced_groups: {forced_groups}")
             forced_groups_message = f"Selected groups from metadata: {forced_groups}"
             await self.log_info(forced_groups_message)
             await self.log_info(f"Retrieve method: {retrive_method}")
@@ -110,6 +109,19 @@ class KnowledgeSearchAgent(BaseAgent):
 
             group_agent_result = preprocessing_results.get('group_classifier', None)
             default_embedding_model = group_agent_result.data.get('default_embedding_model') if group_agent_result else None
+
+            # Fallback to config if default_embedding_model is None
+            if not default_embedding_model:
+                config_manager = get_config_manager()
+                embedder_config = config_manager.get_embedder_config()
+                if embedder_config and embedder_config.default_model:
+                    default_embedding_model = embedder_config.default_model
+                    await self.log_warning(f"No default_embedding_model from classifier, using config: {default_embedding_model}")
+                else:
+                    raise ValueError(
+                        "No embedding model available. Please configure default_model in embedder_config.yaml"
+                    )
+
             if group_agent_result and group_agent_result.success:
                 # 그룹 분류 결과 사용
                 selected_groups = group_agent_result.data.get('selected_groups')
@@ -256,19 +268,22 @@ class KnowledgeSearchAgent(BaseAgent):
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Build result dictionary
-            preprocessing_results = {}
-            for name, result in zip(agent_names, results):
-                if isinstance(result, Exception):
-                    await self.log_error(f"Error executing {name}: {result}")
-                    preprocessing_results[name] = AgentResult(
-                        success=False,
-                        result="",
-                        error=str(result)
-                    )
-                else:
-                    preprocessing_results[name] = result
-
+            try:
+                # Build result dictionary
+                preprocessing_results = {}
+                for name, result in zip(agent_names, results):
+                    if isinstance(result, Exception):
+                        await self.log_error(f"Error executing {name}: {result}")
+                        preprocessing_results[name] = AgentResult(
+                            success=False,
+                            result="",
+                            error=str(result)
+                        )
+                    else:
+                        preprocessing_results[name] = result
+            except Exception as e:
+                await self.log_error(f"Error executing preprocessing agents: {e}")
+                return {}
             return preprocessing_results
 
         return {}
@@ -303,6 +318,12 @@ class KnowledgeSearchAgent(BaseAgent):
         for group, selected_group in selected_groups.items():
             embedding_model = selected_group.get('embedding_model')
             top_k = selected_group.get('retrieval_count')
+
+            # Fallback to default if embedding_model is None
+            if not embedding_model:
+                embedding_model = default_embedding_model
+                await self.log_warning(f"No embedding model for group '{group}', using default: {embedding_model}")
+
             await self.log_info(f"Searching group '{group}' with top_k={top_k} with {embedding_model}")
 
             group_results = await self.retriever.search(
@@ -363,25 +384,47 @@ class KnowledgeSearchAgent(BaseAgent):
 
         lines = [f"\n📋 {title}"]
 
-        for group, docs in results.items():
-            if docs:
-                display_group_name = group if group != '__all__' else 'All groups'
-                lines.append(f"  {display_group_name} - {len(docs)} documents")
-                for i, doc in enumerate(docs, 1):
-                    doc_id = doc.id
-                    score = doc.metadata.get('score', 0.0)
-                    doc_name = doc.metadata.get('document_name', 'unknown')
+        # Check if this is reranked results (check if any doc has reranker_score)
+        is_reranked = any(
+            doc.metadata.get('reranker_score') is not None
+            for docs in results.values()
+            for doc in docs
+        )
 
-                    # Get specific score types if available
-                    reranker_score = doc.metadata.get('reranker_score')
-                    rrf_score = doc.metadata.get('rrf_score')
+        if is_reranked:
+            # For reranked results: merge all groups and display in order
+            all_docs = []
+            for group, docs in results.items():
+                for doc in docs:
+                    all_docs.append(doc)
 
-                    if reranker_score is not None:
-                        lines.append(f"    {i}. {doc_name} (id: {doc_id[:8]}..., rerank: {reranker_score:.3f})")
-                    elif rrf_score is not None:
-                        lines.append(f"    {i}. {doc_name} (id: {doc_id[:8]}..., rrf: {rrf_score:.3f})")
-                    else:
-                        lines.append(f"    {i}. {doc_name} (id: {doc_id[:8]}..., score: {score:.3f})")
+            # Total count
+            lines.append(f"  Total: {len(all_docs)} documents (merged from all groups)")
+
+            # Display in order
+            for i, doc in enumerate(all_docs, 1):
+                doc_id = doc.id
+                score = doc.metadata.get('score', 0.0)
+                doc_name = doc.metadata.get('document_name', 'unknown')
+                reranker_score = doc.metadata.get('reranker_score')
+
+                lines.append(f"    {i}. {doc_name} (id: {doc_id[:8]}..., rerank: {reranker_score:.3f})")
+        else:
+            # For non-reranked results: display by group
+            for group, docs in results.items():
+                if docs:
+                    display_group_name = group if group != '__all__' else 'All groups'
+                    lines.append(f"  {display_group_name} - {len(docs)} documents")
+                    for i, doc in enumerate(docs, 1):
+                        doc_id = doc.id
+                        score = doc.metadata.get('score', 0.0)
+                        doc_name = doc.metadata.get('document_name', 'unknown')
+                        rrf_score = doc.metadata.get('rrf_score')
+
+                        if rrf_score is not None:
+                            lines.append(f"    {i}. {doc_name} (id: {doc_id[:8]}..., rrf: {rrf_score:.3f})")
+                        else:
+                            lines.append(f"    {i}. {doc_name} (id: {doc_id[:8]}..., score: {score:.3f})")
 
         return "\n".join(lines)
 

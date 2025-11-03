@@ -130,15 +130,11 @@ class ConfigManager:
         # Check for missing configs and warnings
         no_llm_warning = self.llm_loader.check_no_llm_warning()
         if no_llm_warning:
-            # If there are no configs at all, it's an error
+            # Changed from error to warning - allow app to start without LLM
+            # ChatPipeline will handle the case when no LLM is available
+            status['warnings'].append(no_llm_warning)
             if llm_summary['total'] == 0:
-                status['errors'].append("No LLM configurations found")
-                status['valid'] = False
-                # Also add the detailed warning message
-                status['warnings'].append(no_llm_warning)
-            else:
-                # If there are configs but still warnings (shouldn't happen but just in case)
-                status['warnings'].append(no_llm_warning)
+                status['warnings'].append("No LLM configurations found - chat will not work until configured")
 
         if len(self.rag_loader.all_groups) == 0:
             status['warnings'].append("No RAG/group configurations found")

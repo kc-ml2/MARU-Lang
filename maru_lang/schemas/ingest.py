@@ -15,6 +15,7 @@ class SyncCheckRequest(BaseModel):
     """Request for checking which files need to be uploaded"""
     folderPath: str = Field(..., description="프로젝트 폴더명")
     files: List[FileInfo] = Field(..., description="폴더 내 파일 정보 목록")
+    description: Optional[str] = Field(None, description="DocumentGroup 설명")
 
 
 class SyncCheckResponse(BaseModel):
