@@ -22,6 +22,7 @@ from maru_lang.core.relation_db.models.auth import (
     UserRole,
     OTP,
 )
+from maru_lang.services.admin import ensure_admin_user
 
 async def get_user_groups(user: User) -> list[UserGroup]:
     return [
@@ -29,12 +30,14 @@ async def get_user_groups(user: User) -> list[UserGroup]:
         for user_group_membership in await UserGroupMembership.filter(user=user).prefetch_related('group').all()
     ]
 
-async def create_or_get_user_group(name: str) -> UserGroup:
+async def create_or_get_user_group(name: str, manager_id: int | None = None) -> UserGroup:
     # Always convert to lowercase
     name = name.lower()
     # 1. Check whether a user group with the same name already exists
-    user_group, _ = await UserGroup.get_or_create(name=name)
-
+    defaults = {}
+    if manager_id is not None:
+        defaults["manager_id"] = manager_id
+    user_group, _ = await UserGroup.get_or_create(name=name, defaults=defaults)
 
     return user_group
 
@@ -56,14 +59,13 @@ async def create_or_get_user(
         role=role_object
     )
     try:
-        # 4. Optionally create and link a user group based on the email domain
-        if config.auth.auto_create_group_by_domain:
-            domain = email.split('@')[1].split('.')[0] if '@' in email else 'default'
-            group = await create_or_get_user_group(name=domain)
-            await UserGroupMembership.create(user=new_user, group=group)
+        admin_user = await ensure_admin_user()
+        # if config.auth.auto_create_group_by_domain:
+        domain = email.split('@')[1].split('.')[0] if '@' in email else 'default'
+        group = await create_or_get_user_group(name=domain, manager_id=admin_user.id)
+        await UserGroupMembership.create(user=new_user, group=group)
 
-        # 5. Ensure the user is added to the "public" group
-        public_group = await create_or_get_user_group(name="public")
+        public_group = await create_or_get_user_group(name="public", manager_id=admin_user.id)
         await UserGroupMembership.create(user=new_user, group=public_group)
     except Exception as e:
         print(f"Error creating or getting user group: {e}")

@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 
 class SignUpRequest(BaseModel):
@@ -16,9 +16,20 @@ class VerifyCodeRequest(BaseModel):
     code: str
 
 
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class UserGroupResponse(BaseModel):
     id: int
     name: str
+    manager: Optional[UserResponse] = None
+    created_at: Optional[str] = None
 
     class Config:
         from_attributes = True

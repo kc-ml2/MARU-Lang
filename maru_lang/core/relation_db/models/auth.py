@@ -19,6 +19,12 @@ class User(Model):
 class UserGroup(Model):
     id = fields.IntField(pk=True)
     name = fields.CharField(max_length=255, unique=True)
+    manager = fields.ForeignKeyField(
+        "models.User",
+        related_name="managed_user_groups",
+        on_delete=fields.RESTRICT  # Prevents User deletion if managing UserGroups
+    )
+    created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:
         table = "user_group"
