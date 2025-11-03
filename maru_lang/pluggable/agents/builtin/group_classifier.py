@@ -84,14 +84,14 @@ class GroupClassifierAgent(BaseAgent):
                         'total_retrieval_count': self.rag_config.retriever.default_k,
                         'default_embedding_model': self._get_embedding_model(),
                         'confidence': confidence,
-                        'reasoning': 'No selected groups provided'
+                        'reasoning': reasoning
                     })
             
             group_with_weights_str = [f"{group_name}: {group_confidence}" for group_name, group_confidence in zip(selected_groups, group_confidences)]
-            selected_group_message = f"Selected groups: {group_with_weights_str}"
+            selected_group_message = f"Group Classifier: Selected groups: {group_with_weights_str}"
             await self.log_info(selected_group_message)
-            await self.log_info(f"Confidence: {confidence} and threshold: {self._get_confidence_threshold()}")
-            await self.log_info(f"Reasoning: {reasoning}")
+            await self.log_info(f"Group Classifier: Confidence: {confidence} and threshold: {self._get_confidence_threshold()}")
+            await self.log_info(f"Group Classifier: Reasoning: {reasoning}")
             # 2) 길이 보정 + 타입/음수 방어
             safe_confidences = []
             for v in group_confidences:
@@ -157,6 +157,7 @@ class GroupClassifierAgent(BaseAgent):
                 data={
                     'selected_groups': {},
                     'total_retrieval_count': self.rag_config.retriever.default_k,
+                    'default_embedding_model': self._get_embedding_model(),
                     'confidence': 0.0,
                     'reasoning': f'Fallback due to error: {str(e)}'
                 }

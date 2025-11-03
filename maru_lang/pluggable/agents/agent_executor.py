@@ -100,7 +100,7 @@ class AgentExecutor:
         # Send start message
         if progress_queue:
             await progress_queue.put(
-                PipelineMessage.info(f"Initializing agents: {', '.join(selection.selected_agents)}")
+                PipelineMessage.info(f"Initializing agents: '{', '.join(selection.selected_agents)}'")
             )
 
         # Initialize all selected agents
@@ -126,7 +126,7 @@ class AgentExecutor:
 
         if progress_queue:
             await progress_queue.put(
-                PipelineMessage.info(f"Executing agents in order: {' → '.join(execution_order)}")
+                PipelineMessage.info(f"Executing agents in order: '{' → '.join(execution_order)}'")
             )
 
         # Execute agents sequentially

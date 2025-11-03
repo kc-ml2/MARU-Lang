@@ -96,9 +96,9 @@ class KnowledgeSearchAgent(BaseAgent):
                 )
 
             retrive_method = self.rag_config.retriever.default_method
-            forced_groups_message = f"Selected groups from metadata: {forced_groups}"
+            forced_groups_message = f"Accessible groups in this context: {forced_groups}"
             await self.log_info(forced_groups_message)
-            await self.log_info(f"Retrieve method: {retrive_method}")
+            await self.log_info(f"Retrieve method: '{retrive_method}'")
             # Step 1: Execute preprocessing agents in parallel
             preprocessing_results = await self._execute_preprocessing_agents(
                 question, 
@@ -107,31 +107,30 @@ class KnowledgeSearchAgent(BaseAgent):
                 **kwargs
             )
 
-            group_agent_result = preprocessing_results.get('group_classifier', None)
-            default_embedding_model = group_agent_result.data.get('default_embedding_model') if group_agent_result else None
+            group_agent_result = preprocessing_results.get('group_classifier')
+            default_embedding_model = group_agent_result.data.get('default_embedding_model')
 
-            # Fallback to config if default_embedding_model is None
-            if not default_embedding_model:
-                config_manager = get_config_manager()
-                embedder_config = config_manager.get_embedder_config()
-                if embedder_config and embedder_config.default_model:
-                    default_embedding_model = embedder_config.default_model
-                    await self.log_warning(f"No default_embedding_model from classifier, using config: {default_embedding_model}")
-                else:
-                    raise ValueError(
-                        "No embedding model available. Please configure default_model in embedder_config.yaml"
-                    )
-
-            if group_agent_result and group_agent_result.success:
+            if group_agent_result.success:
                 # 그룹 분류 결과 사용
                 selected_groups = group_agent_result.data.get('selected_groups')
                 total_retrieval_count = group_agent_result.data.get('total_retrieval_count')
             else:
-                selected_groups = {}
                 # Use default_k from RAG config instead of 0
                 total_retrieval_count = self.rag_config.retriever.default_k
-                await self.log_warning(f"Selected groups: None, using default_k={total_retrieval_count}")
+                confidence = group_agent_result.data.get('confidence')
+                reasoning = group_agent_result.data.get('reasoning')
+                await self.log_info(f"Group Classifier: Selected groups is None, using available groups")
+                if confidence > 0.0:
+                    await self.log_info(f"Group Classifier: Confidence: {confidence}")
+                await self.log_info(f"Group Classifier: Reasoning: {reasoning}")
 
+                selected_groups = {
+                    group: {
+                        'embedding_model': default_embedding_model,
+                        'retrieval_count': round(total_retrieval_count / len(forced_groups))
+                    }
+                    for group in forced_groups
+                }
             
             intent_agent_result = preprocessing_results.get('intent_extractor', None)
 
@@ -152,17 +151,6 @@ class KnowledgeSearchAgent(BaseAgent):
                 # 오류 나면 vector 로만
                 retrive_method = "vector"
 
-
-            if not selected_groups:
-                # forced_groups가 있으면 그것 사용
-                if forced_groups:
-                    selected_groups = {
-                        group: {
-                            'embedding_model': default_embedding_model,
-                            'retrieval_count': total_retrieval_count
-                        }
-                        for group in forced_groups
-                    }
 
             # forced_groups 기반으로만 검색 (selected_groups가 없으면 검색 안함)
             if selected_groups:
