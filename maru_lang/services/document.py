@@ -50,6 +50,58 @@ async def get_document_group_descriptions(group_names: List[str]) -> dict[str, s
     }
 
 
+async def get_managed_document_groups(user_id: int) -> List[DocumentGroup]:
+    """
+    Get all document groups where the user is the manager.
+
+    Args:
+        user_id: User ID to check
+
+    Returns:
+        List of DocumentGroup instances managed by the user
+    """
+    return await DocumentGroup.filter(manager_id=user_id).all()
+
+
+async def get_managed_document_groups_with_stats(user_id: int) -> List[dict]:
+    """
+    Get all document groups where the user is the manager with statistics.
+
+    Args:
+        user_id: User ID to check
+
+    Returns:
+        List of dictionaries containing DocumentGroup info with stats:
+        [
+            {
+                "id": int,
+                "name": str,
+                "base_path": str,
+                "description": str,
+                "document_count": int,
+                "created_at": str
+            }
+        ]
+    """
+    groups = await DocumentGroup.filter(manager_id=user_id).all()
+
+    result = []
+    for group in groups:
+        # Count documents in this group
+        doc_count = await DocumentGroupMembership.filter(group_id=group.id).count()
+
+        result.append({
+            "id": group.id,
+            "name": group.name,
+            "base_path": group.base_path,
+            "description": group.description,
+            "document_count": doc_count,
+            "created_at": group.signature_updated_at.isoformat() if group.signature_updated_at else None
+        })
+
+    return result
+
+
 async def upsert_document_group(
     name: str,
     base_path: str,
