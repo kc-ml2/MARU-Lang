@@ -16,7 +16,7 @@ from maru_lang.schemas.ingest import (
     SyncUploadResponse,
 )
 from maru_lang.services.ingest import check_files_to_upload, get_or_create_document_group
-from maru_lang.services.document import set_user_group_permissions
+from maru_lang.services.document import set_user_group_permissions, get_managed_document_groups_with_stats
 from maru_lang.configs.system_config import get_system_config
 
 config = get_system_config()
@@ -379,3 +379,40 @@ async def upload_and_ingest(
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@router.get("/managed-groups")
+async def get_my_managed_document_groups(
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR))
+):
+    """
+    Get all document groups where the current user is the manager.
+
+    Returns document groups with statistics including:
+    - Group ID and name
+    - Base path
+    - Description
+    - Document count
+    - Created timestamp
+
+    Args:
+        user: Authenticated user
+
+    Returns:
+        List of managed document groups with statistics
+    """
+    try:
+        managed_groups = await get_managed_document_groups_with_stats(user.id)
+
+        return {
+            "success": True,
+            "message": f"총 {len(managed_groups)}개의 문서 그룹을 관리하고 있습니다.",
+            "data": {
+                "groups": managed_groups,
+                "total": len(managed_groups)
+            }
+        }
+
+    except Exception as e:
+        print(f"❌ Error fetching managed document groups: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
