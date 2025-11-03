@@ -11,6 +11,7 @@ from maru_lang.configs.manager import get_config_manager
 from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.chat import router as chat_router
 from maru_lang.api.endpoints.ingest import router as ingest_router
+from maru_lang.api.endpoints.user_group import router as user_group_router
 
 
 
@@ -175,6 +176,7 @@ class MaruLangApp(FastAPI):
             self.include_router(chat_router)
             self.include_router(auth_router)
             self.include_router(ingest_router)
+            self.include_router(user_group_router)
 
         # Run custom router hooks
         for hook in self._router_hooks:
