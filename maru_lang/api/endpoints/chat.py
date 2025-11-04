@@ -22,7 +22,7 @@ from maru_lang.services.chat import (
 )
 from maru_lang.services.user_group import get_user_accessible_document_groups
 from maru_lang.models.chat import ChatHistory
-from maru_lang.models.agents import ChatProcess
+from maru_lang.models.agents import ChatProcess, ChatResult
 from maru_lang.enums.chat import ChatProcessStep
 
 
@@ -134,13 +134,18 @@ async def handle_chat_request(
 
                     elif step == ChatProcessStep.ANSWER_GENERATION:
                         # Answer generation completed
-                        answer = step_result.data
-                        final_answer = answer
+                        data: ChatResult = step_result.data
+                        final_answer = data.answer
+                        final_documents = []
+                        for group_docs in data.internal_documents:
+                            for doc in group_docs:
+                                final_documents.append(doc)
                         event_data = {
                             "type": "process_step",
                             "step": step.value,
                             "data": {
-                                "answer": answer
+                                "answer": data.answer,
+                                "internal_documents": [doc.to_reference_response() for doc in final_documents]
                             }
                         }
                         yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
@@ -160,8 +165,7 @@ async def handle_chat_request(
                 "type": "process_step",
                 "step": ChatProcessStep.COMPLETED.value,
                 "data": {
-                    "answer": final_answer,
-                    "documents": final_documents
+                    # TODO some debug DATA
                 }
             }
             yield f"data: {json.dumps(completion_data, ensure_ascii=False)}\n\n"

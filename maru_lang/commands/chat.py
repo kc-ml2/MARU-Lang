@@ -287,7 +287,7 @@ async def chat_session(
                                 "[cyan]✍️  Generating answer...[/cyan]")
 
                         elif step == ChatProcessStep.ANSWER_GENERATION:
-                            answer = step_result.data
+                            answer = step_result.data.answer
 
                         elif step == ChatProcessStep.COMPLETED:
                             result = step_result.data

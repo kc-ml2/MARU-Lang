@@ -63,13 +63,15 @@ async def create_conversation(
         doc_id = reference.metadata.get("document_id")
         if not doc_id or doc_id in seen_doc_ids:
             continue
-
+        
+        # TODO FIX
+        score = 0
         # Ensure the document still exists
         document = await Document.get_or_none(id=doc_id)
         if document:
             await ConversationReference.create(
                 conversation=conversation,
                 document=document,
-                score=reference.score,
+                score=score,
             )
             seen_doc_ids.add(doc_id)

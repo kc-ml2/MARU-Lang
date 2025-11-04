@@ -6,9 +6,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Union, TYPE_CHECKING
 from maru_lang.enums.chat import ChatProcessStep as ChatStep
 from maru_lang.models.chat import ChatHistory
-
-if TYPE_CHECKING:
-    from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
+from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
 
 
 @dataclass
@@ -113,22 +111,8 @@ class ExecutionResult:
 @dataclass
 class ChatResult:
     """Final chat processing result"""
-    pass
-    # answer: str
-    # agents_used: List[str]
-    # execution_details: Dict[str, Any]
-    # documents: Optional[List[Any]] = None
-    # metadata: Optional[Dict[str, Any]] = None
-
-    # def to_dict(self) -> Dict[str, Any]:
-    #     """Convert to dictionary"""
-    #     return {
-    #         "answer": self.answer,
-    #         "agents_used": self.agents_used,
-    #         "execution_details": self.execution_details,
-    #         "documents": self.documents,
-    #         "metadata": self.metadata
-    #     }
+    answer: str
+    internal_documents: List[RetrieveDocument] = field(default_factory=list)
 
 
 @dataclass

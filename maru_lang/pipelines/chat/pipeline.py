@@ -114,14 +114,22 @@ class ChatPipeline(BasePipeline):
                 # Ultimate fallback
                 answer = "죄송합니다. 답변을 생성하는 중 오류가 발생했습니다."
 
+            internal_documents = []
+            for agent_result in execution_result.agent_results.values():
+                if agent_result.data and 'internal_results' in agent_result.data:
+                    internal_documents.extend(agent_result.data['internal_results'].values())
+
             await self.queue.put(ChatProcess(
                 step=ChatStep.ANSWER_GENERATION,
-                data=answer,
+                data=ChatResult(
+                    answer=answer,
+                    internal_documents=internal_documents
+                ),
             ))
 
             # Final result
             await self.queue.put(PipelineComplete(
-                data=ChatResult()
+                None,
             ))
 
         except Exception as e:
