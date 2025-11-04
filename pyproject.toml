@@ -38,7 +38,12 @@ dependencies = [
     "konlpy>=0.6.0",
     "mcp>=0.9.0",
     "pyyaml>=6.0.0",
+    # Document parsers
     "PyPDF2>=3.0.1",
+    "python-docx>=0.8.11",
+    "python-pptx>=0.6.21",
+    "openpyxl>=3.0.0",
+    "beautifulsoup4>=4.12.0",
 ]
 
 [project.optional-dependencies]

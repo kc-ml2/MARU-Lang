@@ -9,6 +9,7 @@ default_chunker: paragraph
 
 # Extension-specific mappings (declare special cases only)
 extensions:
+  # Text formats
   .txt:
     loader: txt
     chunker: paragraph
@@ -17,6 +18,11 @@ extensions:
     loader: markdown
     chunker: paragraph
 
+  .markdown:
+    loader: markdown
+    chunker: paragraph
+
+  # Document formats
   .pdf:
     loader: pdf
     chunker: paragraph
@@ -25,6 +31,19 @@ extensions:
     loader: docx
     chunker: paragraph
 
+  .pptx:
+    loader: pptx
+    chunker: paragraph
+
+  .xlsx:
+    loader: xlsx
+    chunker: paragraph
+
+  .xlsm:
+    loader: xlsx
+    chunker: paragraph
+
+  # Web formats
   .html:
     loader: html
     chunker: paragraph
@@ -33,6 +52,40 @@ extensions:
     loader: html
     chunker: paragraph
 
+  .xhtml:
+    loader: xml
+    chunker: paragraph
+
+  # Data formats
+  .json:
+    loader: json
+    chunker: paragraph
+
+  .jsonl:
+    loader: json
+    chunker: paragraph
+
+  .yaml:
+    loader: yaml
+    chunker: paragraph
+
+  .yml:
+    loader: yaml
+    chunker: paragraph
+
+  .xml:
+    loader: xml
+    chunker: paragraph
+
+  .csv:
+    loader: csv
+    chunker: paragraph
+
+  .tsv:
+    loader: csv
+    chunker: paragraph
+
+  # Code formats
   .py:
     loader: txt
     chunker: paragraph
