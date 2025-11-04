@@ -6,7 +6,7 @@
 # ============================================================
 retriever:
   # Default search parameters
-  default_k: 5              # Number of search results to return
+  default_k: 20              # Number of search results to return
   default_method: "vector"  # Choose among vector, bm25, or ensemble
 
   # Query-type weights

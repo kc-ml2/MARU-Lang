@@ -65,37 +65,94 @@ async def get_managed_document_groups(user_id: int) -> List[DocumentGroup]:
 
 async def get_managed_document_groups_with_stats(user_id: int) -> List[dict]:
     """
-    Get all document groups where the user is the manager with statistics.
+    Get top-level document groups where the user is the manager with statistics.
+    Only returns groups that are not children of other groups.
+    Document count includes all documents in child groups (recursive sum).
 
     Args:
         user_id: User ID to check
 
     Returns:
-        List of dictionaries containing DocumentGroup info with stats:
+        List of dictionaries containing top-level DocumentGroup info with aggregated stats:
         [
             {
                 "id": int,
                 "name": str,
                 "base_path": str,
                 "description": str,
-                "document_count": int,
+                "document_count": int,  # Sum of this group and all child groups
                 "created_at": str
             }
         ]
     """
-    groups = await DocumentGroup.filter(manager_id=user_id).all()
+    # Get all groups managed by user
+    all_managed_groups = await DocumentGroup.filter(manager_id=user_id).all()
+
+    if not all_managed_groups:
+        return []
+
+    managed_group_ids = {group.id for group in all_managed_groups}
+
+    # Find which groups are children of other groups
+    child_group_ids = set()
+    parent_child_map = {}  # parent_id -> [child_ids]
+
+    for group_id in managed_group_ids:
+        # Check if this group is a child of another managed group
+        parent_inclusion = await DocumentGroupInclusion.filter(
+            child_id=group_id,
+            parent_id__in=managed_group_ids
+        ).first()
+
+        if parent_inclusion:
+            child_group_ids.add(group_id)
+
+        # Build parent-child mapping for recursive counting
+        child_inclusions = await DocumentGroupInclusion.filter(
+            parent_id=group_id
+        ).all()
+
+        if child_inclusions:
+            parent_child_map[group_id] = [inc.child_id for inc in child_inclusions]
+
+    # Top-level groups are those that are NOT children of other managed groups
+    top_level_groups = [g for g in all_managed_groups if g.id not in child_group_ids]
+
+    async def get_all_descendant_group_ids(group_id: int, visited: set = None) -> set:
+        """Recursively get all descendant group IDs"""
+        if visited is None:
+            visited = set()
+
+        if group_id in visited:
+            return visited
+
+        visited.add(group_id)
+
+        # Get direct children
+        child_inclusions = await DocumentGroupInclusion.filter(parent_id=group_id).all()
+
+        for inclusion in child_inclusions:
+            if inclusion.child_id not in visited:
+                await get_all_descendant_group_ids(inclusion.child_id, visited)
+
+        return visited
 
     result = []
-    for group in groups:
-        # Count documents in this group
-        doc_count = await DocumentGroupMembership.filter(group_id=group.id).count()
+    for group in top_level_groups:
+        # Get all descendant groups (including the group itself)
+        all_group_ids = await get_all_descendant_group_ids(group.id)
+
+        # Sum document counts from all groups (parent + children)
+        total_doc_count = await DocumentGroupMembership.filter(
+            group_id__in=all_group_ids
+        ).count()
 
         result.append({
             "id": group.id,
             "name": group.name,
             "base_path": group.base_path,
             "description": group.description,
-            "document_count": doc_count,
+            "document_count": total_doc_count,
             "created_at": group.signature_updated_at.isoformat() if group.signature_updated_at else None
         })
 
