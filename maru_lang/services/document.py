@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional, Tuple
 from maru_lang.core.relation_db.models.documents import (
     Document,
     DocumentGroup,
@@ -8,7 +8,8 @@ from maru_lang.core.relation_db.models.documents import (
     PermissionAction,
 )
 from maru_lang.core.relation_db.models.auth import UserGroup
-from maru_lang.utils.document import new_ulid
+from maru_lang.enums.documents import DocumentStatus, SyncMode
+from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
 
 
 # ========== DocumentGroup helpers ==========
@@ -162,44 +163,45 @@ async def get_managed_document_groups_with_stats(user_id: int) -> List[dict]:
 async def upsert_document_group(
     name: str,
     base_path: str,
-    embedding_model: str,
     manager_id: int,
-    loader: str = None,
-    chunker: str = None,
-    config_snapshot: dict = None,
+    rag_components: dict,
     force_new_version: bool = False,
-    description: str = None
-) -> tuple[DocumentGroup, bool]:
+    description: str = None,
+    sync_mode: SyncMode = SyncMode.SERVER
+) -> tuple[DocumentGroup, bool, bool]:
     """
     DocumentGroup을 upsert (base_path 기준으로 찾아서 업데이트 또는 생성)
 
     Args:
         name: 그룹 이름 (디렉토리명)
         base_path: 파일시스템 경로 (unique)
-        embedding_model: 임베딩 모델명
         manager_id: 관리자 User ID
-        loader: 사용된 loader 이름
-        chunker: 사용된 chunker 이름
-        config_snapshot: 사용된 설정의 스냅샷 (변경 감지용)
+        rag_components: 사용된 RAG 컴포넌트 (loader, chunker, embedding_model)
         force_new_version: True일 경우 새 version_id 생성 (re-embed, config 변경 등)
         description: DocumentGroup 설명 (루트 그룹에만 사용)
 
     Returns:
-        Tuple[DocumentGroup, bool]: (그룹 인스턴스, 신규 생성 여부)
+        Tuple[DocumentGroup, bool, bool]: (그룹 인스턴스, 신규 생성 여부, 설정 변경 여부)
     """
+    config_changed = False
+    existing_group = await DocumentGroup.get_or_none(base_path=base_path)
+    if existing_group and existing_group.manager_id != manager_id:
+        raise PermissionError(
+            f"Access denied: User {manager_id} does not have permission to update DocumentGroup '{name}' "
+            f"(managed by user {existing_group.manager_id})"
+        )
+    if existing_group and existing_group.rag_components != rag_components:
+        force_new_version = True
+        config_changed = True
+
     # base_path가 unique이므로 이걸로 upsert
     defaults = {
         "name": name.lower(),
-        "embedding_model": embedding_model,
         "manager_id": manager_id,
+        "rag_components": rag_components,
+        "sync_mode": sync_mode,
     }
 
-    if loader is not None:
-        defaults["loader"] = loader
-    if chunker is not None:
-        defaults["chunker"] = chunker
-    if config_snapshot is not None:
-        defaults["config_snapshot"] = config_snapshot
     if description is not None:
         defaults["description"] = description
 
@@ -214,10 +216,58 @@ async def upsert_document_group(
             doc_group.version_id = new_ulid()
             await doc_group.save()
 
-    return doc_group, created
+    return doc_group, created, config_changed
+
+
+async def simulate_upsert_document_group(
+    name: str,
+    base_path: str,
+    manager_id: int,
+    rag_components: dict,
+    force_new_version: bool = False,
+    description: str = None
+) -> bool:
+    """
+    DocumentGroup upsert를 시뮬레이션 (DB 변경 없음)
+
+    Args:
+        name: 그룹 이름 (디렉토리명)
+        base_path: 파일시스템 경로 (unique)
+        manager_id: 관리자 User ID
+        rag_components: 사용된 RAG 컴포넌트 (loader, chunker, embedding_model)
+        force_new_version: True일 경우 새 version_id 생성 (re-embed, config 변경 등)
+        description: DocumentGroup 설명 (루트 그룹에만 사용)
+
+    Returns:
+        bool: 작업이 필요한지 여부 (True = 생성/업데이트 필요, False = 스킵)
+    """
+    existing_group = await DocumentGroup.get_or_none(base_path=base_path)
+
+    # 권한 체크 (실제 upsert_document_group과 동일)
+    if existing_group and existing_group.manager_id != manager_id:
+        raise PermissionError(
+            f"Access denied: User {manager_id} does not have permission to update DocumentGroup '{name}' "
+            f"(managed by user {existing_group.manager_id})"
+        )
+
+    # 신규 생성 필요
+    if not existing_group:
+        return True
+
+    # 설정 변경 감지
+    if existing_group.rag_components != rag_components:
+        return True
+
+    # 강제 재처리
+    if force_new_version:
+        return True
+
+    # 변경 없음
+    return False
+
 
 async def set_document_group_inclusion(
-    parent_group: DocumentGroup, 
+    parent_group: DocumentGroup,
     child_group: DocumentGroup
 ):
     await DocumentGroupInclusion.get_or_create(parent=parent_group, child=child_group)
@@ -242,20 +292,12 @@ async def get_all_descendant_group_ids(
 
     return seen
 
-
-async def get_all_descendant_group_names(
+async def get_all_descendant_groups(
     group_names: List[str]
-) -> List[str]:
+) -> List[DocumentGroup]:
     """
-    Resolve all descendant group names starting from the given parents (inclusive).
-
-    Args:
-        group_names: Parent group names.
-
-    Returns:
-        List of group names including every descendant.
+    Resolve all descendant groups starting from the given parents (inclusive).
     """
-
     if not group_names:
         return []
 
@@ -277,9 +319,24 @@ async def get_all_descendant_group_names(
 
     # 4. Convert IDs back to names
     all_groups = await DocumentGroup.filter(id__in=all_group_ids).all()
-    result_names = [group.name for group in all_groups]
 
-    return result_names
+    return all_groups
+
+
+async def get_all_descendant_group_names(
+    group_names: List[str]
+) -> List[str]:
+    """
+    Resolve all descendant group names starting from the given parents (inclusive).
+
+    Args:
+        group_names: Parent group names.
+
+    Returns:
+        List of group names including every descendant.
+    """
+    all_groups = await get_all_descendant_groups(group_names)
+    return [group.name for group in all_groups]
 
 
 # ========== Permission helpers ==========
@@ -334,5 +391,115 @@ async def set_user_group_permissions(
         "created": permissions_created,
         "deleted": permissions_deleted
     }
+
+
+# ========== Document upsert ==========
+
+async def upsert_document_from_file(
+    name: str,
+    path: str,
+    size: int,
+    mtime_ns: int,
+    metadata: Optional[dict] = None,
+) -> Tuple[Document, bool]:
+    """
+    파일 기반 문서 업서트
+
+    파일 경로로 Document를 찾고, fingerprint로 변경 여부 확인
+    변경된 경우 PROCESSING 상태로 되돌려 재처리 필요함을 표시
+
+    Args:
+        name: 문서 이름
+        path: 파일 전체 경로
+        size: 파일 크기 (bytes)
+        mtime_ns: 수정 시간 (nanoseconds)
+        metadata: 추가 메타데이터
+
+    Returns:
+        Tuple[Document, bool]: (문서, 재처리필요여부)
+        - 재처리필요 = True: 신규 생성 또는 파일 수정됨
+        - 재처리필요 = False: 기존 파일이고 변경 없음
+    """
+    fp = make_source_fingerprint_for_file(path, size, mtime_ns)
+
+    # 1. 파일 경로로 기존 Document 조회
+    doc = await Document.get_or_none(file_path=path)
+
+    if doc:
+        # 2. 기존 문서 존재 → fingerprint 비교
+        if doc.source_fingerprint == fp:
+            # fingerprint 동일 = 파일 수정 없음 → 재처리 불필요
+            doc.name = name or doc.name
+            doc.metadata = {**(doc.metadata or {}), **(metadata or {})}
+            await doc.save()
+            return doc, False
+
+        # fingerprint 다름 = 파일 수정됨 → 재처리 필요
+        doc.name = name
+        doc.file_size = size
+        doc.source_fingerprint = fp
+        doc.status = DocumentStatus.PROCESSING  # 재처리 위해 PROCESSING으로
+        doc.metadata = {**(doc.metadata or {}), **(metadata or {})}
+        await doc.save()
+        return doc, True
+
+    # 3. 신규 생성 (PROCESSING 상태)
+    new_doc = await Document.create(
+        id=new_ulid(),
+        name=name,
+        file_path=path,
+        file_size=size,
+        source_fingerprint=fp,
+        status=DocumentStatus.PROCESSING,
+        metadata=metadata or {},
+    )
+    return new_doc, True
+
+
+async def simulate_upsert_document_from_file(
+    name: str,
+    path: str,
+    size: int,
+    mtime_ns: int,
+    metadata: Optional[dict] = None,
+) -> bool:
+    """
+    파일 기반 문서 업서트를 시뮬레이션 (DB 변경 없음)
+
+    Args:
+        name: 문서 이름
+        path: 파일 전체 경로
+        size: 파일 크기 (bytes)
+        mtime_ns: 수정 시간 (nanoseconds)
+        metadata: 추가 메타데이터
+
+    Returns:
+        bool: 재처리가 필요한지 여부 (True = 생성/업데이트 필요, False = 스킵)
+    """
+    fp = make_source_fingerprint_for_file(path, size, mtime_ns)
+    doc = await Document.get_or_none(file_path=path)
+
+    # 신규 문서
+    if not doc:
+        return True
+
+    # Fingerprint 비교
+    if doc.source_fingerprint != fp:
+        return True
+
+    # 변경 없음
+    return False
+
+
+async def update_document_status(doc: Document, status: DocumentStatus) -> None:
+    """
+    Document 상태 업데이트
+
+    Args:
+        doc: 업데이트할 Document
+        status: 새로운 상태
+    """
+    doc.status = status
+    await doc.save()
 
 

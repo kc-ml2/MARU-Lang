@@ -2,7 +2,7 @@
 VectorDB 설정 모델
 """
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Union
 
 
 # ========== VectorDB Config (상속 기반) ==========
@@ -56,6 +56,24 @@ class MilvusConfig(BaseVectorDBConfig):
 
 
 @dataclass
+class LanceDBConfig(BaseVectorDBConfig):
+    """LanceDB 전용 설정"""
+    persist_dir: str = field(default="")
+    table_name: str = field(default="")
+    db_type: str = field(default="lancedb", init=False)
+
+    @classmethod
+    def from_settings(cls) -> "LanceDBConfig":
+        """Settings로부터 기본 LanceDB 설정 생성"""
+        from maru_lang.configs.system_config import get_system_config
+        config = get_system_config()
+        return cls(
+            persist_dir=config.vector_db.lance.get_persist_dir_absolute(),
+            table_name=config.vector_db.default_collection_name,
+        )
+
+
+@dataclass
 class PineconeConfig(BaseVectorDBConfig):
     """Pinecone 전용 설정 (향후 확장)"""
     api_key: str = field(default="")
@@ -64,12 +82,12 @@ class PineconeConfig(BaseVectorDBConfig):
     db_type: str = field(default="pinecone", init=False)
 
 
-def get_vector_db_config_from_settings() -> Union[ChromaDBConfig, MilvusConfig]:
+def get_vector_db_config_from_settings() -> Union[ChromaDBConfig, MilvusConfig, LanceDBConfig]:
     """
     system_config.yaml의 vector_db.type에 따라 적절한 VectorDB 설정 반환
 
     Returns:
-        ChromaDBConfig or MilvusConfig: 설정된 VectorDB 타입에 맞는 설정 객체
+        ChromaDBConfig, MilvusConfig, or LanceDBConfig: 설정된 VectorDB 타입에 맞는 설정 객체
 
     Raises:
         ValueError: 지원하지 않는 VectorDB 타입인 경우
@@ -83,8 +101,10 @@ def get_vector_db_config_from_settings() -> Union[ChromaDBConfig, MilvusConfig]:
         return ChromaDBConfig.from_settings()
     elif db_type == "milvus":
         return MilvusConfig.from_settings()
+    elif db_type == "lance" or db_type == "lancedb":
+        return LanceDBConfig.from_settings()
     else:
         raise ValueError(
             f"Unsupported vector_db.type: {db_type}. "
-            f"Supported types: 'chroma', 'milvus'"
+            f"Supported types: 'chroma', 'milvus', 'lance'"
         )

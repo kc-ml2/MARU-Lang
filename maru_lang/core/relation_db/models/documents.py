@@ -3,6 +3,7 @@ from tortoise import fields
 from maru_lang.enums.documents import (
     PermissionAction,
     DocumentStatus,
+    SyncMode,
 )
 
 
@@ -53,16 +54,18 @@ class DocumentGroup(Model):
         on_delete=fields.RESTRICT  # Manager가 있는 DocumentGroup이 있으면 User 삭제 불가
     )
 
-    # Pluggable component configurations (used during ingestion)
-    loader = fields.CharField(max_length=255, null=True)           # 사용된 loader 이름
-    chunker = fields.CharField(max_length=255, null=True)          # 사용된 chunker 이름
-    embedding_model = fields.CharField(max_length=255, null=True)  # 사용된 embedding model 이름
-
     # Configuration snapshot (for detecting changes)
-    config_snapshot = fields.JSONField(null=True, default=dict)  # 사용된 설정의 스냅샷
+    rag_components = fields.JSONField(null=True, default=dict)  # 사용된 설정의 스냅샷
 
     minhash_signature = fields.JSONField(null=True) # MinHash 시그니처 (128개 정수 배열)
     signature_updated_at = fields.DatetimeField(auto_now=True)
+
+    # Sync mode: SERVER (서버 VDB) or CLIENT (클라이언트 VDB)
+    sync_mode = fields.IntEnumField(
+        SyncMode,
+        default=SyncMode.SERVER,
+        index=True
+    )
 
     class Meta:
         table = "document_group"
