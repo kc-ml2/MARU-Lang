@@ -32,11 +32,21 @@ def serve(
     reload: bool = typer.Option(None, help="Enable hot-reload when code changes"),
     log_level: str = typer.Option(None, help="Log level"),
     workers: int = typer.Option(1, help="Number of server workers"),
+    skip_migrations: bool = typer.Option(False, "--skip-migrations", help="Skip automatic database migrations"),
 ):
     """Start the chatbot FastAPI server (default: maru_app/main.py)"""
 
     # Check if installation is complete
     _check_maru_app_installation()
+
+    # Run migrations before starting the server
+    if not skip_migrations:
+        typer.echo("🔄 Checking for pending database migrations...")
+        from maru_lang.core.relation_db.migration_utils import run_migrations_sync
+        success = run_migrations_sync()
+        if not success:
+            typer.echo("⚠️  Migration check failed, but continuing to start server...")
+        typer.echo("")
 
     # Add current directory and maru_app to Python path
     if '.' not in sys.path:
@@ -142,8 +152,6 @@ def ingest(
     path: Path = typer.Argument(..., help="Folder path that contains documents"),
     user_groups: Optional[List[str]] = typer.Option(
         None, "--user-group", "-ug", help="User groups that should receive access permission (multiple values allowed)"),
-    batch_size: int = typer.Option(
-        1000, "--batch-size", "-b", help="Maximum memory per batch in MB (default: 1000 MB)"),
     re_embed: bool = typer.Option(
         False, "--re-embed", "-r", help="Delete existing embeddings and re-embed all documents from scratch"),
 ):
@@ -166,7 +174,6 @@ def ingest(
         ingest_function,
         path,
         user_groups,
-        batch_size,
         re_embed,
     )
 
@@ -193,12 +200,22 @@ def chat(
     max_turns: int = typer.Option(
         0, "--max-turns", "-m",
         help="Maximum number of turns to keep in chat history"
-    )
+    ),
+    skip_migrations: bool = typer.Option(False, "--skip-migrations", help="Skip automatic database migrations"),
 ):
     """Start an interactive admin chat session with document group selection"""
 
     # Check if installation is complete
     _check_maru_app_installation()
+
+    # Run migrations before starting chat
+    if not skip_migrations:
+        typer.echo("🔄 Checking for pending database migrations...")
+        from maru_lang.core.relation_db.migration_utils import run_migrations_sync
+        success = run_migrations_sync()
+        if not success:
+            typer.echo("⚠️  Migration check failed, but continuing to start chat...")
+        typer.echo("")
 
     # Check configuration differences
     try:

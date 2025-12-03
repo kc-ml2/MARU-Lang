@@ -86,6 +86,8 @@ maru_lang = [
     "templates/**/*.yml",
     "templates/**/*.py",
     "templates/**/*.md",
+    "core/relation_db/migrations/**/*.sql",
+    "core/relation_db/migrations/**/*.py",
     "py.typed",
 ]
 
@@ -129,5 +131,5 @@ maru = "maru_lang.cli:app"
 
 [tool.aerich]
 tortoise_orm = "maru_lang.core.relation_db.TORTOISE_ORM"
-location = "./migrations"
+location = "./maru_lang/core/relation_db/migrations"
 src_folder = "./."
