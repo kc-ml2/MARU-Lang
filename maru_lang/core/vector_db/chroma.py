@@ -157,22 +157,19 @@ class ChromaVectorDB(VectorDB):
 
     def get_all_documents(
         self,
-        version_ids: list[str] | None = None
+        version_ids: list[str]
     ) -> list[RetrieveDocument]:
         """
-        Get all documents from VectorDB with optional version filter
+        Get all documents from VectorDB filtered by version IDs
 
         Args:
-            version_ids: Optional list of version IDs to filter
+            version_ids: List of version IDs to filter (required)
 
         Returns:
-            List of all documents (or filtered by version)
+            List of documents filtered by version
         """
-        # Build filter
-        if version_ids:
-            filter_where = {"version_id": {"$in": version_ids}}
-        else:
-            filter_where = None
+        # Build filter with required version_ids
+        filter_where = {"version_id": {"$in": version_ids}}
 
         # Get all documents with filter
         results = self.collection.get(
@@ -197,7 +194,7 @@ class ChromaVectorDB(VectorDB):
         self,
         query_embedding: list[float],
         k: int,
-        version_ids: list[str] | None = None,
+        version_ids: list[str],
         **kwargs: dict[str, Any],
     ) -> list[RetrieveDocument]:
         """
@@ -206,13 +203,10 @@ class ChromaVectorDB(VectorDB):
         Args:
             query_embedding: 쿼리 임베딩 벡터 (외부에서 생성)
             k: 반환할 결과 개수
-            version_ids: 버전 ID 필터 (None이면 전체 검색)
+            version_ids: 버전 ID 필터 (required)
         """
-        # 버전 필터 생성
-        if version_ids:
-            filter = {"version_id": {"$in": version_ids}}
-        else:
-            filter = None  # 전체 검색
+        # 버전 필터 생성 (required)
+        filter = {"version_id": {"$in": version_ids}}
 
         results = self.collection.query(
             query_embeddings=[query_embedding],
@@ -233,6 +227,26 @@ class ChromaVectorDB(VectorDB):
             )
             for doc_id, doc, metadata, distance in zip(ids, docs, metadatas, distances)
         ]
+
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_embedding: list[float],
+        k: int,
+        version_ids: list[str],
+        **kwargs: dict[str, Any]
+    ) -> list[RetrieveDocument]:
+        """
+        Hybrid search - Not supported by ChromaDB
+
+        ChromaDB does not natively support full-text/BM25 search.
+        Use LanceDB for hybrid search capabilities.
+        """
+        raise NotImplementedError(
+            "ChromaDB does not support hybrid search. "
+            "Please use LanceDB for hybrid search capabilities, "
+            "or use only similarity_search with ChromaDB."
+        )
 
     def health_check(self) -> bool:
         """

@@ -1,26 +1,26 @@
 """
 Retriever: 검색 로직 관리 (VectorDB + Embedder + Reranker 조합)
 """
+import asyncio
 import logging
 import numpy as np
-from typing import List, Optional, Literal, Tuple, Dict
+from collections import defaultdict
+from typing import List, Optional, Tuple, Dict
+from maru_lang.enums.documents import SyncMode
 from maru_lang.pluggable.embedders import Embedder, get_embedder
-from konlpy.tag import Okt
-from rank_bm25 import BM25Okapi
-from maru_lang.core.vector_db.base import VectorDB, RetrieveDocument
+from maru_lang.core.vector_db.factory import get_vector_db
+from maru_lang.core.vector_db.base import RetrieveDocument, VectorDB
+from maru_lang.core.vector_db.maru_sync import MaruSyncVectorDB
 from maru_lang.configs import get_config_manager
 from maru_lang.pluggable.rerankers import get_reranker, Reranker
 from maru_lang.pluggable.models.reranker import RerankerConfig
 from maru_lang.pluggable.models.rag import RagConfig
-from maru_lang.services.document import get_all_descendant_group_names
+from maru_lang.services.document import get_all_descendant_groups
 from maru_lang.pluggable.agents.agent_factory import AgentFactory
-from maru_lang.configs import get_config_manager
 from maru_lang.core.relation_db.models.documents import DocumentGroup
 
 
 logger = logging.getLogger(__name__)
-
-RetriveMethod = Literal["vector", "ensemble"]
 
 # 기본값 상수 정의
 DEFAULT_QUERY_TYPE_WEIGHTS = {
@@ -55,7 +55,6 @@ class Retriever:
 
     def __init__(
         self,
-        vdb: VectorDB,
         embedder: Optional[Embedder] = None,
         reranker: Optional[Reranker] = None,
         reranker_config: Optional[RerankerConfig] = None,
@@ -63,260 +62,156 @@ class Retriever:
     ):
         """
         Args:
-            vdb: VectorDB 인스턴스
             reranker: Reranker 인스턴스 (method="model"일 때만 필요)
             reranker_config: Reranker 설정
         """
         config_manager = get_config_manager()
 
-        self.vdb = vdb
+        self._server_vdb = get_vector_db()
         self.embedder = embedder or get_embedder()
         self.reranker = reranker or get_reranker()
         self.rag_config = rag_config or config_manager.get_rag_config()
         self.reranker_config = reranker_config or config_manager.get_reranker_config()
         self._representative_vectors = None
-        self.okt: Optional[Okt] = None  # BM25용 형태소 분석기
 
     async def search(
         self,
         query: str,
         top_k: int,
         embedding_model: str,
-        keywords: Optional[List[str]] = None,
         document_groups: Optional[List[str]] = None,
-        retrive_method: Optional[RetriveMethod] = None,
+        search_method: str = "vector",
         **kwargs,
     ) -> List[RetrieveDocument]:
+        """
+        검색 수행
 
-        results: List[RetrieveDocument] = []
+        Args:
+            query: 검색 쿼리
+            top_k: 반환할 결과 개수
+            embedding_model: 임베딩 모델 이름
+            document_groups: 검색할 문서 그룹 리스트
+            search_method: 검색 방법 ("vector" or "hybrid")
+            **kwargs: 추가 검색 파라미터
 
+        Returns:
+            검색 결과 리스트
+        """
         # 방어: document_groups가 없으면 검색하지 않음 (보안)
         if not document_groups:
             print("⚠️ No document_groups provided - refusing to search all documents")
             return []
 
         # 1. 그룹 이름으로부터 version_ids 추출
-        all_group_names = await get_all_descendant_group_names(document_groups)
+        all_groups = await get_all_descendant_groups(document_groups)
 
-        if not all_group_names:
+        if not all_groups:
             print("⚠️ No valid groups found after expansion")
             return []
 
-        # 2. 그룹 이름으로 DocumentGroup 조회하여 version_ids 추출
-        version_ids = []
-        if all_group_names:
-            groups = await DocumentGroup.filter(name__in=all_group_names).all()
-            version_ids = [group.version_id for group in groups if group.version_id]
-
-        # 방어: version_ids가 없으면 검색하지 않음
-        if not version_ids:
-            print("⚠️ No valid version_ids found - refusing to search")
-            return []
-        # 검색 수행
-        if retrive_method == "vector":
-            results = self._vector_search(
-                query, top_k, embedding_model, version_ids, **kwargs)
-        elif retrive_method == "ensemble":
-            results = self._ensemble_search(
-                query, top_k, keywords, embedding_model, version_ids, **kwargs)
-        else:
-            raise ValueError(f"Unknown search method: {retrive_method}")
-
-        return results
-
-    def _vector_search(
-        self,
-        query: str,
-        k: int,
-        embedding_model: str,
-        version_ids: Optional[List[str]],
-        **kwargs,
-    ) -> List[RetrieveDocument]:
-        """Vector similarity search"""
-        query_embedding = self.embedder.encode([query], embedding_model)[0]
-        # VectorDB 검색
-        return self.vdb.similarity_search(
-            query_embedding=query_embedding,
-            k=k,
-            version_ids=version_ids,
-            **kwargs,
-        )
-
-    def _bm25_search(
-        self,
-        query: str,
-        k: int,
-        version_ids: Optional[List[str]],
-        **kwargs,
-    ) -> List[RetrieveDocument]:
-        """
-        BM25 search implementation
-
-        Args:
-            query: Search query
-            k: Number of results to return
-            version_ids: Optional list of version IDs to filter
-            **kwargs: Additional parameters (target_field, etc.)
-        """
-        if not self.okt:
-            self.okt = Okt()
-
-        target_field = kwargs.get("target_field", "document_name")
-
-        # Get all documents from VectorDB with version filter
-        all_allowed_chunks = self.vdb.get_all_documents(version_ids=version_ids)
-
-        if not all_allowed_chunks:
-            return []
-
-        # Get unique documents by target field
-        unique_docs = {}
-        for chunk in all_allowed_chunks:
-            title = chunk.metadata.get(target_field, "")
-            if title and title not in unique_docs:
-                unique_docs[title] = chunk
-
-        representative_chunks = list(unique_docs.values())
-        if not representative_chunks:
-            return []
-
-        # Tokenize documents
-        if target_field:
-            tokenized_docs = [
-                self.okt.morphs(doc.metadata[target_field])
-                for doc in representative_chunks
-            ]
-
-        # Build BM25 index
-        bm25 = BM25Okapi(tokenized_docs)
-
-        # Calculate scores
-        scores = bm25.get_scores(self.okt.morphs(query))
-        doc_scores = [
-            (score, idx, representative_chunks[idx])
-            for idx, score in enumerate(scores)
-        ]
-        doc_scores.sort(key=lambda x: x[0], reverse=True)
-
-        # Return top-k results with scores
-        return [
-            RetrieveDocument(
-                id=doc.id,
-                page_content=doc.page_content,
-                metadata={**doc.metadata, "bm25_score": score}
-            )
-            for score, idx, doc in doc_scores[:k]
-        ]
-
-    def _ensemble_search(
-        self,
-        query: str,
-        k: int,
-        keywords: List[str],
-        embedding_model: str,
-        version_ids: Optional[List[str]],
-        **kwargs,
-    ) -> List[RetrieveDocument]:
-        """Ensemble search (vector + BM25 with RRF fusion)"""
-
-        # BM25 검색
-        bm25_k = kwargs.pop("bm25_k", k)
-        # keywords가 리스트면 문자열로 join
-        bm25_query = ' '.join(keywords) if isinstance(keywords, list) else keywords
-        bm25_docs = self._bm25_search(
-            query=bm25_query,
-            k=bm25_k,
-            version_ids=version_ids,
-        )
+        # maru sync group 인지, server group 인지 확인하여 dict 로 저장
+        server_db_groups = []
+        maru_sync_group_map = defaultdict(list)
+        for group in all_groups:
+            if group.sync_mode == SyncMode.SERVER:
+                server_db_groups.append(group)
+            else:
+                maru_sync_group_map[group.manager_id].append(group)
 
         query_embedding = self.embedder.encode([query], embedding_model)[0]
+        all_documents = []
 
-        # Vector similarity 검색
-        cosine_k = kwargs.pop("cosine_k", k)
-        cosine_docs = self.vdb.similarity_search(
-            query_embedding=query_embedding,
-            k=cosine_k,
-            version_ids=version_ids,
-        )
+        # 2. Server VDB 검색
+        server_db_version_ids = [
+            group.version_id
+            for group in server_db_groups
+            if group.version_id]
 
-        # Semantic weight 자동 계산 (명시적으로 제공되지 않은 경우)
-        cosine_weight = kwargs.pop("cosine_weight", None)
-        bm25_weight = kwargs.pop("bm25_weight", None)
+        if server_db_version_ids:
+            try:
+                server_results = await self._search_vdb(
+                    self._server_vdb,
+                    query,
+                    query_embedding,
+                    top_k,
+                    server_db_version_ids,
+                    search_method,
+                    is_async=False,  # Server VDB는 동기
+                    **kwargs
+                )
+                all_documents.extend(server_results)
+            except Exception as e:
+                print(f"Error during server VDB search: {e}")
 
-        if cosine_weight is None or bm25_weight is None:
-            # 쿼리 특성 분석하여 가중치 자동 결정
-            cosine_weight, bm25_weight = self._get_semantic_weights(
-                query, query_embedding, embedding_model
-            )
+        # 3. MaruSync VDB 검색 (클라이언트별)
+        try:
+            for manager_id, groups in maru_sync_group_map.items():
+                version_ids = [group.version_id for group in groups if group.version_id]
+                if not version_ids:
+                    continue
 
-        # RRF Fusion 적용
-        return self._apply_rrf_fusion(
-            cosine_docs=cosine_docs,
-            bm25_docs=bm25_docs,
-            cosine_weight=cosine_weight,
-            bm25_weight=bm25_weight,
-            k=k
-        )
+                vdb = MaruSyncVectorDB(manager_id)
+                client_results = await self._search_vdb(
+                    vdb,
+                    query,
+                    query_embedding,
+                    top_k,
+                    version_ids,
+                    search_method,
+                    is_async=True,  # MaruSync VDB는 비동기
+                    **kwargs
+                )
+                all_documents.extend(client_results)
 
-    def _apply_rrf_fusion(
+        except Exception as e:
+            print(f"Error during MaruSync VDB search: {e}")
+
+        return all_documents
+
+    async def _search_vdb(
         self,
-        cosine_docs: List[RetrieveDocument],
-        bm25_docs: List[RetrieveDocument],
-        cosine_weight: float,
-        bm25_weight: float,
-        k: int
+        vdb: VectorDB,
+        query: str,
+        query_embedding: list[float],
+        top_k: int,
+        version_ids: list[str],
+        search_method: str,
+        is_async: bool = False,
+        **kwargs
     ) -> List[RetrieveDocument]:
         """
-        Apply RRF (Reciprocal Rank Fusion) to combine vector and BM25 search results
+        VectorDB 검색 헬퍼 메서드
 
         Args:
-            cosine_docs: Vector similarity search results
-            bm25_docs: BM25 search results
-            cosine_weight: Weight for cosine similarity scores
-            bm25_weight: Weight for BM25 scores
-            k: Number of final results to return
+            vdb: VectorDB 인스턴스
+            query: 검색 쿼리
+            query_embedding: 쿼리 임베딩
+            top_k: 반환할 결과 개수
+            version_ids: 검색할 버전 ID 리스트
+            search_method: 검색 방법 ("vector" or "hybrid")
+            is_async: VDB 메서드가 async인지 여부
+            **kwargs: 추가 검색 파라미터
 
         Returns:
-            Fused and ranked list of documents
+            검색 결과 리스트
         """
-        # Assign ranks to documents
-        for i, doc in enumerate(cosine_docs):
-            doc.metadata['cos_rank'] = i + 1
-
-        for i, doc in enumerate(bm25_docs):
-            doc.metadata['bm25_rank'] = i + 1
-
-        # Merge documents by ID
-        doc_dict: dict[str, RetrieveDocument] = {}
-
-        for doc in cosine_docs:
-            doc_id = doc.metadata.get('id')
-            doc_dict[doc_id] = doc
-
-        for doc in bm25_docs:
-            doc_id = doc.metadata.get('id')
-            if doc_id in doc_dict:
-                # Document appears in both results, add BM25 rank
-                doc_dict[doc_id].metadata['bm25_rank'] = doc.metadata['bm25_rank']
+        if search_method == "vector":
+            if is_async:
+                return await vdb.similarity_search(query_embedding, top_k, version_ids, **kwargs)
             else:
-                # Document only in BM25 results
-                doc_dict[doc_id] = doc
-                doc.metadata['cos_rank'] = 9999  # Large rank for missing documents
+                return await asyncio.to_thread(
+                    vdb.similarity_search, query_embedding, top_k, version_ids, **kwargs
+                )
+        elif search_method == "hybrid":
+            if is_async:
+                return await vdb.hybrid_search(query, query_embedding, top_k, version_ids, **kwargs)
+            else:
+                return await asyncio.to_thread(
+                    vdb.hybrid_search, query, query_embedding, top_k, version_ids, **kwargs
+                )
+        else:
+            raise ValueError(f"Unknown search method: {search_method}")
 
-        # Calculate RRF scores
-        for doc in doc_dict.values():
-            bm_rnk = doc.metadata.get('bm25_rank', 9999)
-            cos_rnk = doc.metadata.get('cos_rank', 9999)
-            rrf_score = (bm25_weight / (k + bm_rnk)) + (cosine_weight / (k + cos_rnk))
-            doc.metadata['rrf_score'] = rrf_score
-
-        # Sort by RRF score and return top-k
-        sorted_docs = sorted(
-            doc_dict.values(),
-            key=lambda x: x.metadata.get('rrf_score', 0),
-            reverse=True
-        )
-        return sorted_docs[:k]
 
     def should_rerank(self) -> bool:
         """Check if reranking should be performed"""
@@ -685,43 +580,31 @@ _retriever_instance: Optional[Retriever] = None
 
 
 def get_retriever(
-    vdb: Optional[VectorDB] = None,
     force_new: bool = False,
 ) -> Retriever:
     """
     Retriever 싱글톤 인스턴스 반환
 
     Args:
-        vdb: VectorDB 인스턴스 (None이면 새로 생성해야 함)
         force_new: True면 기존 인스턴스 무시하고 새로 생성
 
     Returns:
         Retriever: 싱글톤 인스턴스
 
     Example:
-        >>> from maru_lang.core.vector_db.factory import get_vector_db
         >>> from maru_lang.pluggable.retrievers import get_retriever
-        >>>
-        >>> # system_config.yaml의 vector_db.type에 따라 자동으로 VectorDB 생성
-        >>> vdb = get_vector_db()
-        >>> retriever = get_retriever(vdb)
-        >>>
+        >>> retriever = get_retriever()
         >>> results = retriever.search(
         ...     query="python tutorial",
-        ...     k=5,
-        ...     method="vector",
+        ...     top_k=5,
         ...     embedding_model="BAAI/bge-m3",
-        ...     use_reranking=True
+        ...     version_ids=["1234567890"],
+        ...     retrive_method="vector",
         ... )
     """
     global _retriever_instance
 
     if _retriever_instance is None or force_new:
-        if vdb is None:
-            raise ValueError("vdb is required for first-time Retriever initialization")
-
-        _retriever_instance = Retriever(
-            vdb=vdb,
-        )
+        _retriever_instance = Retriever()
 
     return _retriever_instance

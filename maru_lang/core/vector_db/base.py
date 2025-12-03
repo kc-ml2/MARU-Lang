@@ -56,16 +56,16 @@ class VectorDB(ABC):
     @abstractmethod
     def get_all_documents(
         self,
-        version_ids: list[str] | None = None
+        version_ids: list[str]
     ) -> list[RetrieveDocument]:
         """
-        Get all documents from VectorDB with optional version filter
+        Get all documents from VectorDB filtered by version IDs
 
         Args:
-            version_ids: Optional list of version IDs to filter
+            version_ids: List of version IDs to filter (required)
 
         Returns:
-            List of all documents (or filtered by version)
+            List of documents filtered by version
         """
         pass
 
@@ -74,7 +74,7 @@ class VectorDB(ABC):
         self,
         query_embedding: list[float],
         k: int,
-        version_ids: list[str] | None = None,
+        version_ids: list[str],
         **kwargs: dict[str, Any]
     ) -> list[RetrieveDocument]:
         """
@@ -83,11 +83,38 @@ class VectorDB(ABC):
         Args:
             query_embedding: Query embedding vector
             k: Number of results to return
-            version_ids: Optional list of version IDs to filter
+            version_ids: List of version IDs to filter (required)
             **kwargs: Additional search parameters
 
         Returns:
             List of retrieved documents
+        """
+        pass
+
+    @abstractmethod
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_embedding: list[float],
+        k: int,
+        version_ids: list[str],
+        **kwargs: dict[str, Any]
+    ) -> list[RetrieveDocument]:
+        """
+        Hybrid search combining full-text search and vector similarity
+
+        Args:
+            query_text: Query text for full-text/BM25 search
+            query_embedding: Query embedding vector for similarity search
+            k: Number of results to return
+            version_ids: List of version IDs to filter (required)
+            **kwargs: Additional search parameters
+                - alpha: Weight for combining scores (0.0 = full-text only, 1.0 = vector only)
+                - bm25_k: Number of results from BM25 search
+                - vector_k: Number of results from vector search
+
+        Returns:
+            List of retrieved documents with combined scores
         """
         pass
 
