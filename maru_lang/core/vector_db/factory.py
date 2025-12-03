@@ -7,6 +7,7 @@ from maru_lang.models.vector_db import (
     BaseVectorDBConfig,
     ChromaDBConfig,
     MilvusConfig,
+    LanceDBConfig,
     PineconeConfig,
     get_vector_db_config_from_settings,
 )
@@ -57,6 +58,14 @@ def get_vector_db(config: Optional[BaseVectorDBConfig] = None) -> VectorDB:
             user=config.user,
             password=config.password,
             collection_name=config.collection_name,
+        )
+
+    # LanceDB
+    elif isinstance(config, LanceDBConfig):
+        from maru_lang.core.vector_db.lancedb import LanceVectorDB
+        return LanceVectorDB(
+            persist_dir=config.persist_dir,
+            table_name=config.table_name,
         )
 
     # Pinecone (향후 확장)
