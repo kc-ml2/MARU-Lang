@@ -12,6 +12,7 @@ from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.chat import router as chat_router
 from maru_lang.api.endpoints.ingest import router as ingest_router
 from maru_lang.api.endpoints.user_group import router as user_group_router
+from maru_lang.api.endpoints.sync import router as sync_router
 
 
 
@@ -65,7 +66,7 @@ class MaruLangApp(FastAPI):
     def _get_default_cors_origins(self) -> List[str]:
         """Return default CORS origins."""
         return [
-            "*",
+          "http://localhost:5173",  # Vite dev server 
         ]
 
 
@@ -177,6 +178,7 @@ class MaruLangApp(FastAPI):
             self.include_router(auth_router)
             self.include_router(ingest_router)
             self.include_router(user_group_router)
+            self.include_router(sync_router)
 
         # Run custom router hooks
         for hook in self._router_hooks:

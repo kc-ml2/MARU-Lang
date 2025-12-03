@@ -9,20 +9,24 @@ class FileInfo(BaseModel):
     createdAt: datetime = Field(..., description="파일 생성 시간")
     relativePath: str = Field(..., description="상대 경로 (프로젝트폴더명/경로/파일명)")
     size: int = Field(..., description="파일 크기 (bytes)")
-
+    tempFilePath: Optional[str] = Field(None, description="임시 파일 경로")
 
 class SyncCheckRequest(BaseModel):
     """Request for checking which files need to be uploaded"""
-    folderPath: str = Field(..., description="프로젝트 폴더명")
+    folderName: str = Field(..., description="프로젝트 폴더명")
+    folderPath: str = Field(..., description="프로젝트 폴더 경로")
     files: List[FileInfo] = Field(..., description="폴더 내 파일 정보 목록")
     description: Optional[str] = Field(None, description="DocumentGroup 설명")
 
 
 class SyncCheckResponse(BaseModel):
     """Response for sync check"""
-    filesToUpload: List[str] = Field(..., description="업로드가 필요한 파일의 relativePath 목록")
-    totalFiles: int = Field(..., description="전체 파일 개수")
-    message: str = Field(..., description="상태 메시지")
+    fileIndicesToUpload: List[int] = Field(..., description="Upload required file indices (refers to request.files array)")
+    totalFiles: int = Field(..., description="Total number of files")
+    processedFiles: Optional[int] = Field(None, description="Number of files to be processed (dry-run result)")
+    skippedFiles: Optional[int] = Field(None, description="Number of files to be skipped (dry-run result)")
+    unsupportedFileIndices: Optional[List[int]] = Field(None, description="Unsupported file indices (dry-run result)")
+    filesToDelete: Optional[List[str]] = Field(None, description="File names to be deleted (exist in DB but not in current files)")
 
 
 class SyncUploadResponse(BaseModel):
