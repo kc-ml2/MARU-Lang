@@ -111,3 +111,23 @@ def get_user_with_role(
         return user
 
     return dependency
+
+
+async def get_user_from_websocket_token(token: str) -> User | None:
+    """
+    WebSocket용 토큰 검증 및 유저 조회
+
+    Note: WebSocket에서는 refresh token 로직을 사용하지 않습니다.
+    클라이언트에서 새 access token을 받아서 재연결해야 합니다.
+    """
+    payload = decode_token(token) if token else None
+
+    if payload is None:
+        return None
+
+    user_id = payload.get("sub")
+    if user_id is None:
+        return None
+
+    user = await User.get_or_none(id=user_id)
+    return user

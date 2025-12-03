@@ -52,10 +52,15 @@ async def create_or_get_user(
     if existing_user:
         return existing_user
 
+    try:
+        name = email.split('@')[0]
+    except Exception as e:
+        name = None
+
     # 3. Create the user
     new_user = await User.create(
         email=email,
-        name=None,  # Defaults to None when not provided
+        name=name,  # Defaults to None when not provided
         role=role_object
     )
     try:
