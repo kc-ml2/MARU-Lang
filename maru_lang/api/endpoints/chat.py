@@ -96,16 +96,9 @@ async def handle_chat_request(
                 # Handle different message types
                 if isinstance(step_result, PipelineMessage):
                     # Log progress messages on server side only (not sent to client)
+                    # TODO logging
                     message_type = step_result.message_type.value
                     message = step_result.message
-
-                    if message_type == "error":
-                        print(f"❌ [Chat Pipeline] {message}")
-                    elif message_type == "warning":
-                        print(f"⚠️  [Chat Pipeline] {message}")
-                    else:  # info
-                        print(f"ℹ️  [Chat Pipeline] {message}")
-
                     # Continue to next iteration without sending to client
                     continue
 
@@ -136,16 +129,16 @@ async def handle_chat_request(
                         # Answer generation completed
                         data: ChatResult = step_result.data
                         final_answer = data.answer
-                        final_documents = []
-                        for group_docs in data.internal_documents:
-                            for doc in group_docs:
-                                final_documents.append(doc)
+                        final_documents = data.internal_documents
+                        # data.internal_documents is now List[DocumentReference]
+                        # Already cleaned and filtered in the pipeline
+
                         event_data = {
                             "type": "process_step",
                             "step": step.value,
                             "data": {
                                 "answer": data.answer,
-                                "internal_documents": [doc.to_reference_response() for doc in final_documents]
+                                "internal_documents": [doc.model_dump() for doc in data.internal_documents]
                             }
                         }
                         yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
@@ -171,7 +164,6 @@ async def handle_chat_request(
             yield f"data: {json.dumps(completion_data, ensure_ascii=False)}\n\n"
 
         except asyncio.CancelledError:
-            print(f"🔔 Request cancelled by client: {user.email}")
             error_data = {
                 "type": "error",
                 "message": "Client disconnected"
@@ -179,10 +171,9 @@ async def handle_chat_request(
             yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
 
         except ClientDisconnect:
-            print(f"🔔 Client disconnected: {user.email}")
+            pass
 
         except Exception as e:
-            print(f"❌ Error in chat stream: {str(e)}")
             error_data = {
                 "type": "error",
                 "message": str(e)

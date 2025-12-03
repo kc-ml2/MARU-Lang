@@ -1,6 +1,9 @@
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 from datetime import datetime
 from pydantic import BaseModel, Field, computed_field
+
+if TYPE_CHECKING:
+    from maru_lang.schemas.chat import DocumentReference
 
 
 class RetrieveDocument(BaseModel):
@@ -31,6 +34,34 @@ class RetrieveDocument(BaseModel):
 
     def to_dict(self) -> dict:
         return self.model_dump()
+
+    def to_clean_dict(self) -> dict:
+        """
+        Return a cleaned version without page_content (for API responses).
+        Only includes metadata and computed fields like source, code, page.
+        """
+        return {
+            "id": self.id,
+            "source": self.source,
+            "code": self.code,
+            "page": self.page,
+            "metadata": self.metadata
+        }
+
+    def to_document_reference(self) -> 'DocumentReference':
+        """
+        Convert to DocumentReference schema (without page_content).
+        """
+        # Lazy import to avoid circular dependency
+        from maru_lang.schemas.chat import DocumentReference
+
+        return DocumentReference(
+            id=self.id,
+            source=self.source,
+            document_id=self.metadata.get("document_id"),
+            group=self.metadata.get("group"),
+            file_path=self.metadata.get("file_path")
+        )
 
     def to_reference_response(self) -> dict:
         """ReferenceResponse 형태로 변환"""

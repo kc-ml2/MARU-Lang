@@ -57,12 +57,13 @@ class ChatPipeline(BasePipeline):
 
                 await self.queue.put(ChatProcess(
                     step=ChatStep.ANSWER_GENERATION,
-                    data=no_llm_message,
+                    data=ChatResult(
+                        answer=no_llm_message,
+                        internal_documents=[],
+                    ),
                 ))
 
-                await self.queue.put(PipelineComplete(
-                    data=ChatResult()
-                ))
+                await self.queue.put(PipelineComplete())
                 return
 
             # Step 1: Select agents
@@ -114,10 +115,18 @@ class ChatPipeline(BasePipeline):
                 # Ultimate fallback
                 answer = "죄송합니다. 답변을 생성하는 중 오류가 발생했습니다."
 
-            internal_documents = []
-            for agent_result in execution_result.agent_results.values():
-                if agent_result.data and 'internal_results' in agent_result.data:
-                    internal_documents.extend(agent_result.data['internal_results'].values())
+            # Convert internal_documents to DocumentReference (without page_content)
+            if execution_result:
+                internal_documents = []
+                for agent_result in execution_result.agent_results.values():
+                    if agent_result.data and 'internal_results' in agent_result.data:
+                        # internal_results is Dict[str, List[RetrieveDocument]]
+                        for doc_list in agent_result.data['internal_results'].values():
+                            for doc in doc_list:
+                                internal_documents.append(doc.to_document_reference())
+            else:
+                internal_documents = []
+
 
             await self.queue.put(ChatProcess(
                 step=ChatStep.ANSWER_GENERATION,

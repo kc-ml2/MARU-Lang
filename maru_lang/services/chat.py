@@ -1,5 +1,6 @@
 from typing import Dict, List
 from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
+from maru_lang.schemas.chat import DocumentReference
 from maru_lang.core.relation_db.models.chat import Conversation, ConversationReference
 from maru_lang.core.relation_db.models.documents import Document
 from maru_lang.core.relation_db.models.auth import User
@@ -45,9 +46,19 @@ async def create_conversation(
     user: User,
     question: str,
     answer: str,
-    references: list[RetrieveDocument],
+    references: List[DocumentReference],
     enhanced_question: str | None = None,
 ):
+    """
+    Create a conversation with references.
+
+    Args:
+        user: User who asked the question
+        question: User's question
+        answer: Generated answer
+        references: List of DocumentReference objects
+        enhanced_question: Enhanced/rewritten question (optional)
+    """
     conversation = await Conversation.create(
         user=user,
         question=question,
@@ -59,12 +70,11 @@ async def create_conversation(
     seen_doc_ids = set()
 
     for reference in references:
-        # Extract document_id from metadata
-        doc_id = reference.metadata.get("document_id")
+        doc_id = reference.document_id
         if not doc_id or doc_id in seen_doc_ids:
             continue
-        
-        # TODO FIX
+
+        # TODO FIX score
         score = 0
         # Ensure the document still exists
         document = await Document.get_or_none(id=doc_id)

@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional, Union, TYPE_CHECKING
 from maru_lang.enums.chat import ChatProcessStep as ChatStep
 from maru_lang.models.chat import ChatHistory
 from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
+from maru_lang.schemas.chat import DocumentReference
 
 
 @dataclass
@@ -112,7 +113,7 @@ class ExecutionResult:
 class ChatResult:
     """Final chat processing result"""
     answer: str
-    internal_documents: List[RetrieveDocument] = field(default_factory=list)
+    internal_documents: List[DocumentReference] = field(default_factory=list)
 
 
 @dataclass

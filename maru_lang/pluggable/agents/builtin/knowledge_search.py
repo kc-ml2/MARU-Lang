@@ -1,13 +1,13 @@
 """
 Knowledge Search Agent - Handles company policy, internal documents"""
 import asyncio
+import re
 from typing import Dict, Any, List, Optional, Union
 from maru_lang.models.chat import ChatHistory
 from maru_lang.pipelines.base import PipelineMessage
 from maru_lang.pluggable.agents.base import BaseAgent, AgentResult
-from maru_lang.pluggable.retrievers import RetriveMethod, get_retriever
+from maru_lang.pluggable.retrievers import get_retriever
 from maru_lang.core.vector_db.base import RetrieveDocument
-from maru_lang.core.vector_db.factory import get_vector_db
 from maru_lang.pluggable.agents.agent_factory import AgentFactory
 from maru_lang.configs.manager import get_config_manager
 
@@ -25,40 +25,6 @@ class KnowledgeSearchAgent(BaseAgent):
         self.group_classifier = None
         self.intent_extractor = None
         self.keyword_extractor = None
-
-
-    async def _setup(self) -> None:
-        """Initialize knowledge search capabilities"""
-        # Initialize VectorDB (system_config.yaml의 vector_db.type에 따라 자동 선택)
-        # Initialize preprocessing agents
-        config_manager = get_config_manager()
-        config_manager.ensure_loaded()
-
-        vdb = get_vector_db()
-        factory = AgentFactory()
-
-        # Initialize Retriever (새로운 Retriever 사용)
-        self.retriever = get_retriever(vdb)
-        # Determine whether any groups are configured; if not, disable group classifier
-        self.rag_config = config_manager.get_rag_config()
-    
-        # Create and initialize group_classifier
-        group_classifier_config = config_manager.get_agent('group_classifier')
-        self.group_classifier = factory.create_agent('group_classifier', group_classifier_config)
-        if self.group_classifier:
-            await self.group_classifier.initialize()
-
-        # Create and initialize intent_extractor
-        intent_extractor_config = config_manager.get_agent('intent_extractor')
-        self.intent_extractor = factory.create_agent('intent_extractor', intent_extractor_config)
-        if self.intent_extractor:
-            await self.intent_extractor.initialize()
-
-        # Create and initialize keyword_extractor
-        keyword_extractor_config = config_manager.get_agent('keyword_extractor')
-        self.keyword_extractor = factory.create_agent('keyword_extractor', keyword_extractor_config)
-        if self.keyword_extractor:
-            await self.keyword_extractor.initialize()
 
     async def execute(
         self,
@@ -215,6 +181,40 @@ class KnowledgeSearchAgent(BaseAgent):
                 error=error_msg
             )
 
+
+    async def _setup(self) -> None:
+        """Initialize knowledge search capabilities"""
+        # Initialize VectorDB (system_config.yaml의 vector_db.type에 따라 자동 선택)
+        # Initialize preprocessing agents
+        config_manager = get_config_manager()
+        config_manager.ensure_loaded()
+
+        factory = AgentFactory()
+
+        # Initialize Retriever (새로운 Retriever 사용)
+        self.retriever = get_retriever()
+        # Determine whether any groups are configured; if not, disable group classifier
+        self.rag_config = config_manager.get_rag_config()
+    
+        # Create and initialize group_classifier
+        group_classifier_config = config_manager.get_agent('group_classifier')
+        self.group_classifier = factory.create_agent('group_classifier', group_classifier_config)
+        if self.group_classifier:
+            await self.group_classifier.initialize()
+
+        # Create and initialize intent_extractor
+        intent_extractor_config = config_manager.get_agent('intent_extractor')
+        self.intent_extractor = factory.create_agent('intent_extractor', intent_extractor_config)
+        if self.intent_extractor:
+            await self.intent_extractor.initialize()
+
+        # Create and initialize keyword_extractor
+        keyword_extractor_config = config_manager.get_agent('keyword_extractor')
+        self.keyword_extractor = factory.create_agent('keyword_extractor', keyword_extractor_config)
+        if self.keyword_extractor:
+            await self.keyword_extractor.initialize()
+
+
     async def _execute_preprocessing_agents(
         self,
         question: str,
@@ -282,7 +282,7 @@ class KnowledgeSearchAgent(BaseAgent):
         search_keywords: List[str],
         selected_groups: Dict[str, Union[str, int]],
         total_retrieval_count: int,
-        retrive_method: RetriveMethod,
+        retrive_method: str,
         default_embedding_model: str,
     ) -> Dict[str, List[RetrieveDocument]]:
         """Search internal documents and policies"""
@@ -345,6 +345,13 @@ class KnowledgeSearchAgent(BaseAgent):
                 content = doc.page_content
                 source = doc.source
                 score = doc.metadata.get('score', 0.0)
+                rerank_score = doc.metadata.get('reranker_score', 0.0)
+                if rerank_score:
+                    if rerank_score < 0.1:
+                        continue
+                    # rerank_score 를 score 로 사용
+                    score = rerank_score
+
                 if with_all_groups:
                     # group 이 의미 없음. 모든 그룹의 결과를 표시
                     formatted.append(f"[내부 문서 {i}] {source} (유사도: {score:.2f}):\n{content}\n")
