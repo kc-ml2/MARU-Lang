@@ -218,7 +218,7 @@ class Loader:
         if parser:
             return parser
 
-        # 2. default_loader fallback
+        # 2. default_loader fallback (whitelist 모드에서는 None 반환)
         if self._default_loader:
             default_ext = f".{self._default_loader}" if not self._default_loader.startswith('.') else self._default_loader
             fallback_parser = self._parsers.get(default_ext)
