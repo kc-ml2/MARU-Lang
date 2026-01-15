@@ -1,11 +1,12 @@
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, Response
-from maru_lang.enums.auth import UserRoleCode
-from maru_lang.configs.system_config import get_system_config
-from maru_lang.dependencies.auth import get_user
-
-config = get_system_config()
-from maru_lang.dependencies.email import get_email_service_dependency, EmailService
+from maru_lang.services.auth import (
+    generate_token,
+    get_user_groups,
+    generate_email_verification_code,
+    verify_email_code,
+    revoke_token,
+    create_or_get_user,
+    refresh_token_flow,
+)
 from maru_lang.schemas.auth import (
     VerifyCodeRequest,
     SignUpRequest,
@@ -13,14 +14,14 @@ from maru_lang.schemas.auth import (
     UserGroupsResponse,
     UserGroupResponse,
 )
-from maru_lang.services.auth import (
-    generate_token,
-    verify_OTP,
-    create_or_get_user,
-    delete_token,
-    generate_OTP,
-    get_user_groups,
-)
+from maru_lang.dependencies.email import get_email_service_dependency, EmailService
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Depends, Response, Request, Query
+from maru_lang.enums.auth import UserRoleCode
+from maru_lang.configs.system_config import get_system_config
+from maru_lang.dependencies.auth import get_user
+
+config = get_system_config()
 
 
 router = APIRouter(
@@ -37,7 +38,7 @@ async def login(
 ) -> str:
     try:
         # TODO Email validation
-        otp = await generate_OTP(request.email, email_service)
+        otp = await generate_email_verification_code(request.email, email_service)
 
         # 이메일 서비스가 활성화된 경우에만 이메일 전송
         if email_service:
@@ -45,14 +46,12 @@ async def login(
             if not success:
                 # 이메일 전송 실패 시 DEFAULT_VALIDATION_CODE로 재생성
                 await otp.delete()
-                otp = await generate_OTP(request.email, None)
-
+                raise Exception("Failed to send verification email")
         return otp.email
     except Exception as e:
-        print(e)
         raise HTTPException(
             status_code=400,
-            detail="서버가 점검 중 입니다. 다시 시도해주세요.")
+            detail=f"서버가 점검 중 입니다. 다시 시도해주세요.\nError: {str(e)}")
 
 
 @router.post("/logout")
@@ -62,7 +61,7 @@ async def logout(
     user=Depends(get_user)
 ) -> dict:
     try:
-        await delete_token(user.id, request.device_id)
+        await revoke_token(user.id, request.device_id)
         response.delete_cookie(
             key="refresh_token",
             path="/",
@@ -73,22 +72,63 @@ async def logout(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/refresh")
+async def refresh(
+    request: Request,
+    response: Response,
+    device_id: str = Query(...),
+):
+    """Refresh token을 사용하여 새로운 토큰 발급"""
+    refresh_token = request.cookies.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Refresh token not found"
+        )
+
+    result = await refresh_token_flow(refresh_token, device_id)
+    if not result:
+        response.delete_cookie(
+            key="refresh_token",
+            path="/",
+            samesite="strict"
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired refresh token"
+        )
+
+    access_token, new_refresh_token = result
+
+    response.set_cookie(
+        key="refresh_token",
+        value=new_refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=config.auth.refresh_token_expire_minutes * 60
+    )
+
+    return {"access_token": access_token}
+
+
 @router.post("/verify/code")
 async def verify_code(
     response: Response,
     request: VerifyCodeRequest
 ):
     try:
-        if not await verify_OTP(request.email, request.code):
+        if not await verify_email_code(
+            request.email, request.code
+        ):
             raise Exception("Invalid or expired code")
-        user = await create_or_get_user(
-            email=request.email,
-            role=UserRoleCode.EDITOR.value
-        )
+
+        user = await create_or_get_user(request.email)
+
         access_token, refresh_token = await generate_token(
             user.id,
-            user.role_id,
-            request.device_id)
+            request.device_id
+        )
 
         response.set_cookie(
             key="refresh_token",
