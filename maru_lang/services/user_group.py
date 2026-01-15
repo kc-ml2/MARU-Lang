@@ -6,7 +6,7 @@ from tortoise.exceptions import DoesNotExist
 from maru_lang.core.relation_db.models.auth import (
     User,
     UserGroup,
-    UserGroupInclusion,
+    UserGroupMembership
 )
 from maru_lang.core.relation_db.models.documents import (
     DocumentGroup,
@@ -33,54 +33,6 @@ async def get_or_create_user_group(name: str, manager_id: Optional[int] = None) 
         defaults["manager_id"] = manager_id
     user_group, _ = await UserGroup.get_or_create(name=name, defaults=defaults)
     return user_group
-
-
-async def get_all_descendant_user_group_ids(group_ids: List[int]) -> set[int]:
-    """
-    Traverse the user-group hierarchy and return every descendant ID, including the originals.
-
-    Args:
-        group_ids: List of parent group IDs.
-
-    Returns:
-        A set containing all descendant group IDs.
-    """
-    seen = set(group_ids)
-    queue = list(group_ids)
-
-    while queue:
-        current = queue.pop()
-        children = await UserGroupInclusion.filter(parent_id=current).values_list("child_id", flat=True)
-        for child in children:
-            if child not in seen:
-                seen.add(child)
-                queue.append(child)
-
-    return seen
-
-
-async def get_all_descendant_document_group_ids(group_ids: List[int]) -> set[int]:
-    """
-    Traverse the document-group hierarchy and return every descendant ID, including the originals.
-
-    Args:
-        group_ids: List of parent document group IDs.
-
-    Returns:
-        A set containing all descendant document group IDs.
-    """
-    seen = set(group_ids)
-    queue = list(group_ids)
-
-    while queue:
-        current = queue.pop()
-        children = await DocumentGroupInclusion.filter(parent_id=current).values_list("child_id", flat=True)
-        for child in children:
-            if child not in seen:
-                seen.add(child)
-                queue.append(child)
-
-    return seen
 
 
 async def link_user_groups_to_document_groups(
@@ -119,12 +71,14 @@ async def link_user_groups_to_document_groups(
     # Fetch existing user groups
     user_groups = await UserGroup.filter(name__in=user_group_names).all()
     found_user_group_names = {ug.name for ug in user_groups}
-    missing_user_groups = [name for name in user_group_names if name not in found_user_group_names]
+    missing_user_groups = [
+        name for name in user_group_names if name not in found_user_group_names]
 
     # Fetch existing document groups
     document_groups = await DocumentGroup.filter(name__in=document_group_names).all()
     found_document_group_names = {dg.name for dg in document_groups}
-    missing_document_groups = [name for name in document_group_names if name not in found_document_group_names]
+    missing_document_groups = [
+        name for name in document_group_names if name not in found_document_group_names]
 
     if not user_groups:
         return {
@@ -189,7 +143,8 @@ async def validate_user_groups_exist(user_group_names: List[str]) -> tuple[List[
     user_group_names = [name.lower() for name in user_group_names]
     existing_groups = await UserGroup.filter(name__in=user_group_names).values_list("name", flat=True)
     existing_set = set(existing_groups)
-    missing_groups = [name for name in user_group_names if name not in existing_set]
+    missing_groups = [
+        name for name in user_group_names if name not in existing_set]
 
     return list(existing_set), missing_groups
 
@@ -269,7 +224,6 @@ async def create_user_group(name: str, creator_id: int) -> tuple[UserGroup, bool
         - If group already exists: (existing_group, False, "Group already exists")
         - If created successfully: (new_group, True, "Group created successfully")
     """
-    from maru_lang.core.relation_db.models.auth import User, UserGroupMembership
 
     name = name.lower()
 
@@ -287,22 +241,6 @@ async def create_user_group(name: str, creator_id: int) -> tuple[UserGroup, bool
     # Automatically add creator to the group
     creator = await User.get(id=creator_id)
     await UserGroupMembership.create(user=creator, group=new_group)
-
-    # Create inclusion relationship with creator's domain group (exclude public)
-    creator_memberships = await UserGroupMembership.filter(
-        user_id=creator_id
-    ).prefetch_related('group')
-
-    for membership in creator_memberships:
-        # Skip public group
-        if membership.group.name == "public":
-            continue
-
-        # Create parent-child relationship: domain_group (parent) includes new_group (child)
-        await UserGroupInclusion.get_or_create(
-            parent=membership.group,
-            child=new_group
-        )
 
     return new_group, True, "Group created successfully"
 
@@ -323,7 +261,6 @@ async def invite_user_to_group(
     Returns:
         Tuple of (success flag, message)
     """
-    from maru_lang.core.relation_db.models.auth import User, UserGroupMembership
 
     # Check if inviter is the manager
     is_manager = await is_user_group_manager(inviter_id, group_id)
@@ -370,7 +307,6 @@ async def transfer_group_manager(
     Returns:
         Tuple of (success flag, message)
     """
-    from maru_lang.core.relation_db.models.auth import User, UserGroupMembership
 
     # Check if current user is the manager
     is_manager = await is_user_group_manager(current_manager_id, group_id)
@@ -418,7 +354,6 @@ async def remove_user_from_group(
     Returns:
         Tuple of (success flag, message)
     """
-    from maru_lang.core.relation_db.models.auth import User, UserGroupMembership
 
     # Check if requester is the manager
     is_manager = await is_user_group_manager(manager_id, group_id)
@@ -463,7 +398,6 @@ async def leave_group(user_id: int, group_id: int) -> tuple[bool, str]:
     Returns:
         Tuple of (success flag, message)
     """
-    from maru_lang.core.relation_db.models.auth import User, UserGroupMembership
     from maru_lang.services.admin import ADMIN_EMAIL
 
     # Get the group
@@ -510,7 +444,6 @@ async def get_user_accessible_document_groups(user_id: int) -> List[str]:
     Returns:
         List of document group names the user can access
     """
-    from maru_lang.core.relation_db.models.auth import User, UserGroupMembership
 
     # Get user's group memberships
     user_group_ids = await UserGroupMembership.filter(
@@ -519,21 +452,23 @@ async def get_user_accessible_document_groups(user_id: int) -> List[str]:
     if not user_group_ids:
         return []
 
+    # temporary block
+    return []
     # Get all descendant user groups (including the user's direct groups)
-    all_user_group_ids = await get_all_descendant_user_group_ids(list(user_group_ids))
-    # Get document groups that these user groups have READ permission to
-    permitted_doc_group_ids = await GroupPermission.filter(
-        user_group_id__in=all_user_group_ids,
-        action=PermissionAction.READ
-    ).values_list("document_group_id", flat=True)
-    if not permitted_doc_group_ids:
-        return []
+    # all_user_group_ids = await get_all_descendant_user_group_ids(list(user_group_ids))
+    # # Get document groups that these user groups have READ permission to
+    # permitted_doc_group_ids = await GroupPermission.filter(
+    #     user_group_id__in=all_user_group_ids,
+    #     action=PermissionAction.READ
+    # ).values_list("document_group_id", flat=True)
+    # if not permitted_doc_group_ids:
+    #     return []
 
-    # Get all descendant document groups (including the directly permitted ones)
-    all_doc_group_ids = await get_all_descendant_document_group_ids(list(permitted_doc_group_ids))
+    # # Get all descendant document groups (including the directly permitted ones)
+    # all_doc_group_ids = await get_all_descendant_document_group_ids(list(permitted_doc_group_ids))
 
-    # Get the names of all accessible document groups
-    doc_group_names = await DocumentGroup.filter(
-        id__in=all_doc_group_ids
-    ).values_list("name", flat=True)
-    return list(doc_group_names)
+    # # Get the names of all accessible document groups
+    # doc_group_names = await DocumentGroup.filter(
+    #     id__in=all_doc_group_ids
+    # ).values_list("name", flat=True)
+    # return list(doc_group_names)

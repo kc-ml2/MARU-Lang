@@ -1,16 +1,13 @@
-from datetime import datetime, timedelta, timezone
 import random
-import asyncio
-from urllib.parse import parse_qs
+import secrets
+from typing import List, Optional
+from datetime import datetime, timedelta, timezone
 from maru_lang.configs.system_config import get_system_config
-from maru_lang.enums.auth import UserRoleCode
-
-config = get_system_config()
 from maru_lang.dependencies.email import EmailService
 from maru_lang.utils.security import (
-    aes256_decrypt,
     create_jwt_token,
     decode_token,
+    hash_token,
 )
 
 from maru_lang.core.relation_db.models.auth import (
@@ -20,38 +17,37 @@ from maru_lang.core.relation_db.models.auth import (
     UserToken,
     RefreshToken,
     UserRole,
-    OTP,
+    EmailVerificationCode,
+    UserChatToken,
 )
-from maru_lang.services.admin import ensure_admin_user
 
-async def get_user_groups(user: User) -> list[UserGroup]:
+config = get_system_config()
+
+
+async def get_user_groups(user: User) -> List[UserGroup]:
     return [
         user_group_membership.group
-        for user_group_membership in await UserGroupMembership.filter(user=user).prefetch_related('group').all()
+        for user_group_membership in await UserGroupMembership.filter(
+            user=user
+        ).prefetch_related('group').all()
     ]
 
-async def create_or_get_user_group(name: str, manager_id: int | None = None) -> UserGroup:
-    # Always convert to lowercase
-    name = name.lower()
-    # 1. Check whether a user group with the same name already exists
-    defaults = {}
-    if manager_id is not None:
-        defaults["manager_id"] = manager_id
-    user_group, _ = await UserGroup.get_or_create(name=name, defaults=defaults)
 
-    return user_group
+async def get_group(name: str) -> Optional[UserGroup]:
+    """그룹 이름으로 조회 (소문자로 변환하여 검색)"""
+    return await UserGroup.get_or_none(name=name.lower())
 
 
-async def create_or_get_user(
-    email: str,
-    role: str = UserRoleCode.EDITOR.value,
-) -> User:
-    role_object, _ = await UserRole.get_or_create(name=role)
-    existing_user = await User.get_or_none(email=email)
-    # Already registered user
-    if existing_user:
-        return existing_user
+async def create_group(name: str, manager_id: int) -> Optional[UserGroup]:
+    """새 그룹 생성 (소문자로 변환하여 저장)"""
+    if await get_group(name):
+        raise Exception(f"Group '{name}' already exists")
+    return await UserGroup.create(name=name.lower(), manager_id=manager_id)
 
+
+async def create_or_get_user(email: str) -> User:
+    if user := await User.get_or_none(email=email):
+        return user
     try:
         name = email.split('@')[0]
     except Exception as e:
@@ -61,55 +57,49 @@ async def create_or_get_user(
     new_user = await User.create(
         email=email,
         name=name,  # Defaults to None when not provided
-        role=role_object
     )
-    try:
-        admin_user = await ensure_admin_user()
-        # if config.auth.auto_create_group_by_domain:
-        domain = email.split('@')[1].split('.')[0] if '@' in email else 'default'
-        group = await create_or_get_user_group(name=domain, manager_id=admin_user.id)
-        await UserGroupMembership.create(user=new_user, group=group)
-
-        public_group = await create_or_get_user_group(name="public", manager_id=admin_user.id)
-        await UserGroupMembership.create(user=new_user, group=public_group)
-    except Exception as e:
-        print(f"Error creating or getting user group: {e}")
-        raise e
     return new_user
 
 
-async def generate_OTP(email: str, email_service: EmailService | None = None) -> OTP:
-    
+async def set_user_name(user: User, name: str):
+    user.name = name
+    await user.save()
+
+
+async def generate_email_verification_code(
+    email: str,
+    email_service: EmailService | None = None
+) -> EmailVerificationCode:
     if not email_service:
         code = config.auth.default_validation_code
     else:
-        code = str(random.randint(100000, 999999))  # Generate a 6-digit code
-    
-    await OTP.filter(email=email).delete()  # Remove previous codes
-    otp = await OTP.create(email=email, code=code)
-    return otp
+        code = str(random.randint(100000, 999999))
+
+    await EmailVerificationCode.filter(email=email).delete()
+    return await EmailVerificationCode.create(email=email, code=code)
 
 
-async def verify_OTP(email: str, code: str) -> bool:
-    otp = await OTP.get(email=email)
-    return otp.code == code and await otp.is_valid()
+async def verify_email_code(email: str, code: str, limit: int = 5) -> bool:
+    record = await EmailVerificationCode.get_or_none(email=email)
+    if not record or record.code != code:
+        return False
+    expiration_time = record.created_at + timedelta(minutes=limit)
+    return expiration_time > datetime.now(timezone.utc)
 
 
 async def generate_token(
     user_id: int,
-    role_id: int,
     device_id: str
 ) -> tuple[str, str]:
-    user_role = await UserRole.get(id=role_id)
 
     token_payload = {
         "sub": str(user_id),
-        "user_role": user_role.name,
     }
 
     access_token, _ = create_jwt_token(
         token_payload,
-        timedelta(minutes=config.auth.access_token_expire_minutes)  # Default is one hour
+        # Default is one hour
+        timedelta(minutes=config.auth.access_token_expire_minutes)
     )
     refresh_token, expires_at = create_jwt_token(
         token_payload,
@@ -117,17 +107,22 @@ async def generate_token(
 
     await UserToken.filter(user_id=user_id, device_id=device_id).delete()
     await RefreshToken.filter(user_id=user_id, device_id=device_id).delete()
+
+    access_token_expires_at = datetime.now(timezone.utc) + timedelta(
+        minutes=config.auth.access_token_expire_minutes)
+
     await UserToken.create(
         user_id=user_id,
         device_id=device_id,
-        jwt_token=access_token
+        token_hash=hash_token(access_token),
+        expires_at=access_token_expires_at
     )
 
     # Persist the refresh token
     await RefreshToken.create(
         user_id=user_id,
         device_id=device_id,
-        refresh_token=refresh_token,
+        token_hash=hash_token(refresh_token),
         expires_at=expires_at
     )
 
@@ -136,64 +131,214 @@ async def generate_token(
 
 async def refresh_token_flow(
     refresh_token: str,
-    device_id: str | None,
-) -> str | None:
+    device_id: str,
+) -> tuple[str, str] | None:
+    """
+    Refresh token을 사용하여 새로운 access token과 refresh token을 발급합니다.
+    Rotation 패턴을 적용하여 이전 refresh token은 폐기됩니다.
+    """
     payload = decode_token(refresh_token)
     if not payload:
         return None
-    
+
     user_id = payload.get("sub")
     if not user_id:
         return None
 
-    # Compare with the refresh token stored in the database
-    # Fetch the most recent one
-    if device_id:
-        db_refresh = await RefreshToken.filter(
+    now = datetime.now(timezone.utc)
+    refresh_token_hash = hash_token(refresh_token)
+
+    # 활성 상태인 refresh token 조회
+    active_tokens = await RefreshToken.filter(
+        user_id=user_id,
+        device_id=device_id,
+        revoked_at__isnull=True,
+        rotated_at__isnull=True
+    ).all()
+
+    # 중복 토큰이 있으면 모두 폐기하고 실패 반환 (비정상 상태)
+    if len(active_tokens) > 1:
+        await RefreshToken.filter(
             user_id=user_id,
-            device_id=device_id
-        ).order_by("-created_at").first()
-    else:
-        # If device_id is missing, fallback to the latest refresh token for the user (covers SSE without headers)
-        db_refresh = await RefreshToken.filter(
-            user_id=user_id
-        ).order_by("-created_at").first()
-    if not db_refresh or db_refresh.refresh_token != refresh_token:
+            device_id=device_id,
+            revoked_at__isnull=True
+        ).update(revoked_at=now)
         return None
 
-    if db_refresh.expires_at < datetime.now(timezone.utc):
+    db_refresh = active_tokens[0] if active_tokens else None
+
+    if not db_refresh or db_refresh.token_hash != refresh_token_hash:
         return None
 
+    if db_refresh.expires_at < now:
+        return None
+
+    # 새로운 access token 생성
     access_token, _ = create_jwt_token(
         payload,
-        timedelta(minutes=config.auth.access_token_expire_minutes)  # Default is one hour
+        timedelta(minutes=config.auth.access_token_expire_minutes)
     )
 
-    await UserToken.filter(user_id=user_id, device_id=device_id).delete()
+    # 새로운 refresh token 생성
+    new_refresh_token, new_refresh_expires_at = create_jwt_token(
+        payload,
+        timedelta(minutes=config.auth.refresh_token_expire_minutes)
+    )
+
+    # 기존 access token 폐기
+    await UserToken.filter(
+        user_id=user_id,
+        device_id=device_id,
+        revoked_at__isnull=True
+    ).update(revoked_at=now)
+
+    access_token_expires_at = now + timedelta(
+        minutes=config.auth.access_token_expire_minutes)
+
+    # 새로운 access token 저장
     await UserToken.create(
         user_id=user_id,
         device_id=device_id,
-        jwt_token=access_token
+        token_hash=hash_token(access_token),
+        expires_at=access_token_expires_at
     )
 
-    # Update the existing refresh-token expiration without rotating the token itself
-    db_refresh.expires_at = datetime.now(timezone.utc) + timedelta(
-        minutes=config.auth.refresh_token_expire_minutes)
+    # 새로운 refresh token 저장
+    new_refresh = await RefreshToken.create(
+        user_id=user_id,
+        device_id=device_id,
+        token_hash=hash_token(new_refresh_token),
+        expires_at=new_refresh_expires_at
+    )
+
+    # 이전 refresh token rotation 처리
+    db_refresh.rotated_at = now
+    db_refresh.replaced_by = new_refresh
     await db_refresh.save()
 
-    return access_token
+    return access_token, new_refresh_token
 
 
-async def delete_token(user_id: int, device_id: str):
-    await UserToken.filter(user_id=user_id, device_id=device_id).delete()
-    await RefreshToken.filter(user_id=user_id, device_id=device_id).delete()
+async def revoke_token(user_id: int, device_id: str) -> None:
+    """특정 device의 토큰을 폐기 (삭제 대신 revoked_at 설정)"""
+    now = datetime.now(timezone.utc)
+
+    await UserToken.filter(
+        user_id=user_id,
+        device_id=device_id,
+        revoked_at__isnull=True
+    ).update(revoked_at=now)
+
+    await RefreshToken.filter(
+        user_id=user_id,
+        device_id=device_id,
+        revoked_at__isnull=True
+    ).update(revoked_at=now)
 
 
-# Deprecated: Use EmailService instead
-def send_otp_to_email(receiver_email: str, verification_code: str):
-    from maru_lang.dependencies.email import get_email_manager
+async def revoke_all_user_tokens(user_id: int) -> None:
+    """사용자의 모든 토큰을 폐기 (보안 이슈 발생 시 사용)"""
+    now = datetime.now(timezone.utc)
 
-    email_service = get_email_manager()
-    if email_service:
-        return email_service.send_otp(receiver_email, verification_code)
-    return False
+    await UserToken.filter(
+        user_id=user_id,
+        revoked_at__isnull=True
+    ).update(revoked_at=now)
+
+    await RefreshToken.filter(
+        user_id=user_id,
+        revoked_at__isnull=True
+    ).update(revoked_at=now)
+
+    await UserChatToken.filter(
+        user_id=user_id,
+        revoked_at__isnull=True
+    ).update(revoked_at=now)
+
+
+async def is_token_valid(
+    token: str,
+    token_model: type[UserToken] | type[RefreshToken] | type[UserChatToken]
+) -> bool:
+    """토큰이 유효한지 확인 (만료, 폐기 여부 체크)"""
+    now = datetime.now(timezone.utc)
+    token_hashed = hash_token(token)
+
+    db_token = await token_model.get_or_none(token_hash=token_hashed)
+
+    if not db_token:
+        return False
+
+    if db_token.revoked_at is not None:
+        return False
+
+    if db_token.expires_at < now:
+        return False
+
+    return True
+
+
+async def generate_chat_token(
+    user_id: int,
+    expires_minutes: int = 30
+) -> str:
+    """일회용 채팅 토큰 생성"""
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+
+    await UserChatToken.create(
+        user_id=user_id,
+        token_hash=hash_token(token),
+        expires_at=now + timedelta(minutes=expires_minutes)
+    )
+
+    return token
+
+
+async def verify_chat_token(
+    token: str,
+    user: User
+) -> bool:
+    """
+    채팅 토큰 검증 및 사용 처리 (일회용)
+    Returns: user_id if valid, None otherwise
+    """
+    now = datetime.now(timezone.utc)
+    token_hashed = hash_token(token)
+
+    chat_token = await UserChatToken.get_or_none(token_hash=token_hashed)
+
+    if not chat_token:
+        return False
+
+    if chat_token.revoked_at is not None:
+        return False
+
+    if chat_token.expires_at < now:
+        return False
+
+    if chat_token.used_at is not None:
+        return False
+
+    if chat_token.user != user:
+        return False
+
+    # 일회용: 사용 처리
+    chat_token.used_at = now
+    await chat_token.save()
+
+    return True
+
+
+async def revoke_chat_token(token: str) -> bool:
+    """채팅 토큰 폐기"""
+    now = datetime.now(timezone.utc)
+    token_hashed = hash_token(token)
+
+    chat_token = await UserChatToken.get_or_none(token_hash=token_hashed)
+    if not chat_token:
+        return False
+
+    chat_token.revoked_at = now
+    await chat_token.save()
+    return True
