@@ -2,7 +2,8 @@
 Agent Executor/Orchestrator - Manages agent execution
 """
 import asyncio
-from typing import Dict, Any, List, Optional, Type
+from typing import Dict, Any, List, Optional, Union, AsyncGenerator
+from maru_lang.models.chat import ChatHistory
 from maru_lang.pluggable.agents.base import BaseAgent
 from maru_lang.models.agents import AgentResult, AgentSelection, ExecutionResult, ExecutionContext
 from maru_lang.pluggable.agents.agent_factory import AgentFactory
@@ -38,10 +39,110 @@ class AgentExecutor:
         for agent in agents:
             self.register_agent(agent)
 
+    async def execute(
+        self,
+        selection: AgentSelection,
+        execution_context: ExecutionContext
+    ) -> Optional[ExecutionResult]:
+        """
+        Execute selected agents according to strategy
+
+        Args:
+            selection: Agent selection result
+            execution_context: Context data for agents (question, user, etc.)
+            strategy: Execution strategy ("sequential", "parallel", "conditional")
+
+        Returns:
+            ExecutionResult with all agent outputs
+        """
+        errors = {}
+
+        # Initialize all selected agents
+        for agent_name in selection.selected_agents:
+            if agent_name not in self.agent_registry:
+                error_msg = f"Agent '{agent_name}' not registered (available: {', '.join(list(self.agent_registry.keys()))})"
+                errors[agent_name] = error_msg
+                continue
+
+            success, message = await self._initialize_agent(agent_name)
+
+            if not success:
+                errors[agent_name] = message or f"Failed to initialize agent: {agent_name}"
+                continue
+
+        if errors:
+            return ExecutionResult(
+                agent_results={},
+                execution_order=[],
+                success=False,
+                errors=errors
+            )
+        # # Prepare agent-specific parameters from selection
+        # agent_params = selection.parameters or {}
+
+        # # Use execution_order if provided, otherwise fall back to selected_agents
+        # execution_order = selection.execution_order if selection.execution_order else selection.selected_agents
+
+        # Execute agents sequentially
+        try:
+            agent_results, executed_order = await self._execute_sequential(
+                execution_context,
+                selection,
+            )
+            return ExecutionResult(
+                agent_results=agent_results,
+                execution_order=executed_order,
+                success=True,
+            )
+        except Exception as e:
+            error_msg = f"Execution failed: {str(e)}"
+            await execution_context.progress_queue.put(
+                PipelineMessage.error(error_msg)
+            )
+            return None
+
+    async def summarize_execution(
+        self,
+        question: str,
+        selection: Optional[AgentSelection] = None,
+        execution_result: Optional[ExecutionResult] = None,
+        chat_history: Optional[ChatHistory] = None
+    ) -> Union[str, AsyncGenerator[str, None]]:
+        """
+        Call response_agent to generate final response
+
+        Args:
+            question: User's question
+            selection: Agent selection result
+            execution_result: Agent execution result
+            chat_history: Chat history
+
+        Returns:
+            Response string or async generator for streaming
+        """
+        response_agent = self.agent_registry.get('response')
+
+        if not response_agent:
+            return "Sorry, the response generation agent is not available."
+
+        success, error = await self._initialize_agent('response')
+        if not success:
+            return f"Failed to initialize response agent: {error}"
+
+        response = await response_agent.execute(
+            question=question,
+            execution_result=execution_result,
+            selection=selection,
+            chat_history=chat_history
+        )
+
+        if response.success and response.result:
+            return response.result
+        return "Sorry, unable to generate a response."
+
     async def _initialize_agent(
         self,
         agent_name: str,
-        progress_queue: Optional[asyncio.Queue] = None
     ) -> tuple[bool, Optional[str]]:
         """
         Initialize an agent if not already initialized
@@ -61,105 +162,17 @@ class AgentExecutor:
                 agent = self.agent_registry[agent_name]
                 await agent.initialize()
                 self._initialized_agents.add(agent_name)
-                if progress_queue:
-                    await progress_queue.put(
-                        PipelineMessage.info(f"✓ Agent '{agent_name}' initialized successfully")
-                    )
                 return True, None
             except Exception as e:
                 error_msg = f"Failed to initialize agent '{agent_name}': {str(e)}"
-                if progress_queue:
-                    await progress_queue.put(
-                        PipelineMessage.error(f"❌ {error_msg}")
-                    )
                 return False, error_msg
 
         return True, None
 
-    async def execute(
-        self,
-        selection: AgentSelection,
-        execution_context: ExecutionContext
-    ) -> ExecutionResult:
-        """
-        Execute selected agents according to strategy
-
-        Args:
-            selection: Agent selection result
-            execution_context: Context data for agents (question, user, etc.)
-            strategy: Execution strategy ("sequential", "parallel", "conditional")
-
-        Returns:
-            ExecutionResult with all agent outputs
-        """
-        agent_results = {}
-        errors = {}
-        executed_order = []
-        progress_queue = execution_context.progress_queue
-
-        # Send start message
-        if progress_queue:
-            await progress_queue.put(
-                PipelineMessage.info(f"Initializing agents: '{', '.join(selection.selected_agents)}'")
-            )
-
-        # Initialize all selected agents
-        for agent_name in selection.selected_agents:
-            if agent_name not in self.agent_registry:
-                error_msg = f"Agent '{agent_name}' not registered (available: {', '.join(list(self.agent_registry.keys()))})"
-                errors[agent_name] = error_msg
-                if progress_queue:
-                    await progress_queue.put(
-                        PipelineMessage.error(error_msg)
-                    )
-                continue
-
-            success, error = await self._initialize_agent(agent_name, progress_queue)
-            if not success:
-                errors[agent_name] = error or f"Failed to initialize agent: {agent_name}"
-
-        # Prepare agent-specific parameters from selection
-        agent_params = selection.parameters or {}
-
-        # Use execution_order if provided, otherwise fall back to selected_agents
-        execution_order = selection.execution_order if selection.execution_order else selection.selected_agents
-
-        if progress_queue:
-            await progress_queue.put(
-                PipelineMessage.info(f"Executing agents in order: '{' → '.join(execution_order)}'")
-            )
-
-        # Execute agents sequentially
-        try:
-            agent_results, executed_order = await self._execute_sequential(
-                execution_order,
-                execution_context,
-                agent_params,
-                errors
-            )
-        except Exception as e:
-            error_msg = f"Execution failed: {str(e)}"
-            if progress_queue:
-                await progress_queue.put(
-                    PipelineMessage.error(error_msg)
-                )
-            # Use last agent name if available, otherwise 'unknown'
-            last_agent = execution_order[-1] if execution_order else "unknown"
-            errors[last_agent] = error_msg
-
-        return ExecutionResult(
-            agent_results=agent_results,
-            execution_order=executed_order,
-            success=len(errors) == 0 and len(agent_results) > 0,
-            errors=errors
-        )
-
     async def _execute_sequential(
         self,
-        execution_order: List[str],
         context: ExecutionContext,
-        params: Dict[str, Any],
-        errors: Dict[str, str]
+        selection: AgentSelection,
     ) -> tuple[Dict[str, AgentResult], List[str]]:
         """
         Execute agents sequentially, chaining results as input to next agent.
@@ -167,94 +180,50 @@ class AgentExecutor:
         """
         results = {}
         executed = []
-        progress_queue = context.progress_queue
-
+        parameters = selection.parameters or {}
         # Save original question before any modification
         if "original_question" not in context.metadata:
             context.metadata["original_question"] = context.question
 
-        for agent_name in execution_order:
-            if agent_name in errors:
-                # Agent failed to initialize, stop execution
-                if progress_queue:
-                    await progress_queue.put(
-                        PipelineMessage.warning(
-                            f"⚠️  Skipping agent '{agent_name}' due to initialization error"
-                        )
-                    )
-                break
-
+        for agent_name in selection.execution_order:
             agent = self.agent_registry.get(agent_name)
             if not agent:
-                error_msg = f"Agent not found: {agent_name}"
-                errors[agent_name] = error_msg
-                if progress_queue:
-                    await progress_queue.put(
-                        PipelineMessage.error(error_msg)
-                    )
-                break
+                raise Exception(f"Agent '{agent_name}' not found in registry")
 
-            try:
-                # Set progress queue on agent
-                agent.set_progress_queue(progress_queue)
+            await context.progress_queue.put(
+                PipelineMessage.debug(
+                    f"Executing agent '{agent_name}'..."))
 
-                # Notify agent execution start
-                if progress_queue:
-                    await progress_queue.put(
-                        PipelineMessage.info(f"▶️  Executing agent '{agent_name}'...")
-                    )
+            # Merge context with agent-specific params
+            agent_context = context.to_dict()
 
-                # Merge context with agent-specific params
-                agent_context = context.to_dict()
-                if agent_name in params:
-                    agent_context.update(params[agent_name])
+            agent_context.update(parameters.get(agent_name, {}))
 
-                # Execute agent
-                result = await agent.execute(**agent_context)
-                results[agent_name] = result
-                executed.append(agent_name)
+            # Execute agent
+            result = await agent.execute(**agent_context)
 
-                # If agent failed, stop execution chain
-                if not result.success:
-                    error_msg = result.error or "Agent execution failed"
-                    errors[agent_name] = error_msg
-                    if progress_queue:
-                        await progress_queue.put(
-                            PipelineMessage.error(
-                                f"Agent '{agent_name}' failed: {error_msg}"
-                            )
-                        )
-                    break
+            results[agent_name] = result
+            executed.append(agent_name)
 
-                # Success notification
-                if progress_queue:
-                    await progress_queue.put(
-                        PipelineMessage.info(f"✓ Agent '{agent_name}' completed successfully")
-                    )
+            # If agent failed, stop execution chain
+            if not result.success:
+                raise Exception(
+                    f"Agent '{agent_name}' execution failed: {result.error}")
 
-                # Chain result to next agent: update question with current result
-                if result.result:
-                    context.question = result.result  # Next agent receives this as input
-                    # Also store in metadata for reference
-                    context.metadata[f"{agent_name}_result"] = result.result
-                    if result.data:
-                        context.metadata[f"{agent_name}_data"] = result.data
+            # Chain result to next agent: update question with current result
+            if result.result:
+                next_input = ""
+                if isinstance(result.result, str):
+                    next_input = result.result
+                else:
+                    async for chunk in result.result:
+                        next_input += chunk
 
-            except Exception as e:
-                error_msg = f"Exception in agent {agent_name}: {str(e)}"
-                errors[agent_name] = str(e)
-                results[agent_name] = AgentResult(
-                    success=False,
-                    result="",
-                    error=str(e)
-                )
-                if progress_queue:
-                    await progress_queue.put(
-                        PipelineMessage.error(error_msg)
-                    )
-                # Stop execution on exception
-                break
-
+                context.question = next_input  # Next agent receives this as input
+                # Also store in metadata for reference
+                context.metadata[f"{agent_name}_result"] = next_input
+                if result.data:
+                    context.metadata[f"{agent_name}_data"] = result.data
         return results, executed
 
     def get_agent_capabilities(self) -> Dict[str, Dict[str, Any]]:
