@@ -70,7 +70,6 @@ config:
     include_metadata: false  # Whether to include metadata in the response
     show_sources: true       # Whether to list information sources
     use_markdown: true       # Whether to render responses using Markdown
-    max_response_length: 2000  # Maximum length of the response
 
   # Scenario-specific LLM guidance (appended to the prompt)
   scenario_config:

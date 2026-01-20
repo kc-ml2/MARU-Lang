@@ -138,7 +138,6 @@ class FormattingConfig:
     include_metadata: bool = False
     show_sources: bool = True
     use_markdown: bool = True
-    max_response_length: int = 2000
 
 
 @dataclass
