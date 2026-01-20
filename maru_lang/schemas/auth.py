@@ -38,3 +38,7 @@ class UserGroupResponse(BaseModel):
 class UserGroupsResponse(BaseModel):
     groups: List[UserGroupResponse]
     total: int
+
+
+class ChatTokenResponse(BaseModel):
+    chat_token: str
