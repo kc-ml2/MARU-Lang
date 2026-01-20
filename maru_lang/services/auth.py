@@ -295,39 +295,35 @@ async def generate_chat_token(
     return token
 
 
-async def verify_chat_token(
-    token: str,
-    user: User
-) -> bool:
+async def verify_chat_token(token: str) -> User | None:
     """
     채팅 토큰 검증 및 사용 처리 (일회용)
-    Returns: user_id if valid, None otherwise
+    Returns: User if valid, None otherwise
     """
     now = datetime.now(timezone.utc)
     token_hashed = hash_token(token)
 
-    chat_token = await UserChatToken.get_or_none(token_hash=token_hashed)
+    chat_token = await UserChatToken.get_or_none(
+        token_hash=token_hashed
+    ).prefetch_related('user')
 
     if not chat_token:
-        return False
+        return None
 
     if chat_token.revoked_at is not None:
-        return False
+        return None
 
     if chat_token.expires_at < now:
-        return False
+        return None
 
     if chat_token.used_at is not None:
-        return False
-
-    if chat_token.user != user:
-        return False
+        return None
 
     # 일회용: 사용 처리
     chat_token.used_at = now
     await chat_token.save()
 
-    return True
+    return chat_token.user
 
 
 async def revoke_chat_token(token: str) -> bool:

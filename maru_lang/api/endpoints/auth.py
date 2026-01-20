@@ -6,6 +6,7 @@ from maru_lang.services.auth import (
     revoke_token,
     create_or_get_user,
     refresh_token_flow,
+    generate_chat_token,
 )
 from maru_lang.schemas.auth import (
     VerifyCodeRequest,
@@ -13,6 +14,7 @@ from maru_lang.schemas.auth import (
     LogoutRequest,
     UserGroupsResponse,
     UserGroupResponse,
+    ChatTokenResponse,
 )
 from maru_lang.dependencies.email import get_email_service_dependency, EmailService
 from typing import Optional
@@ -36,22 +38,19 @@ async def login(
     email_service: Optional[EmailService] = Depends(
         get_email_service_dependency)
 ) -> str:
+    """Send OTP verification code to email."""
     try:
-        # TODO Email validation
         otp = await generate_email_verification_code(request.email, email_service)
-
-        # 이메일 서비스가 활성화된 경우에만 이메일 전송
         if email_service:
             success = email_service.send_otp(request.email, otp.code)
             if not success:
-                # 이메일 전송 실패 시 DEFAULT_VALIDATION_CODE로 재생성
                 await otp.delete()
                 raise Exception("Failed to send verification email")
         return otp.email
     except Exception as e:
         raise HTTPException(
             status_code=400,
-            detail=f"서버가 점검 중 입니다. 다시 시도해주세요.\nError: {str(e)}")
+            detail=f"Error: {str(e)}")
 
 
 @router.post("/logout")
@@ -60,6 +59,7 @@ async def logout(
     response: Response,
     user=Depends(get_user)
 ) -> dict:
+    """Revoke tokens and clear refresh_token cookie."""
     try:
         await revoke_token(user.id, request.device_id)
         response.delete_cookie(
@@ -78,7 +78,7 @@ async def refresh(
     response: Response,
     device_id: str = Query(...),
 ):
-    """Refresh token을 사용하여 새로운 토큰 발급"""
+    """Issue new access token using refresh token (rotation applied)."""
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
         raise HTTPException(
@@ -117,6 +117,7 @@ async def verify_code(
     response: Response,
     request: VerifyCodeRequest
 ):
+    """Verify OTP code and issue access/refresh tokens."""
     try:
         if not await verify_email_code(
             request.email, request.code
@@ -146,19 +147,22 @@ async def verify_code(
 
 @router.get("/verify")
 async def verify(_=Depends(get_user)):
+    """Verify if access token is valid."""
     return {"message": "ok"}
+
+
+@router.post("/chat-token", response_model=ChatTokenResponse)
+async def get_chat_token(user=Depends(get_user)) -> ChatTokenResponse:
+    """Issue one-time chat token for WebSocket connection."""
+    token = await generate_chat_token(user.id)
+    return ChatTokenResponse(chat_token=token)
 
 
 @router.get("/user/groups", response_model=UserGroupsResponse)
 async def get_current_user_groups(
     user=Depends(get_user)
 ):
-    """
-    Get user groups that the authenticated user belongs to.
-
-    Returns:
-        UserGroupsResponse: List of user groups with total count
-    """
+    """Get user groups that the authenticated user belongs to."""
     try:
         # Get user groups using service function
         groups = await get_user_groups(user)
