@@ -1,32 +1,41 @@
-"""
-Base Pipeline - 모든 파이프라인의 추상 기본 클래스
-비동기 큐 기반 스트리밍으로 자유로운 진행 상황 전달
-"""
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import AsyncGenerator, Any, Optional
+from typing import AsyncGenerator, Any, Optional, Union
 
 
 class MessageType(str, Enum):
-    """메시지 타입"""
+    """enum for pipeline message types"""
     INFO = "info"
+    DEBUG = "debug"
+    NORMAL = "normal"
     ERROR = "error"
     WARNING = "warning"
+    COMPLETE = "complete"
 
 
 @dataclass
 class PipelineMessage:
     """파이프라인 진행 메시지"""
     message_type: MessageType
-    message: str
+    message: Union[str, AsyncGenerator[str, None]]
     data: Any = None
+
+    @classmethod
+    def normal(cls, message: Union[str, AsyncGenerator[str, None]], data: Any = None):
+        """NORMAL 메시지 생성"""
+        return cls(message_type=MessageType.NORMAL, message=message, data=data)
 
     @classmethod
     def info(cls, message: str, data: Any = None):
         """INFO 메시지 생성"""
         return cls(message_type=MessageType.INFO, message=message, data=data)
+
+    @classmethod
+    def debug(cls, message: str, data: Any = None):
+        """DEBUG 메시지 생성"""
+        return cls(message_type=MessageType.DEBUG, message=message, data=data)
 
     @classmethod
     def error(cls, message: str, data: Any = None):
@@ -38,57 +47,49 @@ class PipelineMessage:
         """WARNING 메시지 생성"""
         return cls(message_type=MessageType.WARNING, message=message, data=data)
 
-
-@dataclass
-class PipelineComplete:
-    """파이프라인 종료 신호"""
-    data: Any = None  # 최종 결과
+    @classmethod
+    def complete(cls, data: Any = None):
+        """COMPLETE 메시지 생성"""
+        return cls(message_type=MessageType.COMPLETE, message="", data=data)
 
 
 class BasePipeline(ABC):
     """모든 파이프라인의 기본 클래스 - 비동기 큐 기반 스트리밍"""
 
     def __init__(self):
-        self.queue: asyncio.Queue = asyncio.Queue()
+        self.queue: asyncio.Queue[PipelineMessage] = asyncio.Queue()
 
-    async def run(self) -> AsyncGenerator[Any, None]:
+    async def run(self, *args, **kwargs) -> AsyncGenerator[PipelineMessage, None]:
         """
-        파이프라인 실행 (큐 기반 스트리밍)
-
-        백그라운드에서 process()를 실행하고,
-        큐에서 메시지를 꺼내서 yield
-
+        execute pipeline (base on queue streaming)
         Yields:
-            PipelineMessage | PipelineComplete: 진행 메시지 또는 완료 신호
+            PipelineMessage
         """
-        # 백그라운드에서 process() 실행
-        task = asyncio.create_task(self.process())
+        task = asyncio.create_task(self.process(*args, **kwargs))
 
         try:
             while True:
                 item = await self.queue.get()
-
                 # 종료 신호 확인
-                if isinstance(item, PipelineComplete):
-                    yield item
-                    break
-
                 yield item
+                if item.message_type == MessageType.COMPLETE:
+                    break
         finally:
             # process() 완료 대기
             await task
 
     @abstractmethod
-    async def process(self):
+    async def process(
+        self,
+        *args,
+        **kwargs
+    ):
         """
-        파이프라인 주요 로직 (하위 클래스 구현)
-
-        self.queue.put()으로 진행 상황 전달
-        마지막에 반드시 PipelineComplete() 전달
-
+        should put PipelineMessage into self.queue to report progress.
+        important: 
         Example:
             await self.queue.put(PipelineMessage.info("Starting..."))
-            # ... 처리 ...
-            await self.queue.put(PipelineComplete(data=result))
+            # ... progress ...
+            await self.queue.put(PipelineMessage.complete())
         """
         pass

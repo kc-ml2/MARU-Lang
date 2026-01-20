@@ -3,7 +3,7 @@ Base Agent interface for all agents in the system
 """
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union, Literal, overload, AsyncGenerator
 from maru_lang.models.agents import AgentResult
 from maru_lang.pluggable.models import AgentConfig
 from maru_lang.enums.agents import LLMFallbackStrategy
@@ -11,8 +11,8 @@ from maru_lang.pipelines.base import PipelineMessage
 from maru_lang.dependencies.llm import (
     get_llm_manager,
     get_llm,
-    LLMServerClient,
 )
+from maru_lang.pluggable.llms import LLMClient
 
 
 class BaseAgent(ABC):
@@ -87,7 +87,8 @@ class BaseAgent(ABC):
         """
         if self._progress_queue:
             await self._progress_queue.put(
-                PipelineMessage.warning(f"[{self.name}] ⚠️  {message}", data=data)
+                PipelineMessage.warning(
+                    f"[{self.name}] ⚠️  {message}", data=data)
             )
 
     async def log_error(self, message: str, data: Any = None) -> None:
@@ -155,7 +156,11 @@ class BaseAgent(ABC):
 
     def get_override_params(self) -> Dict[str, Any]:
         """Get override params"""
+        if not self.config.target_llm_config:
+            return {}
         override_params = self.config.target_llm_config.override_params
+        if not override_params:
+            return {}
         override_params_dict = {}
         if override_params.temperature:
             override_params_dict["temperature"] = override_params.temperature
@@ -167,83 +172,114 @@ class BaseAgent(ABC):
             override_params_dict["timeout"] = override_params.timeout
         return override_params_dict
 
-    async def get_llm_client(self) -> LLMServerClient:
+    def get_llm_client(self) -> LLMClient:
         """Get LLM client"""
         target_llm_config = self.config.target_llm_config
         if not target_llm_config:
-            return await get_llm()
+            client = get_llm()
+            if not client:
+                raise ValueError("No LLM client available")
+            return client
 
         if not target_llm_config.server_name:
-            return await get_llm()
+            client = get_llm()
+            if not client:
+                raise ValueError("No LLM client available")
+            return client
 
-        llm_manager = await get_llm_manager()
-        llm_client = llm_manager.get_server_by_name(target_llm_config.server_name)
+        llm_manager = get_llm_manager()
+        llm_client = llm_manager.get_client_by_name(
+            target_llm_config.server_name)
         if not llm_client:
             if target_llm_config.fallback_strategy == LLMFallbackStrategy.ERROR:
-                raise ValueError(f"LLM client not found for server name: {target_llm_config.server_name}")
+                raise ValueError(
+                    f"LLM client not found for server name: {target_llm_config.server_name}")
             elif target_llm_config.fallback_strategy == LLMFallbackStrategy.ANY_AVAILABLE:
-                return await get_llm()
+                client = get_llm()
+                if not client:
+                    raise ValueError("No LLM client available")
+                return client
             else:
-                raise ValueError(f"Unknown fallback strategy: {target_llm_config.fallback_strategy}")
+                raise ValueError(
+                    f"Unknown fallback strategy: {target_llm_config.fallback_strategy}")
         return llm_client
 
-    async def _get_llm_clients_with_fallback(self) -> list[LLMServerClient]:
+    def _get_llm_clients_with_fallback(self) -> list[LLMClient]:
         """
         Get list of LLM clients to try in order
 
         Returns:
             List of LLM clients in priority order (target first, then fallbacks)
         """
-        llm_manager = await get_llm_manager()
+        llm_manager = get_llm_manager()
         clients = []
 
         target_llm_config = self.config.target_llm_config
 
         # 1. Try target LLM first if specified
         if target_llm_config and target_llm_config.server_name:
-            target_client = llm_manager.get_server_by_name(target_llm_config.server_name)
+            target_client = llm_manager.get_client_by_name(
+                target_llm_config.server_name)
             if target_client:
                 clients.append(target_client)
 
         # 2. Add fallback LLMs if strategy allows
         if target_llm_config and target_llm_config.fallback_strategy == LLMFallbackStrategy.ANY_AVAILABLE:
-            # Get all available LLM servers
-            all_servers = llm_manager.all_servers
-            for server in all_servers:
+            for client in llm_manager.clients:
                 # Skip if already added as target
-                if target_llm_config.server_name and server.config.name == target_llm_config.server_name:
+                if target_llm_config.server_name and client.config.name == target_llm_config.server_name:
                     continue
-                clients.append(server)
+                clients.append(client)
 
         # 3. If no clients found, try to get any available
         if not clients:
-            default_client = await get_llm()
+            default_client = get_llm()
             if default_client:
                 clients.append(default_client)
 
         return clients
 
+    @overload
     async def request_with_fallback(
         self,
         user_prompt: str,
         system_prompt: Optional[str] = None,
+        stream: Literal[False] = False,
         **kwargs
-    ) -> str:
+    ) -> str: ...
+
+    @overload
+    async def request_with_fallback(
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str] = None,
+        stream: Literal[True] = ...,
+        **kwargs
+    ) -> AsyncGenerator[str, None]: ...
+
+    async def request_with_fallback(
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str] = None,
+        stream: bool = False,
+        **kwargs
+    ) -> Union[str, AsyncGenerator[str, None]]:
         """
         Make LLM request with automatic fallback to other LLMs
 
         Args:
             user_prompt: User prompt
             system_prompt: System prompt (optional)
+            stream: If True, returns an async generator yielding chunks
             **kwargs: Additional parameters (temperature, max_tokens, etc.)
 
         Returns:
-            LLM response text
+            LLM response text, or async generator if streaming
 
         Raises:
             Exception: If all LLMs fail
         """
-        clients = await self._get_llm_clients_with_fallback()
+        clients = self._get_llm_clients_with_fallback()
 
         if not clients:
             await self.log_error("No LLM clients available")
@@ -260,7 +296,8 @@ class BaseAgent(ABC):
 
                 response = await client.request(
                     user_prompt=user_prompt,
-                    system_prompt=system_prompt,
+                    system_prompt=system_prompt or "",
+                    stream=stream,
                     **kwargs
                 )
 
@@ -280,7 +317,8 @@ class BaseAgent(ABC):
         # All LLMs failed
         error_msg = f"All LLMs failed. Last error: {last_error}"
         await self.log_error(error_msg)
-        raise Exception(f"All LLMs failed for agent {self.name}. Last error: {last_error}")
+        raise Exception(
+            f"All LLMs failed for agent {self.name}. Last error: {last_error}")
 
     async def request_with_tools_and_fallback(
         self,
@@ -304,7 +342,7 @@ class BaseAgent(ABC):
         Raises:
             Exception: If all LLMs fail
         """
-        clients = await self._get_llm_clients_with_fallback()
+        clients = self._get_llm_clients_with_fallback()
 
         if not clients:
             await self.log_error("No LLM clients available")
@@ -342,7 +380,8 @@ class BaseAgent(ABC):
         # All LLMs failed
         error_msg = f"All LLMs failed. Last error: {last_error}"
         await self.log_error(error_msg)
-        raise Exception(f"All LLMs failed for agent {self.name}. Last error: {last_error}")
+        raise Exception(
+            f"All LLMs failed for agent {self.name}. Last error: {last_error}")
 
     async def cleanup(self) -> None:
         """Clean up resources when agent is no longer needed"""

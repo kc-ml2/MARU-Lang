@@ -3,7 +3,7 @@ Agent-related data models
 """
 import asyncio
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Union, TYPE_CHECKING
+from typing import AsyncGenerator, List, Dict, Any, Optional, Union, TYPE_CHECKING
 from maru_lang.enums.chat import ChatProcessStep as ChatStep
 from maru_lang.models.chat import ChatHistory
 from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
@@ -14,7 +14,7 @@ from maru_lang.schemas.chat import DocumentReference
 class AgentResult:
     """Result from individual agent execution"""
     success: bool
-    result: str = ""  # 주요 출력 결과 (표준화된 문자열)
+    result: Union[str, AsyncGenerator[str, None]]
     data: Optional[Dict[str, Any]] = None  # 추가 정보 (선택)
     error: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -74,8 +74,8 @@ class ExecutionContext:
     """Context of agent execution"""
     question: str
     progress_queue: asyncio.Queue
-    chat_history: ChatHistory
-    metadata: Optional[Dict[str, Any]] = field(default_factory=dict)
+    chat_history: Optional[ChatHistory] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -131,5 +131,3 @@ class GenerateAnswerResult:
     success: bool = True
     confidence: Optional[float] = None
     metadata: Optional[Dict[str, Any]] = None
-
-
