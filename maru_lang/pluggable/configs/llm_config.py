@@ -2,7 +2,6 @@
 LLM configuration loader
 """
 from typing import Dict, Any, Optional, List
-from pathlib import Path
 from maru_lang.configs.base import DefaultConfigLoader
 from maru_lang.pluggable.models import LLMConfig
 from maru_lang.enums.configs import ConfigType
@@ -23,22 +22,13 @@ class LLMConfigLoader(DefaultConfigLoader[LLMConfig]):
         try:
             return LLMConfig(
                 name=data['name'],
-                url=data['url'],
+                provider=data['provider'],
                 model_name=data.get('model_name', data.get('model', '')),
-                description=data.get('description', ''),
                 api_key=data.get('api_key'),
-                timeout=data.get('timeout', 30.0),
+                base_url=data.get('base_url'),
                 enabled=data.get('enabled', True),
-                max_retries=data.get('max_retries', 3),
-                health_check_endpoint=data.get(
-                    'health_check_endpoint', '/health'),
-                headers=data.get('headers', {}),
+                description=data.get('description', ''),
                 config=data.get('config', {}),
-                health_check=data.get('health_check', {}),
-                cost_tracking=data.get('cost_tracking', {}),
-                limits=data.get('limits', {}),
-                retry=data.get('retry', {}),
-                log_level=data.get('log_level', 'INFO'),
                 source_path=source_path,
                 is_override=is_user
             )
@@ -53,7 +43,7 @@ class LLMConfigLoader(DefaultConfigLoader[LLMConfig]):
 
     def validate_config(self, data: Dict[str, Any]) -> bool:
         """Validate LLM configuration data"""
-        required_fields = ['name', 'url']
+        required_fields = ['name', 'provider']
         return all(field in data for field in required_fields)
 
     def get_enabled_configs(self) -> List[LLMConfig]:
