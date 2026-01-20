@@ -51,6 +51,6 @@ class ChatPipelineManager:
         cls._initialized = False
 
 
-async def get_chat_pipeline() -> ChatPipeline | None:
+def get_chat_pipeline() -> ChatPipeline | None:
     """Dependency to get ChatPipeline singleton instance"""
     return ChatPipelineManager.get_instance()

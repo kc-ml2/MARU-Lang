@@ -30,3 +30,44 @@ class ConversationResponse(BaseModel):
     question: str
     answer: str
     created_at: datetime
+
+
+# ============ WebSocket Messages (Client -> Server) ============
+
+class WSAuthMessage(BaseModel):
+    type: str = "auth"
+    chat_token: str
+
+
+class WSChatMessage(BaseModel):
+    type: str = "message"
+    content: str
+
+
+# ============ WebSocket Messages (Server -> Client) ============
+
+class WSAuthenticatedMessage(BaseModel):
+    type: str = "authenticated"
+
+
+class WSAuthErrorMessage(BaseModel):
+    type: str = "auth_error"
+    message: Optional[str] = None
+
+
+class WSStartMessage(BaseModel):
+    type: str = "start"
+
+
+class WSStreamMessage(BaseModel):
+    type: str = "stream"
+    content: str
+
+
+class WSCompleteMessage(BaseModel):
+    type: str = "complete"
+
+
+class WSErrorMessage(BaseModel):
+    type: str = "error"
+    message: Optional[str] = None
