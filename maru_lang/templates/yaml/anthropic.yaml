@@ -1,0 +1,12 @@
+# Anthropic Claude API template
+
+name: anthropic
+provider: anthropic
+model_name: claude-sonnet-4-20250514
+api_key: ${ANTHROPIC_API_KEY}
+enabled: true
+description: "Anthropic Claude API"
+
+config:
+  temperature: 0.7
+  max_tokens: 4096

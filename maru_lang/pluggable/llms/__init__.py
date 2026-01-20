@@ -1,10 +1,7 @@
-# LLM 클라이언트
-from .client import LLMServerClient
-
-# LLM 서버 매니저
-from .server_manager import LLMServerManager
+from .client import LLMClient
+from .server_manager import LLMManager
 
 __all__ = [
-    "LLMServerClient",
-    "LLMServerManager"
+    "LLMClient",
+    "LLMManager"
 ]

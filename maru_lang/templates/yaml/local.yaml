@@ -1,28 +1,12 @@
-# OpenAI-Compatible Local LLM Template
+# Local LLM (vLLM, Ollama, etc.) template
 
 name: local-llm
-description: "Local OpenAI-Compatible Server"
-url: http://localhost:8000
-model_name: meta-llama/Llama-2-7b-chat-hf
-api_key: ""
-timeout: 60
+provider: ollama  # or "openai" for vLLM with OpenAI-compatible API
+model_name: llama3.2
+base_url: http://localhost:11434  # Ollama default, use http://localhost:8000 for vLLM
 enabled: true
-
-chat_completions_path: /v1/chat/completions
-health_check_endpoint: /health
-
-headers:
-  Content-Type: application/json
+description: "Local LLM Server"
 
 config:
   temperature: 0.7
   max_tokens: 2048
-  top_p: 0.95
-  stream: false
-
-retry:
-  max_attempts: 3
-  backoff_factor: 2
-  max_delay: 60
-
-log_level: INFO

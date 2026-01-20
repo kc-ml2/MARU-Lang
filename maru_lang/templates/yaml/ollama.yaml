@@ -1,0 +1,12 @@
+# Ollama template
+
+name: ollama
+provider: ollama
+model_name: llama3.2
+base_url: http://localhost:11434
+enabled: true
+description: "Ollama Local LLM"
+
+config:
+  temperature: 0.7
+  max_tokens: 2048
