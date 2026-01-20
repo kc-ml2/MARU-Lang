@@ -5,11 +5,12 @@ Agent Selector - Responsible only for selecting which agents to use
 import json
 import yaml
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from maru_lang.models.agents import AgentSelection
 from maru_lang.configs.manager import get_config_manager
 from maru_lang.models.chat import ChatHistory
-from maru_lang.dependencies.llm import get_llm_manager, LLMServerClient
+from maru_lang.dependencies.llm import get_llm_manager
+from maru_lang.pluggable.llms import LLMClient
 
 
 class SelectorConstants:
@@ -32,8 +33,8 @@ class AgentSelector:
         self.config_manager = get_config_manager()
         self.selector_config = self._load_selector_config()
 
-        # Store available LLM clients will be loaded async
-        self.llm_clients: List[LLMServerClient] = []
+        # Store available LLM clients will be loaded lazily
+        self.llm_clients: List[LLMClient] = []
 
     def _load_selector_config(self) -> Dict[str, Any]:
         """Load selector configuration from YAML file"""
@@ -52,11 +53,11 @@ class AgentSelector:
 
         return self._build_dynamic_config(config)
 
-    async def _get_llm_clients_with_fallback(self) -> List[LLMServerClient]:
+    def _get_llm_clients_with_fallback(self) -> List[LLMClient]:
         """Get list of LLM clients to try in order (lazy load)"""
         if not self.llm_clients:
-            llm_manager = await get_llm_manager()
-            self.llm_clients = llm_manager.all_servers
+            llm_manager = get_llm_manager()
+            self.llm_clients = llm_manager.clients
 
             if not self.llm_clients:
                 raise ValueError("No LLM clients available for Agent Selector")
@@ -80,7 +81,7 @@ class AgentSelector:
             # Skip builtin agents except selectable ones, and skip utility agents
             # Utility agents (rerankers, etc.) are not selectable for general tasks
             is_selectable = (agent_config.type not in ("builtin", "utility") or
-                           agent_name in selectable_builtins)
+                             agent_name in selectable_builtins)
 
             if agent_overrides.get(agent_name, True) and is_selectable:
                 available_agents.append({
@@ -95,8 +96,9 @@ class AgentSelector:
     async def select_agents(
         self,
         question: str,
-        chat_history: ChatHistory
-    ) -> AgentSelection:
+        chat_history: Optional[ChatHistory] = None,
+        stream: bool = True
+    ) -> Optional[AgentSelection]:
         """
         Select appropriate agents based on question analysis
         Tries multiple LLMs if available for fallback
@@ -106,7 +108,7 @@ class AgentSelector:
             chat_history: Previous conversation history
 
         Returns:
-            AgentSelection with selected agents and execution plan
+            AgentSelection with selected agents, or None if selection fails
         """
         self.config_manager.ensure_loaded()
 
@@ -116,7 +118,7 @@ class AgentSelector:
         temperature = self._get_temperature()
 
         # Get available LLM clients
-        clients = await self._get_llm_clients_with_fallback()
+        clients = self._get_llm_clients_with_fallback()
 
         # Try each available LLM until one succeeds
         last_error = None
@@ -132,32 +134,39 @@ class AgentSelector:
                     messages=messages,
                     tools=tools,
                     tool_choice=tool_choice,
-                    temperature=temperature
+                    temperature=temperature,
+                    stream=stream
                 )
 
                 # Parse response and create selection
                 result = self._parse_response(response)
 
-                # Check if we got a valid selection (not a fallback from parse error)
-                if result.selected_agents or result.reasoning != "Request failed":
+                # Check if we got a valid selection
+                if result and result.selected_agents:
                     if idx > 0:
-                        print(f"[INFO Selector] Fallback to LLM '{client.config.name}' succeeded")
+                        print(
+                            f"[INFO Selector] Fallback to LLM '{client.config.name}' succeeded")
                     return result
 
-                # If parse returned fallback, try next LLM
-                last_error = "Request failed"
+                # If parse returned None or empty, try next LLM
+                last_error = "No agents selected"
 
             except Exception as e:
                 last_error = str(e)
                 if idx < len(clients) - 1:
-                    print(f"[WARN Selector] LLM '{client.config.name}' failed, trying next LLM: {e}")
+                    print(
+                        f"[WARN Selector] LLM '{client.config.name}' failed, trying next LLM: {e}")
                 continue
 
         # All LLMs failed
         print(f"[ERROR Selector] All LLMs failed. Last error: {last_error}")
-        return self._create_fallback_selection(f"All LLMs failed: {last_error}")
+        return None
 
-    def _build_messages(self, question: str, chat_history: ChatHistory) -> List[Dict[str, str]]:
+    def _build_messages(
+        self,
+        question: str,
+        chat_history: Optional[ChatHistory] = None
+    ) -> List[Dict[str, Any]]:
         """Build messages for the selection request"""
         system_prompt = self._get_system_prompt()
         user_prompt = self._build_user_prompt(question, chat_history)
@@ -166,13 +175,17 @@ class AgentSelector:
             {"role": "user", "content": user_prompt}
         ]
 
-    def _build_user_prompt(self, question: str, chat_history: ChatHistory) -> str:
+    def _build_user_prompt(
+        self,
+        question: str,
+        chat_history: Optional[ChatHistory] = None
+    ) -> str:
         """Build user prompt with question and chat history"""
         # Build chat history context
         history_text = chat_history.to_string(
             SelectorConstants.HISTORY_CONTEXT_LIMIT,
             True,
-        )
+        ) if chat_history else None
 
         # Get user prompt template from config
         user_prompt_template = self.selector_config.get("user_prompt")
@@ -190,17 +203,17 @@ class AgentSelector:
         parameters = self.selector_config.get('parameters', {})
         return parameters.get('temperature', SelectorConstants.DEFAULT_TEMPERATURE)
 
-    def _parse_response(self, response: Dict[str, Any]) -> AgentSelection:
+    def _parse_response(self, response: Dict[str, Any]) -> Optional[AgentSelection]:
         """Parse LLM response and create AgentSelection"""
         # Check for tool calls in response
         if not response or 'tool_calls' not in response:
             print(f"[DEBUG Selector] No tool calls in response: {response}")
-            return self._create_fallback_selection("No tool calls in response")
+            return None
 
         tool_calls = response.get('tool_calls', [])
         if not tool_calls:
             print(f"[DEBUG Selector] Empty tool calls list")
-            return self._create_fallback_selection("Empty tool calls")
+            return None
 
         # Parse tool call arguments
         tool_call_args = self._extract_tool_arguments(tool_calls[0])
@@ -212,6 +225,10 @@ class AgentSelector:
             tool_call_args.get("execution_order", selected_agents)
         )
 
+        # If selected_agents is empty but execution_order exists, use execution_order
+        if not selected_agents and execution_order:
+            selected_agents = execution_order
+
         # Ensure execution order is not empty if we have selected agents
         if not execution_order and selected_agents:
             execution_order = selected_agents
@@ -220,8 +237,7 @@ class AgentSelector:
             selected_agents=selected_agents,
             execution_order=execution_order,
             reasoning=tool_call_args.get("reasoning", ""),
-            parameters=tool_call_args.get("parameters", {}),
-            fallback_config=self.selector_config.get('fallback_config', {})
+            parameters=tool_call_args.get("parameters", {})
         )
 
     def _extract_tool_arguments(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
@@ -249,10 +265,17 @@ class AgentSelector:
                 selected_agents.append(agent_name)
         return selected_agents
 
-    def _clean_execution_order(self, execution_order: List[str]) -> List[str]:
+    def _clean_execution_order(self, execution_order: Union[List[str], str]) -> List[str]:
         """Clean execution order by removing use_ prefix if present"""
         if not execution_order:
             return []
+
+        # Parse if it's a JSON string
+        if isinstance(execution_order, str):
+            try:
+                execution_order = json.loads(execution_order)
+            except json.JSONDecodeError:
+                return []
 
         cleaned_order = []
         for agent in execution_order:
@@ -264,16 +287,6 @@ class AgentSelector:
                 else:
                     cleaned_order.append(agent)
         return cleaned_order
-
-    def _create_fallback_selection(self, reason: str) -> AgentSelection:
-        """Create fallback AgentSelection when selection fails"""
-        return AgentSelection(
-            selected_agents=[],
-            execution_order=[],
-            reasoning=reason,
-            parameters={},
-            fallback_config=self.selector_config.get('fallback_config', {})
-        )
 
     def _get_available_agents(self) -> List[Dict[str, Any]]:
         """Get list of available agents from config"""
