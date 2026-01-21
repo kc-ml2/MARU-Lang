@@ -4,7 +4,7 @@ Ingest Pipeline - 로컬 파일 시스템을 ingest하는 파이프라인
 import asyncio
 from pathlib import Path
 from typing import List, Optional, Tuple
-from maru_lang.pipelines.base import BasePipeline, PipelineMessage, PipelineComplete
+from maru_lang.pipelines.base import BasePipeline, PipelineMessage
 from maru_lang.core.relation_db.models.documents import (
     Document,
     DocumentGroup,
@@ -120,15 +120,15 @@ class IngestPipeline(BasePipeline):
                 failed_details=failed_documents if failed_documents else None,
                 deleted_files=deleted_count,
             )
-            await self.queue.put(PipelineComplete(data=result))
+            await self.queue.put(PipelineMessage.complete(data=result))
 
         except Exception as e:
             await self.queue.put(PipelineMessage.error(f"Pipeline failed: {str(e)}"))
-            await self.queue.put(PipelineComplete(data=None))
+            await self.queue.put(PipelineMessage.complete(data=None))
             raise
 
-
     # ========== VectorDB 설정 ==========
+
     async def _prepare_processing(self):
         """VectorDB 인스턴스 생성 (CRUD 직접 사용)"""
         # VectorDB 팩토리로 인스턴스 생성
@@ -184,7 +184,7 @@ class IngestPipeline(BasePipeline):
         }
 
     def _get_group_hierarchy_for_file(
-        self, 
+        self,
         relative_path: str
     ) -> List[tuple[Optional[str], str, str]]:
         """
@@ -240,8 +240,7 @@ class IngestPipeline(BasePipeline):
             hierarchy = self._get_group_hierarchy_for_file(f.relativePath)
             file_hierarchies.append((f, hierarchy))
 
-
-        # 2. 고유한 그룹들과 부모-자식 관계 추출   
+        # 2. 고유한 그룹들과 부모-자식 관계 추출
         for _, hierarchy in file_hierarchies:
             for parent_path, name, current_path in hierarchy:
                 groups[current_path] = name
@@ -275,7 +274,8 @@ class IngestPipeline(BasePipeline):
                 manager_id=self.manager_id,
                 rag_components=rag_components,
                 force_new_version=self.re_embed,
-                description=self.description if (name == self.group_name) else None,
+                description=self.description if (
+                    name == self.group_name) else None,
                 sync_mode=sync_mode,
             )
             group_mapping[path] = group
@@ -333,7 +333,9 @@ class IngestPipeline(BasePipeline):
                 )
 
                 # 4. Store hierarchical group info and temp path in document metadata
-                group_path_parts = [h[1] for h in hierarchy]  # h[1] = name (full path)
+                group_path_parts = [h[1]
+                                    # h[1] = name (full path)
+                                    for h in hierarchy]
                 hierarchical_group_name = "_".join(group_path_parts)
                 doc.metadata = {
                     **(doc.metadata or {}),
@@ -360,7 +362,8 @@ class IngestPipeline(BasePipeline):
 
             except Exception as e:
                 await self.queue.put(
-                    PipelineMessage.warning(f"Failed to process {file_info.fileName}: {str(e)}")
+                    PipelineMessage.warning(
+                        f"Failed to process {file_info.fileName}: {str(e)}")
                 )
                 continue
 
@@ -439,16 +442,19 @@ class IngestPipeline(BasePipeline):
 
                         deleted_count += 1
                         await self.queue.put(
-                            PipelineMessage.info(f"  🗑️  Deleted removed file: {doc.name} ({deleted_chunks} chunks)")
+                            PipelineMessage.info(
+                                f"  🗑️  Deleted removed file: {doc.name} ({deleted_chunks} chunks)")
                         )
                     except Exception as e:
                         await self.queue.put(
-                            PipelineMessage.warning(f"Failed to delete {doc.name}: {str(e)}")
+                            PipelineMessage.warning(
+                                f"Failed to delete {doc.name}: {str(e)}")
                         )
 
         if deleted_count > 0:
             await self.queue.put(
-                PipelineMessage.info(f"✓ Cleaned up {deleted_count} deleted file(s)")
+                PipelineMessage.info(
+                    f"✓ Cleaned up {deleted_count} deleted file(s)")
             )
 
         return deleted_count
@@ -474,7 +480,8 @@ class IngestPipeline(BasePipeline):
             return failed_documents
 
         await self.queue.put(
-            PipelineMessage.info(f"🔄 Processing {len(documents_to_process)} file(s)...")
+            PipelineMessage.info(
+                f"🔄 Processing {len(documents_to_process)} file(s)...")
         )
 
         embedder = get_embedder()
@@ -489,41 +496,49 @@ class IngestPipeline(BasePipeline):
                     deleted_count = await self._delete_document_chunks(doc)
                     if deleted_count > 0:
                         await self.queue.put(
-                            PipelineMessage.info(f"  🗑️  Deleted {deleted_count} old chunk(s) for {doc.name}")
+                            PipelineMessage.info(
+                                f"  🗑️  Deleted {deleted_count} old chunk(s) for {doc.name}")
                         )
                 except Exception as e:
                     await self.queue.put(
-                        PipelineMessage.warning(f"Failed to delete chunks for {doc.name}: {str(e)}")
+                        PipelineMessage.warning(
+                            f"Failed to delete chunks for {doc.name}: {str(e)}")
                     )
 
                 # 2. Get file path: use temp_file_path if available (uploaded files), otherwise use db path
-                temp_file_path = doc.metadata.get("temp_file_path") if doc.metadata else None
+                temp_file_path = doc.metadata.get(
+                    "temp_file_path") if doc.metadata else None
                 if temp_file_path and Path(temp_file_path).exists():
                     file_path = Path(temp_file_path)
                 else:
                     file_path = Path(doc.file_path)
 
                 # 3. Get group info from document metadata
-                hierarchical_group_name = doc.metadata.get("hierarchical_group_name", self.group_name)
+                hierarchical_group_name = doc.metadata.get(
+                    "hierarchical_group_name", self.group_name)
                 group_version_id = doc.metadata.get("group_version_id")
 
                 # Get RAG config for the group
-                group_config = self._get_group_rag_components(hierarchical_group_name)
+                group_config = self._get_group_rag_components(
+                    hierarchical_group_name)
                 loader_name = group_config.get("loader")
                 chunker_name = group_config.get("chunker")
                 embedding_model = group_config.get("embedding_model")
 
                 # 4. Parse document
-                parse_result = self.loader_manager.parse(file_path, loader_name=loader_name)
+                parse_result = self.loader_manager.parse(
+                    file_path, loader_name=loader_name)
 
                 if not parse_result.content.strip():
                     await self.queue.put(
-                        PipelineMessage.warning(f"Empty content for {doc.name}")
+                        PipelineMessage.warning(
+                            f"Empty content for {doc.name}")
                     )
                     continue
 
                 # 5. 청킹
-                chunker = self.chunker_manager.get_chunker_or_default(chunker_name)
+                chunker = self.chunker_manager.get_chunker_or_default(
+                    chunker_name)
                 chunk_inputs = chunker.chunk(parse_result.content)
 
                 if not chunk_inputs:
@@ -574,7 +589,8 @@ class IngestPipeline(BasePipeline):
 
                 processed_count += 1
                 await self.queue.put(
-                    PipelineMessage.info(f"  ✓ {doc.name}: {len(chunk_inputs)} chunks saved")
+                    PipelineMessage.info(
+                        f"  ✓ {doc.name}: {len(chunk_inputs)} chunks saved")
                 )
 
             except Exception as e:
@@ -590,14 +606,16 @@ class IngestPipeline(BasePipeline):
                     await doc.delete()
                 except Exception as delete_error:
                     await self.queue.put(
-                        PipelineMessage.warning(f"Failed to delete document {doc.name}: {str(delete_error)}")
+                        PipelineMessage.warning(
+                            f"Failed to delete document {doc.name}: {str(delete_error)}")
                     )
                 continue
 
         await self.queue.put(
             PipelineMessage.info(
                 f"  ✅ Processed {processed_count} file(s), saved {total_chunks_saved} chunks to VDB",
-                data={"processed": processed_count, "total_chunks": total_chunks_saved}
+                data={"processed": processed_count,
+                      "total_chunks": total_chunks_saved}
             )
         )
 
@@ -606,184 +624,189 @@ class IngestPipeline(BasePipeline):
     # ========== Helper Methods ==========
 
 
-class DryIngestPipeline(IngestPipeline):
-    """
-    IngestPipeline의 Dry-run 버전
+# class DryIngestPipeline(IngestPipeline):
+#     """
+#     IngestPipeline의 Dry-run 버전
 
-    실제 DB/VDB 변경 없이 시뮬레이션만 수행하여 결과를 미리 확인
-    """
+#     실제 DB/VDB 변경 없이 시뮬레이션만 수행하여 결과를 미리 확인
+#     """
 
+#     def __init__(
+#         self,
+#         files: List[Path],
+#         group_name: str,
+#         manager_id: int,
+#         base_path: Path
+#     ):
+#         super().__init__(
+#             files,
+#             group_name,
+#             manager_id,
+#             base_path
+#         )
 
-    def __init__(
-        self,
-        files: List[Path], 
-        group_name: str, 
-        manager_id: int, 
-        base_path: Path
-    ):
-        super().__init__(
-            files,
-            group_name, 
-            manager_id, 
-            base_path
-        )
+#     async def _sync_group_and_documents(self):
+#         """
+#         DocumentGroup 계층 동기화 및 문서 생성을 시뮬레이션
 
-    async def _sync_group_and_documents(self):
-        """
-        DocumentGroup 계층 동기화 및 문서 생성을 시뮬레이션
+#         실제 DB 변경 없이 simulate_ 함수를 사용하여 어떤 변경이 일어날지 확인
+#         """
+#         from maru_lang.services.document import (
+#             simulate_upsert_document_group,
+#             simulate_upsert_document_from_file,
+#         )
 
-        실제 DB 변경 없이 simulate_ 함수를 사용하여 어떤 변경이 일어날지 확인
-        """
-        from maru_lang.services.document import (
-            simulate_upsert_document_group,
-            simulate_upsert_document_from_file,
-        )
+#         file_hierarchies = []
+#         unique_groups = {}
+#         parent_child_pairs = set()
 
-        file_hierarchies = []
-        unique_groups = {}
-        parent_child_pairs = set()
+#         await self.queue.put(PipelineMessage.info("🔍 [DRY-RUN] Simulating group hierarchy..."))
 
-        await self.queue.put(PipelineMessage.info("🔍 [DRY-RUN] Simulating group hierarchy..."))
+#         # 1. 모든 파일의 그룹 계층 정보 수집
+#         for f in self.files:
+#             hierarchy = self._get_group_hierarchy_for_file(f.relativePath)
+#             file_hierarchies.append((f, hierarchy))
 
-        # 1. 모든 파일의 그룹 계층 정보 수집
-        for f in self.files:
-            hierarchy = self._get_group_hierarchy_for_file(f.relativePath)
-            file_hierarchies.append((f, hierarchy))
+#         # 2. 고유한 그룹들과 부모-자식 관계 추출
+#         for _, hierarchy in file_hierarchies:
+#             for parent_path, name, current_path in hierarchy:
+#                 unique_groups[current_path] = name
+#                 if parent_path:
+#                     parent_child_pairs.add((parent_path, current_path))
 
-        # 2. 고유한 그룹들과 부모-자식 관계 추출
-        for _, hierarchy in file_hierarchies:
-            for parent_path, name, current_path in hierarchy:
-                unique_groups[current_path] = name
-                if parent_path:
-                    parent_child_pairs.add((parent_path, current_path))
+#         # 3. 그룹 시뮬레이션
+#         group_simulation_results = {}
+#         for path, name in unique_groups.items():
+#             rag_components = self._get_group_rag_components(name)
 
-        # 3. 그룹 시뮬레이션
-        group_simulation_results = {}
-        for path, name in unique_groups.items():
-            rag_components = self._get_group_rag_components(name)
+#             # 기존 그룹이 있고 manager가 다른 경우 권한 확인
+#             from maru_lang.core.relation_db.models.documents import DocumentGroup
+#             existing_group = await DocumentGroup.get_or_none(base_path=path)
+#             if existing_group and existing_group.manager_id != self.manager_id:
+#                 raise PermissionError(
+#                     f"Access denied: User {self.manager_id} does not have permission to update DocumentGroup '{name}' "
+#                     f"(managed by user {existing_group.manager_id})"
+#                 )
 
-            # 기존 그룹이 있고 manager가 다른 경우 권한 확인
-            from maru_lang.core.relation_db.models.documents import DocumentGroup
-            existing_group = await DocumentGroup.get_or_none(base_path=path)
-            if existing_group and existing_group.manager_id != self.manager_id:
-                raise PermissionError(
-                    f"Access denied: User {self.manager_id} does not have permission to update DocumentGroup '{name}' "
-                    f"(managed by user {existing_group.manager_id})"
-                )
+#             if not existing_group or self.re_embed:
+#                 force_new_version = True
+#             elif existing_group.rag_components != rag_components:
+#                 force_new_version = True
+#             else:
+#                 force_new_version = False
 
-            if not existing_group or self.re_embed:
-                force_new_version = True
-            elif existing_group.rag_components != rag_components:
-                force_new_version = True
-            else:
-                force_new_version = False
+#             is_root_group = (name == self.group_name)
+#             group_description = self.description if is_root_group else None
 
-            is_root_group = (name == self.group_name)
-            group_description = self.description if is_root_group else None
+#             result = await simulate_upsert_document_group(
+#                 name=name,
+#                 base_path=path,
+#                 manager_id=self.manager_id,
+#                 rag_components=rag_components,
+#                 force_new_version=force_new_version,
+#                 description=group_description,
+#             )
+#             group_simulation_results[path] = result
 
-            result = await simulate_upsert_document_group(
-                name=name,
-                base_path=path,
-                manager_id=self.manager_id,
-                rag_components=rag_components,
-                force_new_version=force_new_version,
-                description=group_description,
-            )
-            group_simulation_results[path] = result
+#             await self.queue.put(
+#                 PipelineMessage.info(
+#                     f"  Group '{name}': {result['action']} - {result['reason']}")
+#             )
 
-            await self.queue.put(
-                PipelineMessage.info(f"  Group '{name}': {result['action']} - {result['reason']}")
-            )
+#         # 4. Document 시뮬레이션
+#         self.documents = []
+#         self.documents_to_process = []
 
-        # 4. Document 시뮬레이션
-        self.documents = []
-        self.documents_to_process = []
+#         for file_path, hierarchy in file_hierarchies:
+#             try:
+#                 stat = file_path.stat()
+#                 db_file_path = str(file_path.absolute())
 
-        for file_path, hierarchy in file_hierarchies:
-            try:
-                stat = file_path.stat()
-                db_file_path = str(file_path.absolute())
+#                 result = await simulate_upsert_document_from_file(
+#                     name=file_path.stem,
+#                     path=db_file_path,
+#                     size=stat.st_size,
+#                     mtime_ns=stat.st_mtime_ns,
+#                     metadata={"original_filename": file_path.name},
+#                 )
 
-                result = await simulate_upsert_document_from_file(
-                    name=file_path.stem,
-                    path=db_file_path,
-                    size=stat.st_size,
-                    mtime_ns=stat.st_mtime_ns,
-                    metadata={"original_filename": file_path.name},
-                )
+#                 # 시뮬레이션 결과만 저장 (실제 Document 객체는 없음)
+#                 if result['needs_reprocessing']:
+#                     self.documents_to_process.append({
+#                         "file_path": file_path,
+#                         "action": result['action'],
+#                         "reason": result['reason']
+#                     })
 
-                # 시뮬레이션 결과만 저장 (실제 Document 객체는 없음)
-                if result['needs_reprocessing']:
-                    self.documents_to_process.append({
-                        "file_path": file_path,
-                        "action": result['action'],
-                        "reason": result['reason']
-                    })
+#                 self.documents.append({
+#                     "file_path": file_path,
+#                     "action": result['action'],
+#                     "reason": result['reason'],
+#                     "needs_reprocessing": result['needs_reprocessing']
+#                 })
 
-                self.documents.append({
-                    "file_path": file_path,
-                    "action": result['action'],
-                    "reason": result['reason'],
-                    "needs_reprocessing": result['needs_reprocessing']
-                })
+#                 if result['action'] != 'skip':
+#                     await self.queue.put(
+#                         PipelineMessage.info(
+#                             f"  File '{file_path.name}': {result['action']} - {result['reason']}")
+#                     )
 
-                if result['action'] != 'skip':
-                    await self.queue.put(
-                        PipelineMessage.info(f"  File '{file_path.name}': {result['action']} - {result['reason']}")
-                    )
+#             except Exception as e:
+#                 self.failed_documents[str(file_path)] = str(e)
+#                 await self.queue.put(
+#                     PipelineMessage.error(
+#                         f"  File '{file_path.name}': Failed - {str(e)}")
+#                 )
 
-            except Exception as e:
-                self.failed_documents[str(file_path)] = str(e)
-                await self.queue.put(
-                    PipelineMessage.error(f"  File '{file_path.name}': Failed - {str(e)}")
-                )
+#         await self.queue.put(
+#             PipelineMessage.info(
+#                 f"✓ [DRY-RUN] Simulation complete: "
+#                 f"{len(self.documents_to_process)} to process, "
+#                 f"{len(self.documents) - len(self.documents_to_process)} to skip"
+#             )
+#         )
 
-        await self.queue.put(
-            PipelineMessage.info(
-                f"✓ [DRY-RUN] Simulation complete: "
-                f"{len(self.documents_to_process)} to process, "
-                f"{len(self.documents) - len(self.documents_to_process)} to skip"
-            )
-        )
+#     async def _process_documents(self):
+#         """
+#         문서 처리를 시뮬레이션 (실제 파싱/임베딩/VDB 저장 없음)
+#         """
+#         await self.queue.put(
+#             PipelineMessage.info(
+#                 f"🔍 [DRY-RUN] Would process {len(self.documents_to_process)} documents "
+#                 f"(skipping actual parsing/embedding)"
+#             )
+#         )
 
-    async def _process_documents(self):
-        """
-        문서 처리를 시뮬레이션 (실제 파싱/임베딩/VDB 저장 없음)
-        """
-        await self.queue.put(
-            PipelineMessage.info(
-                f"🔍 [DRY-RUN] Would process {len(self.documents_to_process)} documents "
-                f"(skipping actual parsing/embedding)"
-            )
-        )
+#         # 실제 처리는 하지 않고, 지원되는 파일 타입만 체크
+#         for doc_info in self.documents_to_process:
+#             file_path = doc_info['file_path']
 
-        # 실제 처리는 하지 않고, 지원되는 파일 타입만 체크
-        for doc_info in self.documents_to_process:
-            file_path = doc_info['file_path']
+#             # 파일 타입 지원 여부 체크
+#             if not self.loader_manager.supports(file_path):
+#                 self.failed_documents[str(
+#                     file_path)] = f"Unsupported file type: {file_path.suffix}"
+#                 await self.queue.put(
+#                     PipelineMessage.warning(
+#                         f"  Would skip '{file_path.name}': Unsupported file type")
+#                 )
 
-            # 파일 타입 지원 여부 체크
-            if not self.loader_manager.supports(file_path):
-                self.failed_documents[str(file_path)] = f"Unsupported file type: {file_path.suffix}"
-                await self.queue.put(
-                    PipelineMessage.warning(f"  Would skip '{file_path.name}': Unsupported file type")
-                )
+#         await self.queue.put(
+#             PipelineMessage.info(f"✓ [DRY-RUN] Processing simulation complete")
+#         )
 
-        await self.queue.put(
-            PipelineMessage.info(f"✓ [DRY-RUN] Processing simulation complete")
-        )
-
-    def _get_result(self) -> IngestResult:
-        """Dry-run 결과 반환 (실제 Document 객체 없음)"""
-        return IngestResult(
-            group=None,  # Dry-run에서는 그룹 미생성
-            documents=self.documents,  # dict 객체들
-            total_files=len(self.files) if self.files else 0,
-            processed_files=len(self.documents_to_process) if self.documents_to_process else 0,
-            skipped_files=(
-                len(self.documents) - len(self.documents_to_process)
-                if self.documents and self.documents_to_process
-                else 0
-            ),
-            failed_files=len(self.failed_documents),
-            failed_details=self.failed_documents if self.failed_documents else None,
-        )
+#     def _get_result(self) -> IngestResult:
+#         """Dry-run 결과 반환 (실제 Document 객체 없음)"""
+#         return IngestResult(
+#             group=None,  # Dry-run에서는 그룹 미생성
+#             documents=self.documents,  # dict 객체들
+#             total_files=len(self.files) if self.files else 0,
+#             processed_files=len(
+#                 self.documents_to_process) if self.documents_to_process else 0,
+#             skipped_files=(
+#                 len(self.documents) - len(self.documents_to_process)
+#                 if self.documents and self.documents_to_process
+#                 else 0
+#             ),
+#             failed_files=len(self.failed_documents),
+#             failed_details=self.failed_documents if self.failed_documents else None,
+#         )

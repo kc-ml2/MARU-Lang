@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 
-from maru_lang.pipelines.ingest import IngestPipeline, DryIngestPipeline, MaruSyncIngestPipeline
+from maru_lang.pipelines.ingest import IngestPipeline, MaruSyncIngestPipeline
 from maru_lang.models.vector_db import get_vector_db_config_from_settings
 from maru_lang.configs.system_config import get_system_config
 from maru_lang.schemas.ingest import FileInfo
@@ -23,9 +23,9 @@ def create_ingest_pipeline(
     files: Optional[List[FileInfo]] = None,
     user_id: int = None,
     dry_run: bool = False,
-) -> IngestPipeline | DryIngestPipeline:
+) -> IngestPipeline:
     """
-    Create IngestPipeline or DryIngestPipeline instance for file ingestion.
+    Create IngestPipeline instance for file ingestion.
 
     Args:
         upload_path: Path to uploaded files directory (used as base_path for DB storage)
@@ -36,7 +36,7 @@ def create_ingest_pipeline(
         files: Optional pre-scanned file list. If None, will scan upload_path
         user_id: User ID who is ingesting the files
     Returns:
-        IngestPipeline or DryIngestPipeline instance
+        IngestPipeline
     """
 
     # Scan upload_path if file list is not provided
@@ -49,31 +49,25 @@ def create_ingest_pipeline(
             size=file_path.stat().st_size
         ) for file_path in file_paths]
 
-    if dry_run:
-        pipeline = DryIngestPipeline(
+    if user_id:
+        pipeline = MaruSyncIngestPipeline(
             files=files,
             group_name=group_name,
             manager_id=manager_id,
             base_path=upload_path,
+            user_id=user_id,
         )
     else:
-        if user_id:
-            pipeline = MaruSyncIngestPipeline(
-                files=files,
-                group_name=group_name,
-                manager_id=manager_id,
-                base_path=upload_path,
-                user_id=user_id,
-            )
-        else:
-            pipeline = IngestPipeline(
-                files=files,
-                group_name=group_name,
-                vdb_config= get_vector_db_config_from_settings(),
-                manager_id=manager_id,
-                base_path=upload_path,  # base_path for DocumentGroup (for DB storage)
-                re_embed=re_embed,
-                description=description,  # DocumentGroup description (only saved for root group)
-            )
+        pipeline = IngestPipeline(
+            files=files,
+            group_name=group_name,
+            vdb_config=get_vector_db_config_from_settings(),
+            manager_id=manager_id,
+            # base_path for DocumentGroup (for DB storage)
+            base_path=upload_path,
+            re_embed=re_embed,
+            # DocumentGroup description (only saved for root group)
+            description=description,
+        )
 
     return pipeline
