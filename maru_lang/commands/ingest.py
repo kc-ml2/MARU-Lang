@@ -6,7 +6,7 @@ from typing import List, Optional
 from pathlib import Path
 
 from maru_lang.pipelines.ingest import IngestPipeline
-from maru_lang.pipelines.base import PipelineMessage, PipelineComplete, MessageType
+from maru_lang.pipelines.base import PipelineMessage, MessageType
 from maru_lang.models.vector_db import get_vector_db_config_from_settings
 from maru_lang.utils.file_scanner import scan_directory
 from maru_lang.services.user_group import (
@@ -135,20 +135,18 @@ async def ingest_function(
         )
 
         result = None
-        async for item in pipeline.run():
+        async for step in pipeline.run():
             # 완료 신호 확인
-            if isinstance(item, PipelineComplete):
-                result = item.data
+            if step.message_type == MessageType.COMPLETE:
+                result = step.data
                 break
-
-            # PipelineMessage 처리
-            if isinstance(item, PipelineMessage):
-                if item.message_type == MessageType.INFO:
-                    typer.secho(f"  {item.message}", fg=typer.colors.CYAN)
-                elif item.message_type == MessageType.WARNING:
-                    typer.secho(f"  ⚠️  {item.message}", fg=typer.colors.YELLOW)
-                elif item.message_type == MessageType.ERROR:
-                    typer.secho(f"  ❌ {item.message}", fg=typer.colors.RED)
+            elif step.message_type == MessageType.INFO:
+                typer.secho(f"  {step.message}", fg=typer.colors.CYAN)
+            elif step.message_type == MessageType.WARNING:
+                typer.secho(f"  ⚠️  {step.message}",
+                            fg=typer.colors.YELLOW)
+            elif step.message_type == MessageType.ERROR:
+                typer.secho(f"  ❌ {step.message}", fg=typer.colors.RED)
 
         if result is None:
             raise ValueError("Pipeline did not return a result")

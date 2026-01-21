@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from maru_lang.enums.auth import UserRoleCode
 from maru_lang.dependencies.auth import get_user_with_role, User
 from maru_lang.dependencies.ingest import create_ingest_pipeline
-from maru_lang.pipelines.base import PipelineMessage, PipelineComplete
+from maru_lang.pipelines.base import PipelineMessage
 from maru_lang.schemas.ingest import FileInfo, SyncCheckRequest, SyncCheckResponse
 from maru_lang.services.document import set_user_group_permissions, get_managed_document_groups_with_stats
 from maru_lang.configs.system_config import get_system_config
@@ -60,12 +60,13 @@ async def check_sync_status(
         async for item in pipeline.run():
             if isinstance(item, PipelineMessage):
                 print(f"[DRY-RUN] {item.message}")
-            elif isinstance(item, PipelineComplete):
-                result = item.data
-                print(f"[DRY-RUN] Complete: {result}")
+            # elif isinstance(item, PipelineComplete):
+            #     result = item.data
+            #     print(f"[DRY-RUN] Complete: {result}")
 
         if result is None:
-            raise HTTPException(status_code=500, detail="Dry-run pipeline did not return result")
+            raise HTTPException(
+                status_code=500, detail="Dry-run pipeline did not return result")
 
         return SyncCheckResponse(
             fileIndicesToUpload=result.files_to_process_indices or [],
@@ -86,7 +87,8 @@ async def upload_and_ingest(
     file: UploadFile = File(..., description="File to upload"),
     folderName: str = Form(..., description="Project folder name"),
     folderPath: str = Form(..., description="Project folder path"),
-    fileMetadata: str = Form(..., description="File metadata JSON: {fileName, createdAt, relativePath, size}"),
+    fileMetadata: str = Form(
+        ..., description="File metadata JSON: {fileName, createdAt, relativePath, size}"),
     userGroupIds: str = Form(None, description="User group IDs JSON array"),
     description: str = Form(None, description="DocumentGroup description"),
     maruSync: bool = Form(False, description="with maruSync"),
@@ -102,13 +104,15 @@ async def upload_and_ingest(
             try:
                 user_group_id_list = json.loads(userGroupIds)
             except json.JSONDecodeError:
-                raise HTTPException(status_code=400, detail="Invalid userGroupIds format")
+                raise HTTPException(
+                    status_code=400, detail="Invalid userGroupIds format")
 
         # Parse fileMetadata from JSON string
         try:
             file_meta = json.loads(fileMetadata)
         except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid fileMetadata format")
+            raise HTTPException(
+                status_code=400, detail="Invalid fileMetadata format")
 
         # Create upload directory
         upload_base_dir = Path(tempfile.gettempdir()) / "maru_lang_uploads"
@@ -143,8 +147,8 @@ async def upload_and_ingest(
             if isinstance(item, PipelineMessage):
                 # Log progress messages
                 print(f"[{item.message_type.value}] {item.message}")
-            elif isinstance(item, PipelineComplete):
-                result = item.data
+            # elif isinstance(item, PipelineComplete):
+            #     result = item.data
 
         # Set permissions if userGroupIds provided
         permission_message = None
@@ -168,7 +172,8 @@ async def upload_and_ingest(
 
         # Return result
         if result is None:
-            raise HTTPException(status_code=500, detail="Ingestion pipeline did not return result")
+            raise HTTPException(
+                status_code=500, detail="Ingestion pipeline did not return result")
 
         return {
             "success": True,
