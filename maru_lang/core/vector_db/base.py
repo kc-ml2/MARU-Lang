@@ -10,7 +10,41 @@ class VectorDB(ABC):
         pass
 
     @abstractmethod
-    def add_documents(self, documents: list[dict]) -> None:
+    def add_documents(self, documents: list[dict], embeddings: list[list[float]]) -> None:
+        pass
+
+    @abstractmethod
+    def upsert_documents(self, documents: list[dict], embeddings: list[list[float]]) -> None:
+        """Add or update documents in VectorDB.
+
+        Args:
+            documents: List of documents with id, content, metadata
+            embeddings: List of embedding vectors
+        """
+        pass
+
+    @abstractmethod
+    def get_chunk_ids_by_document_id(self, document_id: str) -> list[str]:
+        """Get all chunk IDs for a document.
+
+        Args:
+            document_id: Document ID
+
+        Returns:
+            List of chunk IDs
+        """
+        pass
+
+    @abstractmethod
+    def delete_chunks_by_ids(self, chunk_ids: list[str]) -> int:
+        """Delete chunks by their IDs.
+
+        Args:
+            chunk_ids: List of chunk IDs to delete
+
+        Returns:
+            Number of deleted chunks
+        """
         pass
 
     @abstractmethod
@@ -56,16 +90,16 @@ class VectorDB(ABC):
     @abstractmethod
     def get_all_documents(
         self,
-        version_ids: list[str]
+        team_ids: list[int]
     ) -> list[RetrieveDocument]:
         """
-        Get all documents from VectorDB filtered by version IDs
+        Get all documents from VectorDB filtered by team IDs
 
         Args:
-            version_ids: List of version IDs to filter (required)
+            team_ids: List of Team IDs to filter
 
         Returns:
-            List of documents filtered by version
+            List of documents filtered by teams
         """
         pass
 
@@ -74,7 +108,7 @@ class VectorDB(ABC):
         self,
         query_embedding: list[float],
         k: int,
-        version_ids: list[str],
+        team_ids: list[int],
         **kwargs: dict[str, Any]
     ) -> list[RetrieveDocument]:
         """
@@ -83,7 +117,7 @@ class VectorDB(ABC):
         Args:
             query_embedding: Query embedding vector
             k: Number of results to return
-            version_ids: List of version IDs to filter (required)
+            team_ids: List of Team IDs to filter
             **kwargs: Additional search parameters
 
         Returns:
@@ -97,7 +131,7 @@ class VectorDB(ABC):
         query_text: str,
         query_embedding: list[float],
         k: int,
-        version_ids: list[str],
+        team_ids: list[int],
         **kwargs: dict[str, Any]
     ) -> list[RetrieveDocument]:
         """
@@ -107,11 +141,9 @@ class VectorDB(ABC):
             query_text: Query text for full-text/BM25 search
             query_embedding: Query embedding vector for similarity search
             k: Number of results to return
-            version_ids: List of version IDs to filter (required)
+            team_ids: List of Team IDs to filter
             **kwargs: Additional search parameters
                 - alpha: Weight for combining scores (0.0 = full-text only, 1.0 = vector only)
-                - bm25_k: Number of results from BM25 search
-                - vector_k: Number of results from vector search
 
         Returns:
             List of retrieved documents with combined scores

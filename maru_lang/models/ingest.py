@@ -1,8 +1,6 @@
 from dataclasses import dataclass, field
-from typing import Optional, List, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
+from typing import Optional, List
+from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
 
 
 @dataclass(frozen=True)
@@ -32,9 +30,14 @@ class IngestResult:
     processed_files: int
     skipped_files: int
     failed_files: int = 0
-    failed_details: Optional[dict] = field(default=None)  # {filename: error_message}
-    deleted_files: int = 0  # Number of deleted files (removed from local but existed in DB)
+    failed_details: Optional[dict] = field(
+        default=None)  # {filename: error_message}
+    # Number of deleted files (removed from local but existed in DB)
+    deleted_files: int = 0
     # For dry-run results
-    files_to_process_indices: Optional[List[int]] = field(default=None)  # File indices that need processing
-    unsupported_file_indices: Optional[List[int]] = field(default=None)  # Unsupported file indices
-    files_to_delete: Optional[List[str]] = field(default=None)  # File names to be deleted (dry-run)
+    files_to_process_indices: Optional[List[int]] = field(
+        default=None)  # File indices that need processing
+    unsupported_file_indices: Optional[List[int]] = field(
+        default=None)  # Unsupported file indices
+    files_to_delete: Optional[List[str]] = field(
+        default=None)  # File names to be deleted (dry-run)

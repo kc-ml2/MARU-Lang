@@ -3,29 +3,17 @@ DocumentGroup 계층 구조 조회 및 관리 명령어
 """
 import typer
 from typing import Optional
-from maru_lang.core.relation_db.models.documents import (
-    DocumentGroup,
-    DocumentGroupInclusion,
-)
+from maru_lang.core.relation_db.models.documents import DocumentGroup
 
 
 async def get_root_groups() -> list[DocumentGroup]:
     """
-    루트 그룹들을 조회 (DocumentGroupInclusion에서 child로 지정되지 않은 그룹)
+    루트 그룹들을 조회 (parent가 null인 그룹)
 
     Returns:
         루트 DocumentGroup 리스트
     """
-    # child_id로 사용된 그룹 ID들
-    child_ids = await DocumentGroupInclusion.all().values_list("child_id", flat=True)
-    child_ids_set = set(child_ids)
-
-    # 모든 그룹 조회
-    all_groups = await DocumentGroup.all()
-
-    # child로 지정되지 않은 그룹만 필터링 (루트 그룹)
-    root_groups = [g for g in all_groups if g.id not in child_ids_set]
-
+    root_groups = await DocumentGroup.filter(parent__isnull=True).all()
     return sorted(root_groups, key=lambda g: g.name)
 
 
@@ -39,11 +27,7 @@ async def get_children_groups(parent_group: DocumentGroup) -> list[DocumentGroup
     Returns:
         자식 DocumentGroup 리스트
     """
-    inclusions = await DocumentGroupInclusion.filter(
-        parent=parent_group
-    ).prefetch_related("child")
-
-    children = [inc.child for inc in inclusions]
+    children = await DocumentGroup.filter(parent=parent_group).all()
     return sorted(children, key=lambda g: g.name)
 
 
@@ -69,17 +53,16 @@ async def print_group_tree(
         root_groups = await get_root_groups()
 
         if not root_groups:
-            typer.secho("📭 DocumentGroup이 없습니다.", fg=typer.colors.YELLOW)
+            typer.secho("DocumentGroup이 없습니다.", fg=typer.colors.YELLOW)
             return
 
-        typer.echo("\n📁 Document Group 계층 구조:\n")
+        typer.echo("\nDocument Group 계층 구조:\n")
         for i, root in enumerate(root_groups):
             is_last_root = (i == len(root_groups) - 1)
             await print_group_tree(root, max_depth, 0, "", is_last_root)
     else:
         # 현재 그룹 출력
         if current_depth == 0:
-            connector = ""
             typer.secho(f"{group.name}", fg=typer.colors.CYAN, bold=True)
         else:
             connector = "└── " if is_last else "├── "
@@ -126,12 +109,12 @@ async def show_group_tree_command(
 
         if not group:
             typer.secho(
-                f"❌ '{group_name}' 그룹을 찾을 수 없습니다.",
+                f"'{group_name}' 그룹을 찾을 수 없습니다.",
                 fg=typer.colors.RED
             )
             raise typer.Exit(1)
 
-        typer.echo(f"\n📁 '{group.name}' 그룹 계층 구조 (depth={depth}):\n")
+        typer.echo(f"\n'{group.name}' 그룹 계층 구조 (depth={depth}):\n")
         await print_group_tree(group, max_depth=depth)
     else:
         # 루트 그룹들만 표시 (depth=1)

@@ -89,7 +89,7 @@ class ResponseAgent(BaseAgent):
             return "no_agents"
 
         if execution_result is None:
-            return "unknown"
+            return "errors"
 
         has_results = bool(execution_result.agent_results)
         has_errors = bool(execution_result.errors)

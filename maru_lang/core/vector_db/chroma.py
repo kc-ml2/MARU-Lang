@@ -1,5 +1,4 @@
 import chromadb
-import asyncio
 from typing import Any
 from chromadb.api.models.Collection import Collection
 from maru_lang.core.vector_db.base import VectorDB
@@ -116,17 +115,61 @@ class ChromaVectorDB(VectorDB):
                 where={"document_id": {"$eq": document_id}},
                 include=["metadatas"]
             )
-            
+
             chunk_ids = results["ids"]
             if not chunk_ids:
                 return 0
-            
+
             # 모든 청크 삭제
             self.collection.delete(ids=chunk_ids)
             return len(chunk_ids)
-            
+
         except Exception as e:
-            print(f"❌ 벡터DB에서 문서 청크 삭제 실패: {e}")
+            print(f"Failed to delete document chunks from VectorDB: {e}")
+            return 0
+
+    def upsert_documents(
+        self,
+        documents: list[dict],
+        embeddings: list[list[float]],
+    ) -> None:
+        """Add or update documents in VectorDB."""
+        CHROMA_MAX_BATCH_SIZE = 5000
+
+        contents = [doc["content"] for doc in documents]
+        ids = [doc["id"] for doc in documents]
+        metadatas = [doc["metadata"] for doc in documents]
+
+        total_items = len(documents)
+        for i in range(0, total_items, CHROMA_MAX_BATCH_SIZE):
+            end_idx = min(i + CHROMA_MAX_BATCH_SIZE, total_items)
+
+            self.collection.upsert(
+                documents=contents[i:end_idx],
+                embeddings=embeddings[i:end_idx],
+                ids=ids[i:end_idx],
+                metadatas=metadatas[i:end_idx]
+            )
+
+    def get_chunk_ids_by_document_id(self, document_id: str) -> list[str]:
+        """Get all chunk IDs for a document."""
+        try:
+            results = self.collection.get(
+                where={"document_id": {"$eq": document_id}},
+                include=[]
+            )
+            return results["ids"]
+        except Exception:
+            return []
+
+    def delete_chunks_by_ids(self, chunk_ids: list[str]) -> int:
+        """Delete chunks by their IDs."""
+        if not chunk_ids:
+            return 0
+        try:
+            self.collection.delete(ids=chunk_ids)
+            return len(chunk_ids)
+        except Exception:
             return 0
 
     def count_documents(self) -> int:
@@ -157,29 +200,30 @@ class ChromaVectorDB(VectorDB):
 
     def get_all_documents(
         self,
-        version_ids: list[str]
+        team_ids: list[int]
     ) -> list[RetrieveDocument]:
         """
-        Get all documents from VectorDB filtered by version IDs
+        Get all documents from VectorDB filtered by team IDs
 
         Args:
-            version_ids: List of version IDs to filter (required)
+            team_ids: List of Team IDs to filter
 
         Returns:
-            List of documents filtered by version
+            List of documents filtered by teams
         """
-        # Build filter with required version_ids
-        filter_where = {"version_id": {"$in": version_ids}}
+        if not team_ids:
+            return []
 
-        # Get all documents with filter
+        filter_where = {"team_id": {"$in": team_ids}}
+
         results = self.collection.get(
             where=filter_where,
             include=["documents", "metadatas"]
         )
 
-        docs = results["documents"]
-        ids = results["ids"]
-        metadatas = results["metadatas"]
+        docs = results["documents"] or []
+        ids = results["ids"] or []
+        metadatas = results["metadatas"] or []
 
         return [
             RetrieveDocument(
@@ -194,30 +238,32 @@ class ChromaVectorDB(VectorDB):
         self,
         query_embedding: list[float],
         k: int,
-        version_ids: list[str],
+        team_ids: list[int],
         **kwargs: dict[str, Any],
     ) -> list[RetrieveDocument]:
         """
-        유사도 검색 (버전 기반)
+        Vector similarity search
 
         Args:
-            query_embedding: 쿼리 임베딩 벡터 (외부에서 생성)
-            k: 반환할 결과 개수
-            version_ids: 버전 ID 필터 (required)
+            query_embedding: Query embedding vector
+            k: Number of results to return
+            team_ids: List of Team IDs to filter
         """
-        # 버전 필터 생성 (required)
-        filter = {"version_id": {"$in": version_ids}}
+        if not team_ids:
+            return []
+
+        filter_where = {"team_id": {"$in": team_ids}}
 
         results = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=k,
-            where=filter
+            where=filter_where
         )
 
-        docs = results["documents"][0]
-        ids = results["ids"][0]
-        metadatas = results["metadatas"][0]
-        distances = results["distances"][0]
+        docs = results["documents"][0] if results["documents"] else []
+        ids = results["ids"][0] if results["ids"] else []
+        metadatas = results["metadatas"][0] if results["metadatas"] else []
+        distances = results["distances"][0] if results["distances"] else []
 
         return [
             RetrieveDocument(
@@ -233,7 +279,7 @@ class ChromaVectorDB(VectorDB):
         query_text: str,
         query_embedding: list[float],
         k: int,
-        version_ids: list[str],
+        team_ids: list[int],
         **kwargs: dict[str, Any]
     ) -> list[RetrieveDocument]:
         """

@@ -12,8 +12,6 @@ from maru_lang.utils.security import (
 
 from maru_lang.core.relation_db.models.auth import (
     User,
-    UserGroup,
-    UserGroupMembership,
     UserToken,
     RefreshToken,
     UserRole,
@@ -22,27 +20,6 @@ from maru_lang.core.relation_db.models.auth import (
 )
 
 config = get_system_config()
-
-
-async def get_user_groups(user: User) -> List[UserGroup]:
-    return [
-        user_group_membership.group
-        for user_group_membership in await UserGroupMembership.filter(
-            user=user
-        ).prefetch_related('group').all()
-    ]
-
-
-async def get_group(name: str) -> Optional[UserGroup]:
-    """그룹 이름으로 조회 (소문자로 변환하여 검색)"""
-    return await UserGroup.get_or_none(name=name.lower())
-
-
-async def create_group(name: str, manager_id: int) -> Optional[UserGroup]:
-    """새 그룹 생성 (소문자로 변환하여 저장)"""
-    if await get_group(name):
-        raise Exception(f"Group '{name}' already exists")
-    return await UserGroup.create(name=name.lower(), manager_id=manager_id)
 
 
 async def create_or_get_user(email: str) -> User:

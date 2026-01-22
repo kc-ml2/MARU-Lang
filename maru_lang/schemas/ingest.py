@@ -5,11 +5,11 @@ from pydantic import BaseModel, Field
 
 class FileInfo(BaseModel):
     """Individual file information for sync check"""
-    fileName: str = Field(..., description="파일 이름")
-    createdAt: datetime = Field(..., description="파일 생성 시간")
-    relativePath: str = Field(..., description="상대 경로 (프로젝트폴더명/경로/파일명)")
-    size: int = Field(..., description="파일 크기 (bytes)")
-    tempFilePath: Optional[str] = Field(None, description="임시 파일 경로")
+    fileName: str = Field(..., description="File name")
+    createdAt: datetime = Field(..., description="File creation time")
+    absolutePath: str = Field(..., description="Absolute path (used for group hierarchy)")
+    size: int = Field(..., description="File size (bytes)")
+    tempFilePath: Optional[str] = Field(None, description="Temp file path for reading (if different from absolutePath)")
 
 class SyncCheckRequest(BaseModel):
     """Request for checking which files need to be uploaded"""

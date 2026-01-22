@@ -14,7 +14,7 @@ from maru_lang.schemas.chat import DocumentReference
 class AgentResult:
     """Result from individual agent execution"""
     success: bool
-    result: Union[str, AsyncGenerator[str, None]]
+    result: Optional[Union[str, AsyncGenerator[str, None]]] = None
     data: Optional[Dict[str, Any]] = None  # 추가 정보 (선택)
     error: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None

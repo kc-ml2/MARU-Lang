@@ -1,87 +1,71 @@
 """
-CLI 채팅 명령어
+CLI chat command
 """
-import asyncio
-from datetime import datetime
-from typing import Optional, List
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.panel import Panel
 from rich.markdown import Markdown
-from maru_lang.pipelines.base import PipelineMessage, MessageType
+from rich.live import Live
+from maru_lang.pipelines.base import MessageType
 from maru_lang.dependencies.chat import get_chat_pipeline
-from maru_lang.pipelines.chat import ChatPipeline
-from maru_lang.models.agents import AgentSelection, ExecutionResult, ChatResult, ChatProcess
 from maru_lang.models.chat import ChatHistory
 from maru_lang.configs.manager import get_config_manager
-from maru_lang.enums.chat import ChatProcessStep
+from maru_lang.core.relation_db.models.auth import Team
+from maru_lang.services.document import get_group_names_by_team_id
 
 
 console = Console()
 
 
-async def cleanup_resources(chat_pipeline: ChatPipeline):
-    """Clean up resources on exit"""
-    try:
-        if chat_pipeline:
-            # Close LLM clients
-            if hasattr(chat_pipeline, 'agent_executor') and chat_pipeline.agent_executor:
-                from maru_lang.dependencies.llm import get_llm_manager
-                llm_manager = await get_llm_manager()
-                await llm_manager.close_all()
-
-            # Close generate agent LLM client
-            if hasattr(chat_pipeline, 'generate_agent') and chat_pipeline.generate_agent:
-                if hasattr(chat_pipeline.generate_agent, 'llm_client'):
-                    await chat_pipeline.generate_agent.llm_client.close()
-
-            # Close agent selector LLM client
-            if hasattr(chat_pipeline, 'agent_selector') and chat_pipeline.agent_selector:
-                if hasattr(chat_pipeline.agent_selector, 'llm_client'):
-                    await chat_pipeline.agent_selector.llm_client.close()
-
-        console.print("[dim]Resources cleaned up[/dim]")
-    except Exception as e:
-        # Ignore cleanup errors during shutdown
-        pass
-
-
 async def chat_session(
-    forced_groups: List[str],
+    team_name: str,
     max_turns: int = 0
 ):
     """
-    인터랙티브 어드민 채팅 세션
+    Interactive chat session
 
     Args:
-        document_groups: 검색할 문서 그룹 리스트
+        team_name: Team name to access documents
+        max_turns: Maximum number of turns to keep in history
     """
 
-    # 그룹 설정 및 표시
-    if forced_groups == ["__all__"]:
-        display_groups = "ALL"
-    else:
-        display_groups = ", ".join(forced_groups)
+    # Get Team from database
+    team = await Team.get_or_none(name=team_name)
+    if not team:
+        console.print(f"[red]Error: Team '{team_name}' not found[/red]")
+        # Show available teams
+        all_teams = await Team.all().values_list("name", flat=True)
+        if all_teams:
+            console.print("\n[cyan]Available teams:[/cyan]")
+            for t in sorted(all_teams):
+                console.print(f"  - {t}")
+        else:
+            console.print(
+                "[yellow]No teams found. Run 'maru ingest' first to create a team.[/yellow]")
+        return
 
-    # 초기화
+    # Get accessible groups for this team
+    accessible_groups = await get_group_names_by_team_id(team.id)
+
+    # Initialize
     console.print(Panel.fit(
-        "[bold cyan]🤖 LLM Chatbot Admin CLI[/bold cyan]\n"
-        f"[yellow]Document Groups: {display_groups}[/yellow]\n"
+        "[bold cyan]MARU Chat CLI[/bold cyan]\n"
+        f"[yellow]Team: {team_name}[/yellow]\n"
+        f"[dim]Accessible groups: {len(accessible_groups)}[/dim]\n"
         "Type 'exit' or 'quit' to end the session\n"
-        "Type 'clear' to clear the screen\n"
-        "Type 'history' to view conversation history",
+        "Type 'clear' to clear the screen",
         border_style="cyan"
     ))
 
     console.print(
-        f"[green]✓ Admin session started (Groups: {display_groups})[/green]\n")
+        f"[green]Session started (Team: {team_name})[/green]\n")
 
     # ConfigManager 초기화
     console.print("[cyan]📋 Initializing configurations...[/cyan]")
     config_manager = get_config_manager()
 
     try:
-        config_results = config_manager.load_all()
+        config_manager.load_all()
         config_status = config_manager.validate_all()
 
         # Always show configuration summary
@@ -126,207 +110,114 @@ async def chat_session(
             f"[cyan]📊 Active LLM servers: {len(enabled_llms)}/{total_llms} - {llm_display}[/cyan]")
     else:
         console.print("[yellow]⚠️  No enabled LLM servers found[/yellow]")
-        console.print("[dim]Chat will return a message until LLM servers are configured.[/dim]")
+        console.print(
+            "[dim]Chat will return a message until LLM servers are configured.[/dim]")
 
     # ChatManager 가져오기
     console.print("[cyan]🤖 Initializing chat manager...[/cyan]")
-    chat_pipeline = await get_chat_pipeline()
+    chat_pipeline = get_chat_pipeline()
     if not chat_pipeline:
         console.print("[red]❌ Error: Chat manager not available[/red]")
         return
 
     console.print("[green]✓ Chat manager ready[/green]")
 
-    # Available agents from selector
-    if hasattr(chat_pipeline, 'agent_selector') and chat_pipeline.agent_selector:
-        available_agents = chat_pipeline.agent_selector._get_available_agents()
-        total_agents = len(available_agents)
-        agent_names = [agent['name'] for agent in available_agents[:3]]
-        agent_display = ", ".join(agent_names)
-        if total_agents > 3:
-            agent_display += f" (+{total_agents - 3} more)"
+    # Show available agents
+    agent_names = chat_pipeline.get_available_agent_names()
+    if agent_names:
         console.print(
-            f"[cyan]🤖 Available agents: {total_agents} - {agent_display}[/cyan]")
+            f"[cyan]Available agents: {', '.join(agent_names)}[/cyan]")
 
-    # 세션 정보
+    # Session info
     chat_history = ChatHistory(max_turns=max_turns)
 
-    # 그룹 검증 및 하위 그룹 포함 (세션 시작 시 한 번만)
-    from maru_lang.core.relation_db.models.documents import DocumentGroup, DocumentGroupInclusion
-    from maru_lang.services.document import get_all_descendant_group_names
-
-    if forced_groups == ["__all__"]:
-        # 모든 최상위 그룹 가져오기
-        top_level_groups = await DocumentGroup.filter(
-            included_by__isnull=True
-        ).distinct().values_list("name", flat=True)
-        top_level_list = list(top_level_groups)
-
-        # 하위 그룹 포함하여 모든 그룹 가져오기
-        actual_forced_groups = await get_all_descendant_group_names(top_level_list)
-        console.print(f"[dim]✓ Searching across {len(top_level_list)} top-level group(s) (total: {len(actual_forced_groups)} including subgroups)[/dim]")
-    else:
-        # 특정 그룹이 명시된 경우: 존재하는 그룹인지 검증
-        existing_groups = await DocumentGroup.filter(
-            name__in=forced_groups
-        ).values_list("name", flat=True)
-        existing_groups = list(existing_groups)
-
-        invalid_groups = set(forced_groups) - set(existing_groups)
-        if invalid_groups:
-            console.print(f"[red]❌ Invalid groups: {', '.join(invalid_groups)}[/red]")
-
-            # 사용 가능한 모든 최상위 그룹 표시
-            all_top_level = await DocumentGroup.filter(
-                included_by__isnull=True
-            ).distinct().values_list("name", flat=True)
-
-            if all_top_level:
-                console.print("\n[cyan]Available top-level groups:[/cyan]")
-                for group in sorted(all_top_level):
-                    console.print(f"  - {group}")
-            else:
-                console.print("[yellow]No document groups found in database[/yellow]")
-            return  # 세션 종료
-
-        # 하위 그룹 포함하여 모든 그룹 가져오기
-        actual_forced_groups = await get_all_descendant_group_names(existing_groups)
-        if len(existing_groups) < len(forced_groups):
-            console.print(f"[yellow]⚠️  Some groups not found - using {len(existing_groups)} valid groups[/yellow]")
-        console.print(f"[dim]✓ Using groups: {', '.join(existing_groups)} (total: {len(actual_forced_groups)} including subgroups)[/dim]")
-
     try:
-        # 채팅 루프
+        # Chat loop
         while True:
             try:
-                # 사용자 입력
+                # User input
                 question = Prompt.ask("\n[bold blue]You[/bold blue]")
 
-                # 특수 명령어 처리
+                # Special commands
                 if question.lower() in ['exit', 'quit', 'q']:
-                    console.print("[yellow]👋 Goodbye![/yellow]")
+                    console.print("[yellow]Goodbye![/yellow]")
                     break
 
                 if question.lower() == 'clear':
                     console.clear()
                     console.print(Panel.fit(
-                        "[bold cyan]🤖 LLM Chatbot CLI[/bold cyan]",
+                        "[bold cyan]MARU Chat CLI[/bold cyan]",
                         border_style="cyan"
                     ))
                     continue
 
-                # 채팅 처리 (yield 방식)
+                # Process chat
                 answer = ""
-                result: ChatResult = None
+                logs = []
 
-                with console.status("[cyan]🤔 Selecting agents...[/cyan]", spinner="dots") as status:
-                    async for step_result in chat_pipeline.process_stream(
+                with console.status("[cyan]Processing...[/cyan]", spinner="dots"):
+                    async for msg in chat_pipeline.run(
+                        team=team,
                         question=question,
                         chat_history=chat_history,
-                        forced_groups=actual_forced_groups
                     ):
+                        if msg.message_type == MessageType.INFO:
+                            logs.append(msg.message)
+                            if msg.data and 'selected_agents' in msg.data:
+                                agents = msg.data['selected_agents']
+                                if agents:
+                                    logs.append(f"Selected: {', '.join(agents)}")
 
-                        if isinstance(step_result, PipelineMessage):
-                            if step_result.message_type == MessageType.INFO:
-                                console.print(
-                                    f"[dim]  → {step_result.message}[/dim]")
-                            elif step_result.message_type == MessageType.ERROR:
-                                console.print(f"[red]❌ {step_result.message}[/red]")
-                            elif step_result.message_type == MessageType.WARNING:
-                                console.print(f"[yellow]  ⚠️ {step_result.message}[/yellow]")
-                            continue
-                        step = step_result.step
+                        elif msg.message_type == MessageType.NORMAL:
+                            if msg.data == "answer":
+                                answer = msg.message
 
-                        # 단계별 상태 표시
-                        if step == ChatProcessStep.AGENT_SELECTION:
-                            selection: AgentSelection = step_result.data
-                            if not selection.selected_agents:
-                                console.print(
-                                    "[dim]  → No agents selected[/dim]")
-                                console.print(
-                                    f"[dim]  → {selection.reasoning}[/dim]")
-                                continue
+                        elif msg.message_type == MessageType.ERROR:
+                            logs.append(f"[red]Error: {msg.message}[/red]")
 
-                            selected_agents = selection.selected_agents
-                            # 더 눈에 띄게 에이전트 선택 표시
-                            agent_display = ' | '.join(
-                                [f"[bold yellow]{agent}[/bold yellow]" for agent in selected_agents])
-                            console.print(
-                                f"  [green]✓[/green] Selected Agents: {agent_display}")
-                            console.print(
-                                f"[dim]  → {selection.reasoning}[/dim]")
-                            status.update(
-                                "[cyan]⚙️  Executing agents...[/cyan]")
+                        elif msg.message_type == MessageType.WARNING:
+                            logs.append(f"[yellow]{msg.message}[/yellow]")
 
-
-                        elif step == ChatProcessStep.AGENT_EXECUTION:
-                            execution_data: ExecutionResult = step_result.data
-                            agents_executed = list(
-                                execution_data.agent_results.keys())
-
-                            if agents_executed:
-                                # Check if execution was successful
-                                if execution_data.success:
-                                    console.print(
-                                        f"[dim]  → [green]✓[/green] Completed: {', '.join(agents_executed)}[/dim]")
-                                else:
-                                    # Show failed agents
-                                    failed_agents = [name for name in agents_executed
-                                                   if not execution_data.agent_results[name].success]
-                                    if failed_agents:
-                                        console.print(
-                                            f"[dim]  → [red]✗[/red] Failed: {', '.join(failed_agents)}[/dim]")
-                                    # Show successful agents if any
-                                    success_agents = [name for name in agents_executed
-                                                    if execution_data.agent_results[name].success]
-                                    if success_agents:
-                                        console.print(
-                                            f"[dim]  → [green]✓[/green] Completed: {', '.join(success_agents)}[/dim]")
-
-                            status.update(
-                                "[cyan]✍️  Generating answer...[/cyan]")
-
-                        elif step == ChatProcessStep.ANSWER_GENERATION:
-                            answer = step_result.data.answer
-
-                        elif step == ChatProcessStep.COMPLETED:
-                            result = step_result.data
+                        elif msg.message_type == MessageType.COMPLETE:
                             break
 
-                # 결과 처리
+                # Display thinking process
+                if logs:
+                    console.print(Panel(
+                        "\n".join(logs),
+                        title="[dim]Thinking[/dim]",
+                        border_style="dim",
+                    ))
+
+                # Display result
                 if answer:
-                    # 답변 출력
                     console.print("\n[bold green]Assistant:[/bold green]")
 
-                    # Markdown 형식으로 답변 렌더링
-                    md = Markdown(answer)
-                    console.print(md)
+                    if isinstance(answer, str):
+                        # Direct string response
+                        md = Markdown(answer)
+                        console.print(md)
+                        final_answer = answer
+                    else:
+                        # Streaming response (AsyncGenerator)
+                        final_answer = ""
+                        with Live(console=console, refresh_per_second=10) as live:
+                            async for chunk in answer:
+                                final_answer += chunk
+                                live.update(Markdown(final_answer))
 
-                    # 참조 문서 표시 (있는 경우)
-                    # if result.get("documents"):
-                    #     console.print(
-                    #         f"\n[dim]📚 Referenced {len(result['documents'])} documents[/dim]")
-
-                    # 대화 기록 저장
-                    chat_history.add_turn(question, answer)
+                    # Save to history
+                    chat_history.add_turn(question, final_answer)
                 else:
-                    console.print("[red]❌ Failed to generate response[/red]")
-
-                # TODO
-                if result:
-                    pass
-                    # console.print(f"[dim]📚 Referenced {len(result.documents)} documents[/dim]")
+                    console.print("[red]Failed to generate response[/red]")
 
             except KeyboardInterrupt:
                 console.print(
-                    "\n[yellow]⚠️  Interrupted. Type 'exit' to quit.[/yellow]")
+                    "\n[yellow]Interrupted. Type 'exit' to quit.[/yellow]")
                 continue
             except Exception as e:
-                console.print(f"\n[red]❌ Error: {str(e)}[/red]")
+                console.print(f"\n[red]Error: {str(e)}[/red]")
                 continue
 
     except (KeyboardInterrupt, SystemExit):
-        console.print("\n[yellow]👋 Goodbye![/yellow]")
-    finally:
-        # Cleanup on exit
-        await cleanup_resources(chat_pipeline)
+        console.print("\n[yellow]Goodbye![/yellow]")

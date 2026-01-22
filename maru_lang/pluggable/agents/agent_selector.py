@@ -143,9 +143,6 @@ class AgentSelector:
 
                 # Check if we got a valid selection
                 if result and result.selected_agents:
-                    if idx > 0:
-                        print(
-                            f"[INFO Selector] Fallback to LLM '{client.config.name}' succeeded")
                     return result
 
                 # If parse returned None or empty, try next LLM
@@ -153,13 +150,9 @@ class AgentSelector:
 
             except Exception as e:
                 last_error = str(e)
-                if idx < len(clients) - 1:
-                    print(
-                        f"[WARN Selector] LLM '{client.config.name}' failed, trying next LLM: {e}")
                 continue
 
         # All LLMs failed
-        print(f"[ERROR Selector] All LLMs failed. Last error: {last_error}")
         return None
 
     def _build_messages(
@@ -207,12 +200,10 @@ class AgentSelector:
         """Parse LLM response and create AgentSelection"""
         # Check for tool calls in response
         if not response or 'tool_calls' not in response:
-            print(f"[DEBUG Selector] No tool calls in response: {response}")
             return None
 
         tool_calls = response.get('tool_calls', [])
         if not tool_calls:
-            print(f"[DEBUG Selector] Empty tool calls list")
             return None
 
         # Parse tool call arguments

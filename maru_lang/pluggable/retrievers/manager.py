@@ -4,20 +4,15 @@ Retriever: 검색 로직 관리 (VectorDB + Embedder + Reranker 조합)
 import asyncio
 import logging
 import numpy as np
-from collections import defaultdict
 from typing import List, Optional, Tuple, Dict
-from maru_lang.enums.documents import SyncMode
 from maru_lang.pluggable.embedders import Embedder, get_embedder
 from maru_lang.core.vector_db.factory import get_vector_db
 from maru_lang.core.vector_db.base import RetrieveDocument, VectorDB
-from maru_lang.core.vector_db.maru_sync import MaruSyncVectorDB
 from maru_lang.configs import get_config_manager
 from maru_lang.pluggable.rerankers import get_reranker, Reranker
 from maru_lang.pluggable.models.reranker import RerankerConfig
 from maru_lang.pluggable.models.rag import RagConfig
-from maru_lang.services.document import get_all_descendant_groups
 from maru_lang.pluggable.agents.agent_factory import AgentFactory
-from maru_lang.core.relation_db.models.documents import DocumentGroup
 
 
 logger = logging.getLogger(__name__)
@@ -79,7 +74,7 @@ class Retriever:
         query: str,
         top_k: int,
         embedding_model: str,
-        document_groups: Optional[List[str]] = None,
+        team_ids: list[int],
         search_method: str = "vector",
         **kwargs,
     ) -> List[RetrieveDocument]:
@@ -90,83 +85,33 @@ class Retriever:
             query: 검색 쿼리
             top_k: 반환할 결과 개수
             embedding_model: 임베딩 모델 이름
-            document_groups: 검색할 문서 그룹 리스트
+            team_ids: 검색할 Team ID 리스트
             search_method: 검색 방법 ("vector" or "hybrid")
             **kwargs: 추가 검색 파라미터
 
         Returns:
             검색 결과 리스트
         """
-        # 방어: document_groups가 없으면 검색하지 않음 (보안)
-        if not document_groups:
-            print("⚠️ No document_groups provided - refusing to search all documents")
+        if not team_ids:
+            print("⚠️ No team_ids provided - refusing to search all documents")
             return []
-
-        # 1. 그룹 이름으로부터 version_ids 추출
-        all_groups = await get_all_descendant_groups(document_groups)
-
-        if not all_groups:
-            print("⚠️ No valid groups found after expansion")
-            return []
-
-        # maru sync group 인지, server group 인지 확인하여 dict 로 저장
-        server_db_groups = []
-        maru_sync_group_map = defaultdict(list)
-        for group in all_groups:
-            if group.sync_mode == SyncMode.SERVER:
-                server_db_groups.append(group)
-            else:
-                maru_sync_group_map[group.manager_id].append(group)
 
         query_embedding = self.embedder.encode([query], embedding_model)[0]
-        all_documents = []
 
-        # 2. Server VDB 검색
-        server_db_version_ids = [
-            group.version_id
-            for group in server_db_groups
-            if group.version_id]
-
-        if server_db_version_ids:
-            try:
-                server_results = await self._search_vdb(
-                    self._server_vdb,
-                    query,
-                    query_embedding,
-                    top_k,
-                    server_db_version_ids,
-                    search_method,
-                    is_async=False,  # Server VDB는 동기
-                    **kwargs
-                )
-                all_documents.extend(server_results)
-            except Exception as e:
-                print(f"Error during server VDB search: {e}")
-
-        # 3. MaruSync VDB 검색 (클라이언트별)
         try:
-            for manager_id, groups in maru_sync_group_map.items():
-                version_ids = [group.version_id for group in groups if group.version_id]
-                if not version_ids:
-                    continue
-
-                vdb = MaruSyncVectorDB(manager_id)
-                client_results = await self._search_vdb(
-                    vdb,
-                    query,
-                    query_embedding,
-                    top_k,
-                    version_ids,
-                    search_method,
-                    is_async=True,  # MaruSync VDB는 비동기
-                    **kwargs
-                )
-                all_documents.extend(client_results)
-
+            results = await self._search_vdb(
+                self._server_vdb,
+                query,
+                query_embedding,
+                top_k,
+                team_ids,
+                search_method,
+                **kwargs
+            )
+            return results
         except Exception as e:
-            print(f"Error during MaruSync VDB search: {e}")
-
-        return all_documents
+            print(f"Error during VDB search: {e}")
+            return []
 
     async def _search_vdb(
         self,
@@ -174,9 +119,8 @@ class Retriever:
         query: str,
         query_embedding: list[float],
         top_k: int,
-        version_ids: list[str],
+        team_ids: list[int],
         search_method: str,
-        is_async: bool = False,
         **kwargs
     ) -> List[RetrieveDocument]:
         """
@@ -187,31 +131,23 @@ class Retriever:
             query: 검색 쿼리
             query_embedding: 쿼리 임베딩
             top_k: 반환할 결과 개수
-            version_ids: 검색할 버전 ID 리스트
+            team_ids: Team ID 리스트 for filtering
             search_method: 검색 방법 ("vector" or "hybrid")
-            is_async: VDB 메서드가 async인지 여부
             **kwargs: 추가 검색 파라미터
 
         Returns:
             검색 결과 리스트
         """
         if search_method == "vector":
-            if is_async:
-                return await vdb.similarity_search(query_embedding, top_k, version_ids, **kwargs)
-            else:
-                return await asyncio.to_thread(
-                    vdb.similarity_search, query_embedding, top_k, version_ids, **kwargs
-                )
+            return await asyncio.to_thread(
+                vdb.similarity_search, query_embedding, top_k, team_ids, **kwargs
+            )
         elif search_method == "hybrid":
-            if is_async:
-                return await vdb.hybrid_search(query, query_embedding, top_k, version_ids, **kwargs)
-            else:
-                return await asyncio.to_thread(
-                    vdb.hybrid_search, query, query_embedding, top_k, version_ids, **kwargs
-                )
+            return await asyncio.to_thread(
+                vdb.hybrid_search, query, query_embedding, top_k, team_ids, **kwargs
+            )
         else:
             raise ValueError(f"Unknown search method: {search_method}")
-
 
     def should_rerank(self) -> bool:
         """Check if reranking should be performed"""
@@ -315,7 +251,8 @@ class Retriever:
 
             return reranked_results
         except Exception as e:
-            logger.error(f"Model-based reranking failed: {e}. Returning original results.")
+            logger.error(
+                f"Model-based reranking failed: {e}. Returning original results.")
             return results
 
     async def _rerank_with_agent(
@@ -408,7 +345,8 @@ class Retriever:
         """
         try:
             # 대표 벡터들 가져오기
-            representative_vectors = self._get_representative_vectors(embedding_model)
+            representative_vectors = self._get_representative_vectors(
+                embedding_model)
             if representative_vectors is None:
                 # 임베딩 실패 시 기본 로직으로 폴백
                 return self._fallback_weight_logic(query)
@@ -439,7 +377,7 @@ class Retriever:
             return self._fallback_weight_logic(query)
 
     def _get_representative_vectors(
-        self, 
+        self,
         embedding_model: str
     ) -> Optional[dict]:
         """대표 쿼리 타입 벡터들을 초기화하거나 캐시된 값을 반환"""
@@ -468,7 +406,8 @@ class Retriever:
             vec_a = np.array(vec_a)
             vec_b = np.array(vec_b)
             return float(
-                np.dot(vec_a, vec_b) / (np.linalg.norm(vec_a) * np.linalg.norm(vec_b))
+                np.dot(vec_a, vec_b) /
+                (np.linalg.norm(vec_a) * np.linalg.norm(vec_b))
             )
         except Exception:
             return 0.0
@@ -504,9 +443,11 @@ class Retriever:
                     for query_type, weights in rag_config.retriever.query_type_weights.items()
                 }
             else:
-                logger.info("RAG config not found or no query_type_weights specified, using default weights")
+                logger.info(
+                    "RAG config not found or no query_type_weights specified, using default weights")
         except Exception as e:
-            logger.warning(f"Failed to load query type weights from config: {e}, using default weights")
+            logger.warning(
+                f"Failed to load query type weights from config: {e}, using default weights")
 
         # 기본값
         return DEFAULT_QUERY_TYPE_WEIGHTS
@@ -522,9 +463,11 @@ class Retriever:
                 logger.debug("Loaded representative queries from RAG config")
                 return rag_config.retriever.representative_queries
             else:
-                logger.info("RAG config not found or no representative_queries specified, using default queries")
+                logger.info(
+                    "RAG config not found or no representative_queries specified, using default queries")
         except Exception as e:
-            logger.warning(f"Failed to load representative queries from config: {e}, using default queries")
+            logger.warning(
+                f"Failed to load representative queries from config: {e}, using default queries")
 
         # 기본값
         return DEFAULT_REPRESENTATIVE_QUERIES
@@ -538,12 +481,15 @@ class Retriever:
             rag_config = config_manager.get_rag_config()
 
             if rag_config and rag_config.retriever.fallback_logic:
-                logger.debug(f"Loaded similarity threshold from RAG config: {rag_config.retriever.fallback_logic.similarity_threshold}")
+                logger.debug(
+                    f"Loaded similarity threshold from RAG config: {rag_config.retriever.fallback_logic.similarity_threshold}")
                 return rag_config.retriever.fallback_logic.similarity_threshold
             else:
-                logger.info(f"RAG config not found or no fallback_logic specified, using default threshold: {DEFAULT_SIMILARITY_THRESHOLD}")
+                logger.info(
+                    f"RAG config not found or no fallback_logic specified, using default threshold: {DEFAULT_SIMILARITY_THRESHOLD}")
         except Exception as e:
-            logger.warning(f"Failed to load similarity threshold from config: {e}, using default: {DEFAULT_SIMILARITY_THRESHOLD}")
+            logger.warning(
+                f"Failed to load similarity threshold from config: {e}, using default: {DEFAULT_SIMILARITY_THRESHOLD}")
 
         # 기본값
         return DEFAULT_SIMILARITY_THRESHOLD
@@ -567,9 +513,11 @@ class Retriever:
                     'long_query_weights': fallback.weights.get('long_query', fallback.weights.get('long_query')).to_tuple() if 'long_query' in fallback.weights else (0.7, 0.3),
                 }
             else:
-                logger.info("RAG config not found or no fallback_logic specified, using default fallback config")
+                logger.info(
+                    "RAG config not found or no fallback_logic specified, using default fallback config")
         except Exception as e:
-            logger.warning(f"Failed to load fallback config: {e}, using default fallback config")
+            logger.warning(
+                f"Failed to load fallback config: {e}, using default fallback config")
 
         # 기본값
         return DEFAULT_FALLBACK_CONFIG
