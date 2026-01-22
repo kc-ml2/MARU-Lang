@@ -1,10 +1,12 @@
-from typing import List, Optional
+from typing import Optional, List
 from maru_lang.configs.manager import get_config_manager
 from maru_lang.pipelines.base import BasePipeline, PipelineMessage
 from maru_lang.models.agents import ExecutionContext
 from maru_lang.pluggable.agents.agent_selector import AgentSelector
 from maru_lang.pluggable.agents.agent_executor import AgentExecutor
 from maru_lang.models.chat import ChatHistory
+from maru_lang.core.relation_db.models.auth import Team
+from maru_lang.services.document import get_group_names_by_team_id
 
 
 class UnExpectedException(Exception):
@@ -30,11 +32,15 @@ class ChatPipeline(BasePipeline):
         self.agent_selector = agent_selector
         self.agent_executor = agent_executor
 
+    def get_available_agent_names(self) -> List[str]:
+        """Get list of available agent names"""
+        return self.agent_selector.get_enabled_agents()
+
     async def process(
         self,
+        team: Team,
         question: str,
         chat_history: Optional[ChatHistory] = None,
-        forced_groups: List[str] = []
     ):
         """
         Chat pipeline process (큐 기반)
@@ -62,6 +68,9 @@ class ChatPipeline(BasePipeline):
                 # Agent selection failed
                 raise AgentSelectionFailedException("Agent selection failed")
 
+            # Get accessible groups for this team
+            accessible_groups = await get_group_names_by_team_id(team.id)
+
             await self.queue.put(PipelineMessage.info(
                 message=selection.reasoning,
                 data=selection.to_dict(),
@@ -74,7 +83,8 @@ class ChatPipeline(BasePipeline):
                     progress_queue=self.queue,
                     chat_history=chat_history,
                     metadata={
-                        "forced_groups": forced_groups,
+                        "team_ids": [team.id],  # List to support multi-team search
+                        "accessible_groups": accessible_groups,
                     })
 
                 execution_result = await self.agent_executor.execute(

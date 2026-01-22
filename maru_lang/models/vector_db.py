@@ -3,9 +3,10 @@ VectorDB 설정 모델
 """
 from dataclasses import dataclass, field
 from typing import Union
-
+from maru_lang.configs.system_config import get_system_config
 
 # ========== VectorDB Config (상속 기반) ==========
+
 
 @dataclass
 class BaseVectorDBConfig:
@@ -23,7 +24,6 @@ class ChromaDBConfig(BaseVectorDBConfig):
     @classmethod
     def from_settings(cls) -> "ChromaDBConfig":
         """Settings로부터 기본 ChromaDB 설정 생성"""
-        from maru_lang.configs.system_config import get_system_config
         config = get_system_config()
         return cls(
             persist_dir=config.vector_db.chroma.get_persist_dir_absolute(),
@@ -44,7 +44,6 @@ class MilvusConfig(BaseVectorDBConfig):
     @classmethod
     def from_settings(cls) -> "MilvusConfig":
         """Settings로부터 기본 Milvus 설정 생성"""
-        from maru_lang.configs.system_config import get_system_config
         config = get_system_config()
         return cls(
             host=config.vector_db.milvus.host,
@@ -65,7 +64,6 @@ class LanceDBConfig(BaseVectorDBConfig):
     @classmethod
     def from_settings(cls) -> "LanceDBConfig":
         """Settings로부터 기본 LanceDB 설정 생성"""
-        from maru_lang.configs.system_config import get_system_config
         config = get_system_config()
         return cls(
             persist_dir=config.vector_db.lance.get_persist_dir_absolute(),
@@ -92,7 +90,6 @@ def get_vector_db_config_from_settings() -> Union[ChromaDBConfig, MilvusConfig, 
     Raises:
         ValueError: 지원하지 않는 VectorDB 타입인 경우
     """
-    from maru_lang.configs.system_config import get_system_config
     config = get_system_config()
 
     db_type = config.vector_db.type.lower()

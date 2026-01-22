@@ -26,6 +26,42 @@ class KnowledgeSearchAgent(BaseAgent):
         self.intent_extractor = None
         self.keyword_extractor = None
 
+    async def _setup(self) -> None:
+        """Initialize knowledge search capabilities"""
+        # Initialize VectorDB (system_config.yaml의 vector_db.type에 따라 자동 선택)
+        # Initialize preprocessing agents
+        config_manager = get_config_manager()
+        config_manager.ensure_loaded()
+
+        factory = AgentFactory()
+
+        # Initialize Retriever (새로운 Retriever 사용)
+        self.retriever = get_retriever()
+        # Determine whether any groups are configured; if not, disable group classifier
+        self.rag_config = config_manager.get_rag_config()
+
+        # Create and initialize group_classifier
+        group_classifier_config = config_manager.get_agent('group_classifier')
+        self.group_classifier = factory.create_agent(
+            'group_classifier', group_classifier_config)
+        if self.group_classifier:
+            await self.group_classifier.initialize()
+
+        # Create and initialize intent_extractor
+        intent_extractor_config = config_manager.get_agent('intent_extractor')
+        self.intent_extractor = factory.create_agent(
+            'intent_extractor', intent_extractor_config)
+        if self.intent_extractor:
+            await self.intent_extractor.initialize()
+
+        # Create and initialize keyword_extractor
+        keyword_extractor_config = config_manager.get_agent(
+            'keyword_extractor')
+        self.keyword_extractor = factory.create_agent(
+            'keyword_extractor', keyword_extractor_config)
+        if self.keyword_extractor:
+            await self.keyword_extractor.initialize()
+
     async def execute(
         self,
         question: str,
@@ -47,173 +83,144 @@ class KnowledgeSearchAgent(BaseAgent):
             AgentResult with search results in data field
         """
 
+        # Check if accessible_groups exists in metadata
+        accessible_groups = metadata.get('accessible_groups', {})
 
-        try:
-            # Check if forced_groups exists in metadata
-            forced_groups = metadata.get('forced_groups', {})
-
-            # forced_groups가 없으면 검색할 수 없으므로 바로 리턴
-            if not forced_groups:
-                await self.log_warning("No accessible document groups - skipping knowledge search")
-                return AgentResult(
-                    success=True,
-                    result="No document groups available for search.",
-                    metadata={}
-                )
-
-            retrive_method = self.rag_config.retriever.default_method
-            forced_groups_message = f"Accessible groups in this context: {forced_groups}"
-            await self.log_info(forced_groups_message)
-            await self.log_info(f"Retrieve method: '{retrive_method}'")
-            # Step 1: Execute preprocessing agents in parallel
-            preprocessing_results = await self._execute_preprocessing_agents(
-                question, 
-                metadata,
-                progress_queue,
-                **kwargs
-            )
-
-            group_agent_result = preprocessing_results.get('group_classifier')
-            default_embedding_model = group_agent_result.data.get('default_embedding_model')
-
-            if group_agent_result.success:
-                # 그룹 분류 결과 사용
-                selected_groups = group_agent_result.data.get('selected_groups')
-                total_retrieval_count = group_agent_result.data.get('total_retrieval_count')
-            else:
-                # Use default_k from RAG config instead of 0
-                total_retrieval_count = self.rag_config.retriever.default_k
-                confidence = group_agent_result.data.get('confidence')
-                reasoning = group_agent_result.data.get('reasoning')
-                await self.log_info(f"Group Classifier: Selected groups is None, using available groups")
-                if confidence > 0.0:
-                    await self.log_info(f"Group Classifier: Confidence: {confidence}")
-                await self.log_info(f"Group Classifier: Reasoning: {reasoning}")
-
-                selected_groups = {
-                    group: {
-                        'embedding_model': default_embedding_model,
-                        'retrieval_count': round(total_retrieval_count / len(forced_groups))
-                    }
-                    for group in forced_groups
-                }
-            
-            intent_agent_result = preprocessing_results.get('intent_extractor', None)
-
-            if intent_agent_result and intent_agent_result.success:
-                search_query = intent_agent_result.data.get('rewritten_question')
-                await self.log_info(f"Rewritten query: {search_query}")
-            else:
-                search_query = question
-                await self.log_warning("No intent extraction result, using original question")
-
-            keyword_agent_result = preprocessing_results.get('keyword_extractor', None)
-            if keyword_agent_result and keyword_agent_result.success:
-                search_keywords = keyword_agent_result.data.get('extracted_keywords')
-                await self.log_info(f"Extracted keywords: {search_keywords}")
-            else:
-                search_keywords = []
-                await self.log_warning("No keywords extracted, fallback to vector-only search")
-                # 오류 나면 vector 로만
-                retrive_method = "vector"
-
-
-            # forced_groups 기반으로만 검색 (selected_groups가 없으면 검색 안함)
-            if selected_groups:
-                internal_results = await self._search_internal_documents(
-                    search_query,
-                    search_keywords,
-                    selected_groups,
-                    total_retrieval_count,
-                    retrive_method,
-                    default_embedding_model,
-                )
-
-                # Send pre-reranking results to progress queue
-                pre_rerank_summary = self._format_search_results_summary(
-                    internal_results,
-                    "Search results before reranking"
-                )
-                await self.log_info(pre_rerank_summary)
-
-                # rerank internal results
-                if self.retriever.should_rerank():
-                    reranked_results = await self.retriever.rerank_results(
-                        question,
-                        internal_results,
-                    )
-                    internal_results = reranked_results
-
-                    # Send post-reranking results to progress queue
-                    post_rerank_summary = self._format_search_results_summary(
-                        reranked_results,
-                        "Search results after reranking"
-                    )
-                    await self.log_info(post_rerank_summary)
-            else:
-                internal_results = {}
-                await self.log_warning("No accessible document groups - skipping knowledge search")
-
-            internal_context = self._format_internal_results(internal_results)
-            internal_results_count = sum(len(docs) for docs in internal_results.values())
-
-            response_text = await self._generate_response(
-                question,
-                internal_context,
-                kwargs.get('chat_history', None)
-            )
-
-            return AgentResult(
-                success=True,
-                result=response_text,  # 주요 응답 텍스트
-                data={
-                    "selected_groups": selected_groups,
-                    "internal_results": internal_results,
-                    "internal_results_count": internal_results_count,
-                }
-            )
-
-        except Exception as e:
-            error_msg = f"Knowledge search failed: {str(e)}"
+        # accessible_groups가 없으면 검색할 수 없으므로 바로 리턴
+        if not accessible_groups:
+            await self.log_warning("No accessible document groups - skipping knowledge search")
             return AgentResult(
                 success=False,
-                result="",
-                error=error_msg
+                result="No document groups available for search.",
             )
 
+        retrive_method = self.rag_config.retriever.default_method
+        accessible_groups_message = f"Accessible groups in this context: {accessible_groups}"
+        await self.log_info(accessible_groups_message)
+        await self.log_info(f"Retrieve method: '{retrive_method}'")
+        # Step 1: Execute preprocessing agents in parallel
+        preprocessing_results = await self._execute_preprocessing_agents(
+            question,
+            metadata,
+            progress_queue,
+            **kwargs
+        )
 
-    async def _setup(self) -> None:
-        """Initialize knowledge search capabilities"""
-        # Initialize VectorDB (system_config.yaml의 vector_db.type에 따라 자동 선택)
-        # Initialize preprocessing agents
-        config_manager = get_config_manager()
-        config_manager.ensure_loaded()
+        group_agent_result = preprocessing_results.get('group_classifier')
+        default_embedding_model = group_agent_result.data.get(
+            'default_embedding_model')
 
-        factory = AgentFactory()
+        if group_agent_result.success:
+            # 그룹 분류 결과 사용
+            selected_groups = group_agent_result.data.get(
+                'selected_groups')
+            total_retrieval_count = group_agent_result.data.get(
+                'total_retrieval_count')
+        else:
+            # Use default_k from RAG config instead of 0
+            total_retrieval_count = self.rag_config.retriever.default_k
+            confidence = group_agent_result.data.get('confidence')
+            reasoning = group_agent_result.data.get('reasoning')
+            await self.log_info(f"Group Classifier: Selected groups is None, using available groups")
+            if confidence > 0.0:
+                await self.log_info(f"Group Classifier: Confidence: {confidence}")
+            await self.log_info(f"Group Classifier: Reasoning: {reasoning}")
 
-        # Initialize Retriever (새로운 Retriever 사용)
-        self.retriever = get_retriever()
-        # Determine whether any groups are configured; if not, disable group classifier
-        self.rag_config = config_manager.get_rag_config()
-    
-        # Create and initialize group_classifier
-        group_classifier_config = config_manager.get_agent('group_classifier')
-        self.group_classifier = factory.create_agent('group_classifier', group_classifier_config)
-        if self.group_classifier:
-            await self.group_classifier.initialize()
+            selected_groups = {
+                group: {
+                    'embedding_model': default_embedding_model,
+                    'retrieval_count': round(total_retrieval_count / len(accessible_groups))
+                }
+                for group in accessible_groups
+            }
 
-        # Create and initialize intent_extractor
-        intent_extractor_config = config_manager.get_agent('intent_extractor')
-        self.intent_extractor = factory.create_agent('intent_extractor', intent_extractor_config)
-        if self.intent_extractor:
-            await self.intent_extractor.initialize()
+        intent_agent_result = preprocessing_results.get(
+            'intent_extractor', None)
 
-        # Create and initialize keyword_extractor
-        keyword_extractor_config = config_manager.get_agent('keyword_extractor')
-        self.keyword_extractor = factory.create_agent('keyword_extractor', keyword_extractor_config)
-        if self.keyword_extractor:
-            await self.keyword_extractor.initialize()
+        if intent_agent_result and intent_agent_result.success:
+            search_query = intent_agent_result.data.get(
+                'rewritten_question')
+            await self.log_info(f"Rewritten query: {search_query}")
+        else:
+            search_query = question
+            await self.log_warning("No intent extraction result, using original question")
 
+        keyword_agent_result = preprocessing_results.get(
+            'keyword_extractor', None)
+        if keyword_agent_result and keyword_agent_result.success:
+            search_keywords = keyword_agent_result.data.get(
+                'extracted_keywords')
+            await self.log_info(f"Extracted keywords: {search_keywords}")
+        else:
+            search_keywords = []
+            await self.log_warning("No keywords extracted, fallback to vector-only search")
+            # 오류 나면 vector 로만
+            retrive_method = "vector"
+
+        # Get team_ids from metadata for VectorDB filtering
+        team_ids = metadata.get('team_ids', [])
+        if not team_ids:
+            await self.log_error("No team_ids in metadata - cannot search documents")
+            return AgentResult(
+                success=False,
+                result="Missing team_ids for search.",
+            )
+
+        # accessible_groups 기반으로만 검색 (selected_groups가 없으면 검색 안함)
+        if selected_groups:
+            internal_results = await self._search_internal_documents(
+                question=search_query,
+                search_keywords=search_keywords,
+                team_ids=team_ids,
+                total_retrieval_count=total_retrieval_count,
+                retrive_method=retrive_method,
+                default_embedding_model=default_embedding_model,
+            )
+
+            # Send pre-reranking results to progress queue
+            pre_rerank_summary = self._format_search_results_summary(
+                internal_results,
+                "Search results before reranking"
+            )
+            await self.log_info(pre_rerank_summary)
+
+            # rerank internal results
+            if self.retriever.should_rerank():
+                reranked_results = await self.retriever.rerank_results(
+                    question,
+                    internal_results,
+                )
+                internal_results = reranked_results
+
+                # Send post-reranking results to progress queue
+                post_rerank_summary = self._format_search_results_summary(
+                    reranked_results,
+                    "Search results after reranking"
+                )
+                await self.log_info(post_rerank_summary)
+        else:
+            internal_results = {}
+            await self.log_warning("No accessible document groups - skipping knowledge search")
+
+        internal_context = self._format_internal_results(internal_results)
+        internal_results_count = sum(len(docs)
+                                     for docs in internal_results.values())
+
+        response_text = await self._generate_response(
+            question,
+            internal_context,
+            kwargs.get('chat_history', None)
+        )
+
+        return AgentResult(
+            success=True,
+            result=response_text,  # 주요 응답 텍스트
+            data={
+                "selected_groups": selected_groups,
+                "internal_results": internal_results,
+                "internal_results_count": internal_results_count,
+            }
+        )
 
     async def _execute_preprocessing_agents(
         self,
@@ -280,51 +287,26 @@ class KnowledgeSearchAgent(BaseAgent):
         self,
         question: str,
         search_keywords: List[str],
-        selected_groups: Dict[str, Union[str, int]],
+        team_ids: List[int],
         total_retrieval_count: int,
         retrive_method: str,
         default_embedding_model: str,
     ) -> Dict[str, List[RetrieveDocument]]:
-        """Search internal documents and policies"""
+        """Search internal documents and policies by team_ids"""
         if not self.retriever:
             return {}
-        # No groups specified
-        if not selected_groups:
-            await self.log_info(f"Searching all groups total {total_retrieval_count} documents with {default_embedding_model}")
-            result = await self.retriever.search(
-                query=question,
-                top_k=total_retrieval_count,
-                embedding_model=default_embedding_model,
-                keywords=search_keywords,
-                retrive_method=retrive_method,
-            )
-            return {"__all__": result}
-        else:
-            await self.log_info(f"Searching {list(selected_groups.keys())} groups total {total_retrieval_count} documents")
 
-        results = {}
-        for group, selected_group in selected_groups.items():
-            embedding_model = selected_group.get('embedding_model')
-            top_k = selected_group.get('retrieval_count')
+        await self.log_info(f"Searching teams {team_ids} with top_k={total_retrieval_count} using {default_embedding_model}")
 
-            # Fallback to default if embedding_model is None
-            if not embedding_model:
-                embedding_model = default_embedding_model
-                await self.log_warning(f"No embedding model for group '{group}', using default: {embedding_model}")
+        results = await self.retriever.search(
+            query=question,
+            top_k=total_retrieval_count,
+            embedding_model=default_embedding_model,
+            team_ids=team_ids,
+            search_method=retrive_method,
+        )
 
-            await self.log_info(f"Searching group '{group}' with top_k={top_k} with {embedding_model}")
-
-            group_results = await self.retriever.search(
-                query=question,
-                top_k=top_k,
-                embedding_model=embedding_model,
-                keywords=search_keywords,
-                document_groups=[group],
-                retrive_method=retrive_method,
-            )
-            results[group] = group_results
-
-        return results
+        return {"__all__": results}
 
     def _format_internal_results(
         self,
@@ -354,9 +336,11 @@ class KnowledgeSearchAgent(BaseAgent):
 
                 if with_all_groups:
                     # group 이 의미 없음. 모든 그룹의 결과를 표시
-                    formatted.append(f"[내부 문서 {i}] {source} (유사도: {score:.2f}):\n{content}\n")
+                    formatted.append(
+                        f"[내부 문서 {i}] {source} (유사도: {score:.2f}):\n{content}\n")
                 else:
-                    formatted.append(f"[{group} 문서 {i}] {source} (유사도: {score:.2f}):\n{content}\n")
+                    formatted.append(
+                        f"[{group} 문서 {i}] {source} (유사도: {score:.2f}):\n{content}\n")
         return "\n".join(formatted)
 
     def _format_search_results_summary(
@@ -394,7 +378,8 @@ class KnowledgeSearchAgent(BaseAgent):
                     all_docs.append(doc)
 
             # Total count
-            lines.append(f"  Total: {len(all_docs)} documents (merged from all groups)")
+            lines.append(
+                f"  Total: {len(all_docs)} documents (merged from all groups)")
 
             # Display in order
             for i, doc in enumerate(all_docs, 1):
@@ -403,13 +388,15 @@ class KnowledgeSearchAgent(BaseAgent):
                 doc_name = doc.metadata.get('document_name', 'unknown')
                 reranker_score = doc.metadata.get('reranker_score')
 
-                lines.append(f"    {i}. {doc_name} (id: {doc_id[:8]}..., rerank: {reranker_score:.3f})")
+                lines.append(
+                    f"    {i}. {doc_name} (id: {doc_id[:8]}..., rerank: {reranker_score:.3f})")
         else:
             # For non-reranked results: display by group
             for group, docs in results.items():
                 if docs:
                     display_group_name = group if group != '__all__' else 'All groups'
-                    lines.append(f"  {display_group_name} - {len(docs)} documents")
+                    lines.append(
+                        f"  {display_group_name} - {len(docs)} documents")
                     for i, doc in enumerate(docs, 1):
                         doc_id = doc.id
                         score = doc.metadata.get('score', 0.0)
@@ -417,9 +404,11 @@ class KnowledgeSearchAgent(BaseAgent):
                         rrf_score = doc.metadata.get('rrf_score')
 
                         if rrf_score is not None:
-                            lines.append(f"    {i}. {doc_name} (id: {doc_id[:8]}..., rrf: {rrf_score:.3f})")
+                            lines.append(
+                                f"    {i}. {doc_name} (id: {doc_id[:8]}..., rrf: {rrf_score:.3f})")
                         else:
-                            lines.append(f"    {i}. {doc_name} (id: {doc_id[:8]}..., score: {score:.3f})")
+                            lines.append(
+                                f"    {i}. {doc_name} (id: {doc_id[:8]}..., score: {score:.3f})")
 
         return "\n".join(lines)
 
@@ -435,7 +424,8 @@ class KnowledgeSearchAgent(BaseAgent):
         user_prompt = prompts.user_prompt_template.format(
             question=question,
             internal_context=internal_context or "관련 내부 문서를 찾지 못했습니다.",
-            chat_history=chat_history.to_string(only_user_content=True) if chat_history else "",
+            chat_history=chat_history.to_string(
+                only_user_content=True) if chat_history else "",
         )
         override_params = self.get_override_params()
 

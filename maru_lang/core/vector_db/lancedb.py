@@ -198,6 +198,89 @@ class LanceVectorDB(VectorDB):
             print(f"❌ Failed to delete chunks for document {document_id}: {e}")
             return 0
 
+    def upsert_documents(
+        self,
+        documents: list[dict[str, Any]],
+        embeddings: list[list[float]],
+    ) -> None:
+        """
+        Add or update documents in LanceDB.
+
+        Args:
+            documents: List of documents with id, content, metadata
+            embeddings: List of embedding vectors
+        """
+        if not documents or not embeddings:
+            return
+
+        # Prepare data for LanceDB
+        data = []
+        for doc, embedding in zip(documents, embeddings):
+            row = {
+                "id": doc["id"],
+                "content": doc["content"],
+                "vector": embedding,
+                **doc.get("metadata", {})
+            }
+            data.append(row)
+
+        if self.table is None:
+            # Create new table
+            self.table = self.db.create_table(self.table_name, data=data, mode="overwrite")
+        else:
+            # Delete existing documents with same IDs first
+            for doc in documents:
+                try:
+                    self.table.delete(f"id = '{doc['id']}'")
+                except Exception:
+                    pass
+            # Add new documents
+            self.table.add(data)
+
+    def get_chunk_ids_by_document_id(self, document_id: str) -> list[str]:
+        """
+        Get all chunk IDs for a document.
+
+        Args:
+            document_id: Document ID
+
+        Returns:
+            List of chunk IDs
+        """
+        if self.table is None:
+            return []
+
+        try:
+            results = self.table.search().where(f"document_id = '{document_id}'").to_list()
+            return [row["id"] for row in results]
+        except Exception:
+            return []
+
+    def delete_chunks_by_ids(self, chunk_ids: list[str]) -> int:
+        """
+        Delete chunks by their IDs.
+
+        Args:
+            chunk_ids: List of chunk IDs to delete
+
+        Returns:
+            Number of deleted chunks
+        """
+        if self.table is None or not chunk_ids:
+            return 0
+
+        try:
+            count = 0
+            for chunk_id in chunk_ids:
+                try:
+                    self.table.delete(f"id = '{chunk_id}'")
+                    count += 1
+                except Exception:
+                    pass
+            return count
+        except Exception:
+            return 0
+
     def count_documents(self) -> int:
         """
         Count total documents
@@ -267,24 +350,24 @@ class LanceVectorDB(VectorDB):
 
     def get_all_documents(
         self,
-        version_ids: list[str]
+        team_ids: list[int]
     ) -> list[RetrieveDocument]:
         """
-        Get all documents filtered by version IDs
+        Get all documents filtered by team IDs
 
         Args:
-            version_ids: List of version IDs to filter (required)
+            team_ids: List of Team IDs to filter
 
         Returns:
-            List of documents filtered by version
+            List of documents filtered by teams
         """
-        if self.table is None or not version_ids:
+        if self.table is None or not team_ids:
             return []
 
         try:
-            # Build WHERE clause for version filtering
-            ids_str = "', '".join(version_ids)
-            where_clause = f"version_id IN ('{ids_str}')"
+            # Build WHERE clause for team_ids filtering
+            ids_str = ", ".join(str(tid) for tid in team_ids)
+            where_clause = f"team_id IN ({ids_str})"
 
             results = self.table.search().where(where_clause).to_list()
 
@@ -305,7 +388,7 @@ class LanceVectorDB(VectorDB):
         self,
         query_embedding: list[float],
         k: int,
-        version_ids: list[str],
+        team_ids: list[int],
         **kwargs: dict[str, Any]
     ) -> list[RetrieveDocument]:
         """
@@ -314,19 +397,19 @@ class LanceVectorDB(VectorDB):
         Args:
             query_embedding: Query embedding vector
             k: Number of results to return
-            version_ids: List of version IDs to filter (required)
+            team_ids: List of Team IDs to filter
             **kwargs: Additional search parameters
 
         Returns:
             List of retrieved documents with similarity scores
         """
-        if self.table is None or not version_ids:
+        if self.table is None or not team_ids:
             return []
 
         try:
-            # Build WHERE clause for version filtering
-            ids_str = "', '".join(version_ids)
-            where_clause = f"version_id IN ('{ids_str}')"
+            # Build WHERE clause for team_ids filtering
+            ids_str = ", ".join(str(tid) for tid in team_ids)
+            where_clause = f"team_id IN ({ids_str})"
 
             # Perform vector search with filter
             results = (
@@ -357,7 +440,7 @@ class LanceVectorDB(VectorDB):
         query_text: str,
         query_embedding: list[float],
         k: int,
-        version_ids: list[str],
+        team_ids: list[int],
         **kwargs: dict[str, Any]
     ) -> list[RetrieveDocument]:
         """
@@ -367,26 +450,21 @@ class LanceVectorDB(VectorDB):
             query_text: Query text for full-text/FTS search
             query_embedding: Query embedding vector for similarity search
             k: Number of results to return
-            version_ids: List of version IDs to filter (required)
+            team_ids: List of Team IDs to filter
             **kwargs: Additional search parameters
-                - alpha: Weight for combining scores (0.0 = FTS only, 1.0 = vector only, default: 0.5)
 
         Returns:
             List of retrieved documents with hybrid scores
         """
-        if self.table is None or not version_ids:
+        if self.table is None or not team_ids:
             return []
 
         try:
-            # Get alpha weight (default 0.5 for balanced hybrid)
-            alpha = kwargs.get("alpha", 0.5)
-
-            # Build WHERE clause for version filtering
-            ids_str = "', '".join(version_ids)
-            where_clause = f"version_id IN ('{ids_str}')"
+            # Build WHERE clause for team_ids filtering
+            ids_str = ", ".join(str(tid) for tid in team_ids)
+            where_clause = f"team_id IN ({ids_str})"
 
             # LanceDB hybrid search with reranking
-            # Note: LanceDB uses .rerank() for hybrid search
             results = (
                 self.table.search(query_embedding, query_type="hybrid")
                 .where(where_clause)
@@ -411,7 +489,7 @@ class LanceVectorDB(VectorDB):
             print(f"❌ Hybrid search failed: {e}")
             # Fallback to similarity search
             print("⚠️  Falling back to similarity_search")
-            return self.similarity_search(query_embedding, k, version_ids, **kwargs)
+            return self.similarity_search(query_embedding, k, team_ids, **kwargs)
 
     def health_check(self) -> bool:
         """

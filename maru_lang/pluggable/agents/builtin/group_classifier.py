@@ -54,13 +54,14 @@ class GroupClassifierAgent(BaseAgent):
             if progress_queue:
                 self.set_progress_queue(progress_queue)
 
-            forced_groups = metadata.get('forced_groups', None)
+            accessible_groups = metadata.get('accessible_groups', None)
 
             # 모든 사용 가능한 그룹으로 포맷
-            available_groups_str = await self._format_available_groups(forced_groups)
+            available_groups_str = await self._format_available_groups(accessible_groups)
             if not available_groups_str:
                 return AgentResult(
                     success=False,
+                    result="",
                     data={
                         'selected_groups': {},
                         'total_retrieval_count': self.rag_config.retriever.default_k,
@@ -79,6 +80,7 @@ class GroupClassifierAgent(BaseAgent):
             if not selected_groups:
                 return AgentResult(
                     success=False,
+                    result="",
                     data={
                         'selected_groups': {},
                         'total_retrieval_count': self.rag_config.retriever.default_k,
@@ -130,8 +132,9 @@ class GroupClassifierAgent(BaseAgent):
                 await self.log_info("Confidence is too low, selected the highest confidence group and set the rest to 0")
                 return AgentResult(
                     success=True,
+                    result="",
                     data={
-                        'selected_groups': self._group_result_package(selected_groups, normalized_scores),
+                        'selected_groups': self._group_result_package(selected_groups, list(normalized_scores.values())),
                         'total_retrieval_count': self.rag_config.retriever.default_k,
                         'default_embedding_model': self._get_embedding_model(),
                         'confidence': confidence,
@@ -141,6 +144,7 @@ class GroupClassifierAgent(BaseAgent):
             # 5) 신뢰도 충분: 정규화한 점수 사용
             return AgentResult(
                 success=True,
+                result="",
                 data={
                     'selected_groups': self._group_result_package(selected_groups, safe_confidences),
                     'total_retrieval_count': self.rag_config.retriever.default_k,
@@ -154,6 +158,7 @@ class GroupClassifierAgent(BaseAgent):
             # Fallback to default group on error
             return AgentResult(
                 success=False,
+                result="",
                 data={
                     'selected_groups': {},
                     'total_retrieval_count': self.rag_config.retriever.default_k,
@@ -163,18 +168,18 @@ class GroupClassifierAgent(BaseAgent):
                 }
             )
 
-    async def _format_available_groups(self, forced_groups: List[str] = None) -> str:
+    async def _format_available_groups(self, accessible_groups: Optional[List[str]] = None) -> str:
         """Format all available groups for LLM prompt"""
 
         # 1. Get descriptions from DocumentGroup DB (only non-null descriptions)
         group_descriptions_dict = {}
-        if forced_groups:
-            db_descriptions = await get_document_group_descriptions(forced_groups)
+        if accessible_groups:
+            db_descriptions = await get_document_group_descriptions(accessible_groups)
             group_descriptions_dict.update(db_descriptions)
 
         # 2. Override with rag_config.groups descriptions if available
         for group_name, group_config in self.rag_config.groups.items():
-            if forced_groups and group_name not in forced_groups:
+            if accessible_groups and group_name not in accessible_groups:
                 continue
             if group_config.description:
                 # Override DB description with config description

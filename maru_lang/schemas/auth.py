@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Optional
 
 
 class SignUpRequest(BaseModel):
@@ -23,21 +23,6 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class UserGroupResponse(BaseModel):
-    id: int
-    name: str
-    manager: Optional[UserResponse] = None
-    created_at: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-
-
-class UserGroupsResponse(BaseModel):
-    groups: List[UserGroupResponse]
-    total: int
 
 
 class ChatTokenResponse(BaseModel):

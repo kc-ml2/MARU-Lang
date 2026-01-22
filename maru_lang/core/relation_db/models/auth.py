@@ -1,5 +1,4 @@
 from __future__ import annotations
-import datetime
 from tortoise.models import Model
 from tortoise import fields
 
@@ -19,28 +18,16 @@ class UserRole(Model):
     description = fields.TextField(null=True)
 
 
-class UserGroup(Model):
+class Team(Model):
     id = fields.IntField(pk=True)
     name = fields.CharField(max_length=255, unique=True)
     manager = fields.ForeignKeyField(
         "models.User",
-        related_name="managed_user_groups",
+        related_name="managed_teams",
         on_delete=fields.RESTRICT  # Prevents User deletion if managing UserGroups
     )
+    is_private = fields.BooleanField(default=False)
     created_at = fields.DatetimeField(auto_now_add=True)
-
-
-class UserGroupMembership(Model):
-    user = fields.ForeignKeyField(
-        "models.User",
-        related_name="group_memberships",
-        on_delete=fields.CASCADE  # Deletes membership if User is deleted
-    )
-    group = fields.ForeignKeyField(
-        "models.UserGroup",
-        related_name="members",
-        on_delete=fields.CASCADE  # Deletes membership if UserGroup is deleted
-    )
 
 
 class EmailVerificationCode(Model):

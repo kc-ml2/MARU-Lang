@@ -30,7 +30,6 @@ from maru_lang.services.chat import (
     fetch_conversation_by_user_and_date,
     create_conversation,
 )
-from maru_lang.services.user_group import get_user_accessible_document_groups
 from maru_lang.models.chat import ChatHistory
 from maru_lang.models.agents import ChatProcess, ChatResult
 from maru_lang.enums.chat import ChatProcessStep

@@ -88,7 +88,7 @@ class BaseAgent(ABC):
         if self._progress_queue:
             await self._progress_queue.put(
                 PipelineMessage.warning(
-                    f"[{self.name}] ⚠️  {message}", data=data)
+                    f"[{self.name}]⚠️  {message}", data=data)
             )
 
     async def log_error(self, message: str, data: Any = None) -> None:

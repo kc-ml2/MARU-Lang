@@ -8,10 +8,8 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from maru_lang.enums.auth import UserRoleCode
 from maru_lang.dependencies.auth import get_user_with_role, User
-from maru_lang.dependencies.ingest import create_ingest_pipeline
 from maru_lang.pipelines.base import PipelineMessage
 from maru_lang.schemas.ingest import FileInfo, SyncCheckRequest, SyncCheckResponse
-from maru_lang.services.document import set_user_group_permissions, get_managed_document_groups_with_stats
 from maru_lang.configs.system_config import get_system_config
 from maru_lang.utils.file_upload import save_uploaded_file
 

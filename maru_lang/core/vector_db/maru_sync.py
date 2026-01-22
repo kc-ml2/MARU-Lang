@@ -5,7 +5,7 @@ import asyncio
 from typing import Any
 from maru_lang.core.vector_db.base import VectorDB
 from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
-from maru_lang.core.sync import sync_request
+from maru_lang.core.sync.helpers import sync_request
 from maru_lang.dependencies.sync import get_sync_manager
 
 

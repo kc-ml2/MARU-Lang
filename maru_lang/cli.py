@@ -1,27 +1,26 @@
+from maru_lang.configs.diff_checker import check_config_differences
+from maru_lang.commands.tree import show_group_tree_command
+from maru_lang.commands.status import show_status
+from maru_lang.commands.chat import chat_session
+from maru_lang.commands.install import install_configs
+from maru_lang.commands.transfer import transfer_function
+from maru_lang.commands.remove import remove_function
+from maru_lang.commands.ingest import ingest_function
+from maru_lang.core.relation_db.connection import run_with_orm_context
 import sys
 import os
-import re
 import typer
 import uvicorn
 import subprocess
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 from maru_lang.configs.system_config import get_system_config
 
 config = get_system_config()
-from maru_lang.core.relation_db.connection import run_with_orm_context
-from maru_lang.commands.ingest import ingest_function
-from maru_lang.commands.remove import remove_function
-from maru_lang.commands.transfer import transfer_function
-from maru_lang.commands.install import install_configs
-from maru_lang.commands.chat import chat_session
-from maru_lang.commands.status import show_status
-from maru_lang.commands.tree import show_group_tree_command
-from maru_lang.configs.diff_checker import check_config_differences
-
 
 
 app = typer.Typer()
+
 
 @app.command()
 def serve(
@@ -29,10 +28,12 @@ def serve(
                                      help="Application module path (default: main:app)"),
     host: str = typer.Option(None, help="Server host"),
     port: int = typer.Option(None, help="Server port"),
-    reload: bool = typer.Option(None, help="Enable hot-reload when code changes"),
+    reload: bool = typer.Option(
+        None, help="Enable hot-reload when code changes"),
     log_level: str = typer.Option(None, help="Log level"),
     workers: int = typer.Option(1, help="Number of server workers"),
-    skip_migrations: bool = typer.Option(False, "--skip-migrations", help="Skip automatic database migrations"),
+    skip_migrations: bool = typer.Option(
+        False, "--skip-migrations", help="Skip automatic database migrations"),
 ):
     """Start the chatbot FastAPI server (default: maru_app/main.py)"""
 
@@ -45,7 +46,8 @@ def serve(
         from maru_lang.core.relation_db.migration_utils import run_migrations_sync
         success = run_migrations_sync()
         if not success:
-            typer.echo("⚠️  Migration check failed, but continuing to start server...")
+            typer.echo(
+                "⚠️  Migration check failed, but continuing to start server...")
         typer.echo("")
 
     # Add current directory and maru_app to Python path
@@ -75,9 +77,12 @@ def serve(
 
     # Prevent using reload with multiple workers
     if workers > 1 and reload:
-        typer.echo("⚠️  Warning: reload mode cannot be combined with multiple workers.")
-        typer.echo("   Development: use --reload (single worker with code reloading)")
-        typer.echo("   Production: use --workers N (multiple workers, reload disabled)")
+        typer.echo(
+            "⚠️  Warning: reload mode cannot be combined with multiple workers.")
+        typer.echo(
+            "   Development: use --reload (single worker with code reloading)")
+        typer.echo(
+            "   Production: use --workers N (multiple workers, reload disabled)")
         typer.echo("   → Adjusting workers to 1 and running in reload mode.")
         workers = 1
 
@@ -149,31 +154,24 @@ def serve(
 
 @app.command()
 def ingest(
-    path: Path = typer.Argument(..., help="Folder path that contains documents"),
-    user_groups: Optional[List[str]] = typer.Option(
-        None, "--user-group", "-ug", help="User groups that should receive access permission (multiple values allowed)"),
+    path: Path = typer.Argument(...,
+                                help="Folder path that contains documents"),
+    team: str = typer.Argument(...,
+                               help="Team name that will own the documents"),
     re_embed: bool = typer.Option(
         False, "--re-embed", "-r", help="Delete existing embeddings and re-embed all documents from scratch"),
 ):
     """Parse every document in the folder, chunk it, and store it in the database."""
-    group = path.name
-
     if not path.exists() or not path.is_dir():
-        typer.echo(f"❌ {path} does not exist." )
+        typer.echo(f"Path does not exist: {path}")
         raise typer.Exit(1)
 
-    # Validate group name (disallow characters such as /)
-    if not re.match(r'^[a-zA-Z0-9_]+$', group):
-        typer.echo(f"❌ Group '{group}' may only contain letters, numbers, and underscores.")
-        raise typer.Exit(1)
-
-    typer.echo(
-        f"🚀 Ingesting {path} into group {group}")
+    typer.echo(f"Ingesting {path} for team '{team}'")
 
     run_with_orm_context(
         ingest_function,
         path,
-        user_groups,
+        team,
         re_embed,
     )
 
@@ -193,28 +191,27 @@ def remove(
 
 @app.command()
 def chat(
-    groups: Optional[str] = typer.Option(
-        "all", "--group", "-g",
-        help="Document groups to search (e.g., -g engineering,docs or -g all)"
-    ),
+    team: str = typer.Argument(..., help="Team name to access documents"),
     max_turns: int = typer.Option(
         0, "--max-turns", "-m",
         help="Maximum number of turns to keep in chat history"
     ),
-    skip_migrations: bool = typer.Option(False, "--skip-migrations", help="Skip automatic database migrations"),
+    skip_migrations: bool = typer.Option(
+        False, "--skip-migrations", help="Skip automatic database migrations"),
 ):
-    """Start an interactive admin chat session with document group selection"""
+    """Start an interactive chat session with a team's documents"""
 
     # Check if installation is complete
     _check_maru_app_installation()
 
     # Run migrations before starting chat
     if not skip_migrations:
-        typer.echo("🔄 Checking for pending database migrations...")
+        typer.echo("Checking for pending database migrations...")
         from maru_lang.core.relation_db.migration_utils import run_migrations_sync
         success = run_migrations_sync()
         if not success:
-            typer.echo("⚠️  Migration check failed, but continuing to start chat...")
+            typer.echo(
+                "Migration check failed, but continuing to start chat...")
         typer.echo("")
 
     # Check configuration differences
@@ -225,18 +222,10 @@ def chat(
             typer.echo(diff_report)
             typer.echo("="*80 + "\n")
     except Exception as e:
-        typer.echo(f"⚠️  Warning: Could not check config differences: {e}\n")
-
-    # Parse group selections
-    if groups == "all":
-        # Search across every group
-        parsed_groups = ["__all__"]  # Indicates all groups
-    else:
-        # Split comma-separated group names
-        parsed_groups = [g.strip() for g in groups.split(",")]
+        typer.echo(f"Warning: Could not check config differences: {e}\n")
 
     # Run with ORM context (required for document search)
-    run_with_orm_context(chat_session, parsed_groups, max_turns)
+    run_with_orm_context(chat_session, team, max_turns)
 
 
 @app.command("install")
@@ -296,7 +285,8 @@ def status(
 def tree(
     name: Optional[str] = typer.Argument(
         None, help="DocumentGroup name (shows only root groups when omitted)"),
-    depth: int = typer.Option(2, "--depth", "-d", help="Maximum depth to display (default: 2)"),
+    depth: int = typer.Option(
+        2, "--depth", "-d", help="Maximum depth to display (default: 2)"),
 ):
     """Show the DocumentGroup hierarchy."""
     run_with_orm_context(show_group_tree_command, name, depth)
@@ -304,14 +294,18 @@ def tree(
 
 @app.command()
 def transfer(
-    group_name: str = typer.Argument(..., help="DocumentGroup name to transfer"),
-    new_manager_email: str = typer.Argument(..., help="Email of the new manager"),
+    group_name: str = typer.Argument(...,
+                                     help="DocumentGroup name to transfer"),
+    new_manager_email: str = typer.Argument(...,
+                                            help="Email of the new manager"),
     force: bool = typer.Option(
         False, "--force", "-f", help="Transfer without confirmation"
     ),
 ):
     """Transfer DocumentGroup manager to another user"""
-    run_with_orm_context(transfer_function, group_name, new_manager_email, force)
+    run_with_orm_context(transfer_function, group_name,
+                         new_manager_email, force)
+
 
 def _check_maru_app_installation() -> bool:
     """Check if required files exist and guide user to install if not"""

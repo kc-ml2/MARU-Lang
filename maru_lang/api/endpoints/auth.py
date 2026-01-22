@@ -1,6 +1,5 @@
 from maru_lang.services.auth import (
     generate_token,
-    get_user_groups,
     generate_email_verification_code,
     verify_email_code,
     revoke_token,
@@ -12,8 +11,6 @@ from maru_lang.schemas.auth import (
     VerifyCodeRequest,
     SignUpRequest,
     LogoutRequest,
-    UserGroupsResponse,
-    UserGroupResponse,
     ChatTokenResponse,
 )
 from maru_lang.dependencies.email import get_email_service_dependency, EmailService
@@ -156,30 +153,3 @@ async def get_chat_token(user=Depends(get_user)) -> ChatTokenResponse:
     """Issue one-time chat token for WebSocket connection."""
     token = await generate_chat_token(user.id)
     return ChatTokenResponse(chat_token=token)
-
-
-@router.get("/user/groups", response_model=UserGroupsResponse)
-async def get_current_user_groups(
-    user=Depends(get_user)
-):
-    """Get user groups that the authenticated user belongs to."""
-    try:
-        # Get user groups using service function
-        groups = await get_user_groups(user)
-
-        # Convert to response format
-        group_responses = [
-            UserGroupResponse(
-                id=group.id,
-                name=group.name
-            )
-            for group in groups
-        ]
-        return UserGroupsResponse(
-            groups=group_responses,
-            total=len(group_responses)
-        )
-
-    except Exception as e:
-        print(f"❌ Error fetching user groups: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
