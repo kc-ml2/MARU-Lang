@@ -134,7 +134,8 @@ class ConfigManager:
             # ChatPipeline will handle the case when no LLM is available
             status['warnings'].append(no_llm_warning)
             if llm_summary['total'] == 0:
-                status['warnings'].append("No LLM configurations found - chat will not work until configured")
+                status['warnings'].append(
+                    "No LLM configurations found - chat will not work until configured")
 
         if len(self.rag_loader.all_groups) == 0:
             status['warnings'].append("No RAG/group configurations found")
@@ -164,7 +165,7 @@ class ConfigManager:
         if configs:
             # Return first config (typically rag_config.yaml)
             return next(iter(configs.values()))
-        return None
+        raise Exception("No RAG configuration found")
 
     def get_agent(self, name: str):
         """Get agent configuration by name"""

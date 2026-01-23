@@ -121,8 +121,7 @@ class AgentSelector:
         clients = self._get_llm_clients_with_fallback()
 
         # Try each available LLM until one succeeds
-        last_error = None
-        for idx, client in enumerate(clients):
+        for client in clients:
             try:
                 # Make LLM request with tools
                 # Force the use of select_agents function
@@ -144,14 +143,8 @@ class AgentSelector:
                 # Check if we got a valid selection
                 if result and result.selected_agents:
                     return result
-
-                # If parse returned None or empty, try next LLM
-                last_error = "No agents selected"
-
             except Exception as e:
-                last_error = str(e)
                 continue
-
         # All LLMs failed
         return None
 

@@ -2,7 +2,8 @@
 Knowledge Search Agent - Handles company policy, internal documents"""
 import asyncio
 import re
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Tuple
+from maru_lang.models.agents import ExecutionContext
 from maru_lang.models.chat import ChatHistory
 from maru_lang.pipelines.base import PipelineMessage
 from maru_lang.pluggable.agents.base import BaseAgent, AgentResult
@@ -41,247 +42,192 @@ class KnowledgeSearchAgent(BaseAgent):
         self.rag_config = config_manager.get_rag_config()
 
         # Create and initialize group_classifier
-        group_classifier_config = config_manager.get_agent('group_classifier')
+        group_classifier_cfg = config_manager.get_agent('group_classifier')
+        intent_extractor_cfg = config_manager.get_agent('intent_extractor')
+        keyword_extractor_cfg = config_manager.get_agent('keyword_extractor')
+
+        if (
+            not group_classifier_cfg or
+            not intent_extractor_cfg or
+            not keyword_extractor_cfg
+        ):
+            raise ValueError(
+                "KnowledgeSearchAgent requires 'group_classifier', "
+                "'intent_extractor', and 'keyword_extractor' agents to be configured."
+            )
+
         self.group_classifier = factory.create_agent(
-            'group_classifier', group_classifier_config)
-        if self.group_classifier:
-            await self.group_classifier.initialize()
-
-        # Create and initialize intent_extractor
-        intent_extractor_config = config_manager.get_agent('intent_extractor')
+            'group_classifier',
+            group_classifier_cfg
+        )
         self.intent_extractor = factory.create_agent(
-            'intent_extractor', intent_extractor_config)
-        if self.intent_extractor:
-            await self.intent_extractor.initialize()
-
-        # Create and initialize keyword_extractor
-        keyword_extractor_config = config_manager.get_agent(
-            'keyword_extractor')
+            'intent_extractor',
+            intent_extractor_cfg
+        )
         self.keyword_extractor = factory.create_agent(
-            'keyword_extractor', keyword_extractor_config)
-        if self.keyword_extractor:
-            await self.keyword_extractor.initialize()
+            'keyword_extractor',
+            keyword_extractor_cfg
+        )
+
+        await self.group_classifier.initialize()
+        await self.intent_extractor.initialize()
+        await self.keyword_extractor.initialize()
+
+    def _parse_group_classifier_result(
+        self,
+        result: AgentResult
+    ) -> Tuple[List[str], float, str]:
+        """Parse group classifier agent result to extract selected groups"""
+        if result.status != "success":
+            return [], 0.0, "Group classifier failed"
+        selected_groups = getattr(result.payload, 'selected_groups', [])
+        confidence = getattr(result.payload, 'confidence', 0.0)
+        reasoning = getattr(result.payload, 'reasoning', "")
+        return selected_groups, confidence, reasoning
+
+    def _parse_intent_extractor_result(
+        self,
+        result: AgentResult
+    ) -> str:
+        """Parse intent extractor agent result to get rewritten query"""
+        if result.status != "success":
+            return ""
+        rewritten_query = getattr(result.payload, 'rewritten_question', "")
+        return rewritten_query
+
+    def _parse_keyword_extractor_result(
+        self,
+        result: AgentResult
+    ) -> List[str]:
+        """Parse keyword extractor agent result to get extracted keywords"""
+        if result.status != "success":
+            return []
+        extracted_keywords = getattr(result.payload, 'extracted_keywords', [])
+        return extracted_keywords
 
     async def execute(
         self,
-        question: str,
-        metadata: Dict[str, Any] = {},
-        progress_queue: Optional[asyncio.Queue] = None,
-        **kwargs
+        context: ExecutionContext,
     ) -> AgentResult:
-        # Set progress queue if provided (in case not set by executor)
-        if progress_queue:
-            self.set_progress_queue(progress_queue)
-        """
-        Execute knowledge search combining internal documents
-
-        Args:
-            question: Search question
-            **kwargs: Additional parameters
-
-        Returns:
-            AgentResult with search results in data field
-        """
-
-        # Check if accessible_groups exists in metadata
-        accessible_groups = metadata.get('accessible_groups', {})
-
-        # accessible_groups가 없으면 검색할 수 없으므로 바로 리턴
-        if not accessible_groups:
-            await self.log_warning("No accessible document groups - skipping knowledge search")
+        if not context.team_ids:
             return AgentResult(
-                success=False,
-                result="No document groups available for search.",
-            )
+                status="error",
+                error="No team IDs provided - cannot search documents")
 
         retrive_method = self.rag_config.retriever.default_method
-        accessible_groups_message = f"Accessible groups in this context: {accessible_groups}"
-        await self.log_info(accessible_groups_message)
-        await self.log_info(f"Retrieve method: '{retrive_method}'")
         # Step 1: Execute preprocessing agents in parallel
-        preprocessing_results = await self._execute_preprocessing_agents(
-            question,
-            metadata,
-            progress_queue,
-            **kwargs
+
+        group_classifier_result, intent_extractor_result, keyword_extractor_result = await self._execute_preprocessing_agents(
+            context
         )
 
-        group_agent_result = preprocessing_results.get('group_classifier')
-        default_embedding_model = group_agent_result.data.get(
-            'default_embedding_model')
+        selected_groups, confidence, reasoning = self._parse_group_classifier_result(
+            group_classifier_result
+        )
 
-        if group_agent_result.success:
-            # 그룹 분류 결과 사용
-            selected_groups = group_agent_result.data.get(
-                'selected_groups')
-            total_retrieval_count = group_agent_result.data.get(
-                'total_retrieval_count')
-        else:
-            # Use default_k from RAG config instead of 0
-            total_retrieval_count = self.rag_config.retriever.default_k
-            confidence = group_agent_result.data.get('confidence')
-            reasoning = group_agent_result.data.get('reasoning')
-            await self.log_info(f"Group Classifier: Selected groups is None, using available groups")
-            if confidence > 0.0:
-                await self.log_info(f"Group Classifier: Confidence: {confidence}")
-            await self.log_info(f"Group Classifier: Reasoning: {reasoning}")
+        rewritten_question = self._parse_intent_extractor_result(
+            intent_extractor_result
+        )
 
-            selected_groups = {
-                group: {
-                    'embedding_model': default_embedding_model,
-                    'retrieval_count': round(total_retrieval_count / len(accessible_groups))
-                }
-                for group in accessible_groups
-            }
-
-        intent_agent_result = preprocessing_results.get(
-            'intent_extractor', None)
-
-        if intent_agent_result and intent_agent_result.success:
-            search_query = intent_agent_result.data.get(
-                'rewritten_question')
-            await self.log_info(f"Rewritten query: {search_query}")
-        else:
-            search_query = question
-            await self.log_warning("No intent extraction result, using original question")
-
-        keyword_agent_result = preprocessing_results.get(
-            'keyword_extractor', None)
-        if keyword_agent_result and keyword_agent_result.success:
-            search_keywords = keyword_agent_result.data.get(
-                'extracted_keywords')
-            await self.log_info(f"Extracted keywords: {search_keywords}")
-        else:
-            search_keywords = []
-            await self.log_warning("No keywords extracted, fallback to vector-only search")
-            # 오류 나면 vector 로만
-            retrive_method = "vector"
-
-        # Get team_ids from metadata for VectorDB filtering
-        team_ids = metadata.get('team_ids', [])
-        if not team_ids:
-            await self.log_error("No team_ids in metadata - cannot search documents")
-            return AgentResult(
-                success=False,
-                result="Missing team_ids for search.",
-            )
-
-        # accessible_groups 기반으로만 검색 (selected_groups가 없으면 검색 안함)
-        if selected_groups:
-            internal_results = await self._search_internal_documents(
-                question=search_query,
-                search_keywords=search_keywords,
-                team_ids=team_ids,
-                total_retrieval_count=total_retrieval_count,
-                retrive_method=retrive_method,
-                default_embedding_model=default_embedding_model,
-            )
-
-            # Send pre-reranking results to progress queue
-            pre_rerank_summary = self._format_search_results_summary(
-                internal_results,
-                "Search results before reranking"
-            )
-            await self.log_info(pre_rerank_summary)
-
-            # rerank internal results
-            if self.retriever.should_rerank():
-                reranked_results = await self.retriever.rerank_results(
-                    question,
-                    internal_results,
-                )
-                internal_results = reranked_results
-
-                # Send post-reranking results to progress queue
-                post_rerank_summary = self._format_search_results_summary(
-                    reranked_results,
-                    "Search results after reranking"
-                )
-                await self.log_info(post_rerank_summary)
-        else:
-            internal_results = {}
-            await self.log_warning("No accessible document groups - skipping knowledge search")
-
-        internal_context = self._format_internal_results(internal_results)
-        internal_results_count = sum(len(docs)
-                                     for docs in internal_results.values())
-
-        response_text = await self._generate_response(
-            question,
-            internal_context,
-            kwargs.get('chat_history', None)
+        extracted_keywords = self._parse_keyword_extractor_result(
+            keyword_extractor_result
         )
 
         return AgentResult(
-            success=True,
-            result=response_text,  # 주요 응답 텍스트
-            data={
-                "selected_groups": selected_groups,
-                "internal_results": internal_results,
-                "internal_results_count": internal_results_count,
-            }
+            status="success",
+            payload={
+                "HI"
+            },
         )
+
+        # # accessible_groups 기반으로만 검색 (selected_groups가 없으면 검색 안함)
+        # if selected_groups:
+        #     internal_results = await self._search_internal_documents(
+        #         question=search_query,
+        #         search_keywords=search_keywords,
+        #         team_ids=team_ids,
+        #         total_retrieval_count=total_retrieval_count,
+        #         retrive_method=retrive_method,
+        #         default_embedding_model=default_embedding_model,
+        #     )
+
+        #     # Send pre-reranking results to progress queue
+        #     pre_rerank_summary = self._format_search_results_summary(
+        #         internal_results,
+        #         "Search results before reranking"
+        #     )
+        #     await self.log_info(pre_rerank_summary)
+
+        #     # rerank internal results
+        #     if self.retriever.should_rerank():
+        #         reranked_results = await self.retriever.rerank_results(
+        #             question,
+        #             internal_results,
+        #         )
+        #         internal_results = reranked_results
+
+        #         # Send post-reranking results to progress queue
+        #         post_rerank_summary = self._format_search_results_summary(
+        #             reranked_results,
+        #             "Search results after reranking"
+        #         )
+        #         await self.log_info(post_rerank_summary)
+        # else:
+        #     internal_results = {}
+        #     await self.log_warning("No accessible document groups - skipping knowledge search")
+
+        # internal_context = self._format_internal_results(internal_results)
+        # internal_results_count = sum(len(docs)
+        #                              for docs in internal_results.values())
+
+        # response_text = await self._generate_response(
+        #     question,
+        #     internal_context,
+        #     kwargs.get('chat_history', None)
+        # )
+
+        # return AgentResult(
+        #     success=True,
+        #     result=response_text,  # 주요 응답 텍스트
+        #     data={
+        #         "selected_groups": selected_groups,
+        #         "internal_results": internal_results,
+        #         "internal_results_count": internal_results_count,
+        #     }
+        # )
 
     async def _execute_preprocessing_agents(
         self,
-        question: str,
-        metadata: Dict[str, Any],
-        progress_queue: Optional[asyncio.Queue] = None,
-        **kwargs
-    ) -> Dict[str, AgentResult]:
+        context: ExecutionContext,
+    ) -> List[AgentResult]:
         """Execute preprocessing agents in parallel"""
-        tasks = []
-        agent_names = []
-
-        # Prepare context for agents
-        agent_context = {
-            "question": question,
-            "metadata": metadata,
-            **kwargs
-        }
-
+        if (
+            not self.group_classifier or
+            not self.intent_extractor or
+            not self.keyword_extractor
+        ):
+            raise ValueError(
+                "Preprocessing agents are not properly initialized."
+            )
         # Create tasks for parallel execution
-        if self.group_classifier:
-            tasks.append(self.group_classifier.execute(
-                progress_queue=progress_queue,
-                **agent_context))
-            agent_names.append('group_classifier')
 
-        if self.intent_extractor:
-            tasks.append(self.intent_extractor.execute(
-                progress_queue=progress_queue,
-                **agent_context))
-            agent_names.append('intent_extractor')
-
-        if self.keyword_extractor:
-            tasks.append(self.keyword_extractor.execute(
-                progress_queue=progress_queue,
-                **agent_context))
-            agent_names.append('keyword_extractor')
-
-        # Execute all agents in parallel
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            try:
-                # Build result dictionary
-                preprocessing_results = {}
-                for name, result in zip(agent_names, results):
-                    if isinstance(result, Exception):
-                        await self.log_error(f"Error executing {name}: {result}")
-                        preprocessing_results[name] = AgentResult(
-                            success=False,
-                            result="",
-                            error=str(result)
-                        )
-                    else:
-                        preprocessing_results[name] = result
-            except Exception as e:
-                await self.log_error(f"Error executing preprocessing agents: {e}")
-                return {}
-            return preprocessing_results
-
-        return {}
+        tasks = [
+            self.group_classifier.execute(context),
+            self.intent_extractor.execute(context),
+            self.keyword_extractor.execute(context),
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Build result dictionary
+        preprocessing_results = []
+        for result in results:
+            if isinstance(result, Exception):
+                preprocessing_results.append(AgentResult(
+                    status="error",
+                    error=str(result)
+                ))
+            else:
+                preprocessing_results.append(result)
+        return preprocessing_results
 
     async def _search_internal_documents(
         self,
@@ -296,7 +242,7 @@ class KnowledgeSearchAgent(BaseAgent):
         if not self.retriever:
             return {}
 
-        await self.log_info(f"Searching teams {team_ids} with top_k={total_retrieval_count} using {default_embedding_model}")
+        # await self.log_info(f"Searching teams {team_ids} with top_k={total_retrieval_count} using {default_embedding_model}")
 
         results = await self.retriever.search(
             query=question,
@@ -421,6 +367,10 @@ class KnowledgeSearchAgent(BaseAgent):
         """Generate comprehensive response using LLM with fallback"""
         # Use the prompt template from configuration
         prompts = self.config.prompts
+        if prompts is None:
+            raise ValueError(
+                "Prompts configuration is missing in GroupClassifierAgent")
+
         user_prompt = prompts.user_prompt_template.format(
             question=question,
             internal_context=internal_context or "관련 내부 문서를 찾지 못했습니다.",

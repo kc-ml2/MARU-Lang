@@ -9,11 +9,27 @@ from maru_lang.core.relation_db.models.auth import Team
 from maru_lang.services.document import get_group_names_by_team_id
 
 
+class NoneAccsessibleDocumentException(Exception):
+    pass
+
+
+class NoneAgentSelectedException(Exception):
+    pass
+
+
+class NoneAvailableLLMException(Exception):
+    pass
+
+
 class UnExpectedException(Exception):
     pass
 
 
 class AgentSelectionFailedException(Exception):
+    pass
+
+
+class AgentExecutionFailedException(Exception):
     pass
 
 
@@ -38,25 +54,17 @@ class ChatPipeline(BasePipeline):
 
     async def process(
         self,
-        team: Team,
+        teams: List[Team],
         question: str,
         chat_history: Optional[ChatHistory] = None,
     ):
-        """
-        Chat pipeline process (큐 기반)
-
-        큐에 ChatProcess를 전달하여 진행 상황 스트리밍
-        """
+        execution_context = None
         try:
-            # Check if LLM servers are available
             config_manager = get_config_manager()
             enabled_llms = config_manager.llm_loader.get_enabled_configs()
-
             if not enabled_llms:
                 # No LLM servers available - return friendly message
-                raise Exception(
-                    "Sorry, no LLM servers are available at the moment. Please try again later."
-                )
+                raise NoneAvailableLLMException()
 
             # Step 1: Select agents
             selection = await self.agent_selector.select_agents(
@@ -68,69 +76,74 @@ class ChatPipeline(BasePipeline):
                 # Agent selection failed
                 raise AgentSelectionFailedException("Agent selection failed")
 
-            # Get accessible groups for this team
-            accessible_groups = await get_group_names_by_team_id(team.id)
+            if not selection.selected_agents:
+                raise NoneAgentSelectedException("No agents selected")
+
+            # Get accessible groups for these teams
+            try:
+                accessible_groups = []
+                for team in teams:
+                    groups = await get_group_names_by_team_id(team.id)
+                    accessible_groups.extend(groups)
+                accessible_groups = list(
+                    set(accessible_groups))  # Remove duplicates
+            except:
+                raise NoneAccsessibleDocumentException()
 
             await self.queue.put(PipelineMessage.info(
                 message=selection.reasoning,
                 data=selection.to_dict(),
             ))
 
-            if selection.selected_agents:
-                # Step 2: Execute agents
-                execution_context = ExecutionContext(
-                    question=question,
-                    progress_queue=self.queue,
-                    chat_history=chat_history,
-                    metadata={
-                        "team_ids": [team.id],  # List to support multi-team search
-                        "accessible_groups": accessible_groups,
-                    })
+            # Step 2: Execute agents
+            execution_context = ExecutionContext(
+                question=question,
+                progress_queue=self.queue,
+                agent_selection=selection,
+                team_ids=[team.id for team in teams],
+                team_names=[team.name for team in teams],
+                accessible_groups=accessible_groups,
+                chat_history=chat_history,
+            )
 
-                execution_result = await self.agent_executor.execute(
-                    selection=selection,
-                    execution_context=execution_context
-                )
-            else:
-                execution_result = None
+            await self.agent_executor.execute(execution_context=execution_context)
 
-            # Step 3: Generate final answer using response_agent
-            # Response agent handles all scenarios (no agents, errors, success)
-            try:
-                answer = await self.agent_executor.summarize_execution(
-                    question=question,
-                    execution_result=execution_result,
-                    selection=selection,
-                    chat_history=chat_history,
-                )
-            except Exception as e:
-                print(e)
-                raise UnExpectedException()
-
-            # Convert internal_documents to DocumentReference (without page_content)
-            if execution_result:
-                internal_documents = []
-                for agent_result in execution_result.agent_results.values():
-                    if agent_result.data and 'internal_results' in agent_result.data:
-                        # internal_results is Dict[str, List[RetrieveDocument]]
-                        for doc_list in agent_result.data['internal_results'].values():
-                            for doc in doc_list:
-                                internal_documents.append(
-                                    doc.to_document_reference())
-            else:
-                internal_documents = []
-
-            await self.queue.put(PipelineMessage.normal(answer, "answer"))
-
-        except AgentSelectionFailedException:
+        except NoneAccsessibleDocumentException:
+            # No accessible documents for the team
+            # problem with DB or team is disabled
+            pass
+        except NoneAvailableLLMException as e:
+            await self.queue.put(PipelineMessage.error("Sorry, no LLM servers are available at the moment. Please try again later."))
+            return
+        except NoneAgentSelectedException:
+            # No agents selected
+            # system is successfully working but no agents are applicable
+            pass
             await self.queue.put(PipelineMessage.error(
                 "Sorry, I couldn't find any suitable agents to answer your question at the moment. Please try rephrasing your question or come back later."
+            ))
+        except AgentSelectionFailedException:
+            # system failed to select agents
+            await self.queue.put(PipelineMessage.error(
+                "Sorry, I couldn't find any suitable agents to answer your question at the moment. Please try rephrasing your question or come back later."
+            ))
+        except AgentExecutionFailedException as e:
+            await self.queue.put(PipelineMessage.error(
+                f"Sorry, there was an error while processing your request: {str(e)}"
             ))
         except UnExpectedException:
             await self.queue.put(PipelineMessage.error("An unexpected error occurred."))
         except Exception as e:
             await self.queue.put(PipelineMessage.warning(str(e)))
         finally:
+            # TODO execution RESULT만 전달하자,?
+            # CONTEXT 만으로도 해결할 수 있을까? 그럴듯, Context만 보고 선택하긔
+            if execution_context is None:
+                return
+            summarized_answer = await self.agent_executor.summarize_execution(
+                execution_context
+            )
+            await self.queue.put(PipelineMessage.normal(summarized_answer, "answer"))
             await self.queue.put(PipelineMessage.complete())
 
     async def cleanup(self):

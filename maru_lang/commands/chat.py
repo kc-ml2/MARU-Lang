@@ -18,39 +18,60 @@ console = Console()
 
 
 async def chat_session(
-    team_name: str,
+    team_names: str,
     max_turns: int = 0
 ):
     """
     Interactive chat session
 
     Args:
-        team_name: Team name to access documents
+        team_names: Team names to access documents (comma-separated)
         max_turns: Maximum number of turns to keep in history
     """
 
-    # Get Team from database
-    team = await Team.get_or_none(name=team_name)
-    if not team:
-        console.print(f"[red]Error: Team '{team_name}' not found[/red]")
+    # Parse comma-separated team names
+    team_name_list = [name.strip() for name in team_names.split(",") if name.strip()]
+    if not team_name_list:
+        console.print("[red]Error: No team names provided[/red]")
+        return
+
+    # Get Teams from database
+    teams = []
+    not_found = []
+    for name in team_name_list:
+        team = await Team.get_or_none(name=name)
+        if team:
+            teams.append(team)
+        else:
+            not_found.append(name)
+
+    if not_found:
+        console.print(f"[red]Error: Teams not found: {', '.join(not_found)}[/red]")
         # Show available teams
         all_teams = await Team.all().values_list("name", flat=True)
         if all_teams:
             console.print("\n[cyan]Available teams:[/cyan]")
             for t in sorted(all_teams):
                 console.print(f"  - {t}")
-        else:
-            console.print(
-                "[yellow]No teams found. Run 'maru ingest' first to create a team.[/yellow]")
         return
 
-    # Get accessible groups for this team
-    accessible_groups = await get_group_names_by_team_id(team.id)
+    if not teams:
+        console.print("[red]Error: No valid teams found[/red]")
+        return
+
+    # Get accessible groups for these teams
+    accessible_groups = []
+    for team in teams:
+        groups = await get_group_names_by_team_id(team.id)
+        accessible_groups.extend(groups)
+    accessible_groups = list(set(accessible_groups))  # Remove duplicates
+
+    team_display = ", ".join([t.name for t in teams])
 
     # Initialize
     console.print(Panel.fit(
         "[bold cyan]MARU Chat CLI[/bold cyan]\n"
-        f"[yellow]Team: {team_name}[/yellow]\n"
+        f"[yellow]Teams: {team_display}[/yellow]\n"
         f"[dim]Accessible groups: {len(accessible_groups)}[/dim]\n"
         "Type 'exit' or 'quit' to end the session\n"
         "Type 'clear' to clear the screen",
@@ -58,7 +79,7 @@ async def chat_session(
     ))
 
     console.print(
-        f"[green]Session started (Team: {team_name})[/green]\n")
+        f"[green]Session started (Teams: {team_display})[/green]\n")
 
     # ConfigManager 초기화
     console.print("[cyan]📋 Initializing configurations...[/cyan]")
@@ -157,7 +178,7 @@ async def chat_session(
 
                 with console.status("[cyan]Processing...[/cyan]", spinner="dots"):
                     async for msg in chat_pipeline.run(
-                        team=team,
+                        teams=teams,
                         question=question,
                         chat_history=chat_history,
                     ):
@@ -166,7 +187,8 @@ async def chat_session(
                             if msg.data and 'selected_agents' in msg.data:
                                 agents = msg.data['selected_agents']
                                 if agents:
-                                    logs.append(f"Selected: {', '.join(agents)}")
+                                    logs.append(
+                                        f"Selected: {', '.join(agents)}")
 
                         elif msg.message_type == MessageType.NORMAL:
                             if msg.data == "answer":
