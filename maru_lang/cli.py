@@ -191,7 +191,7 @@ def remove(
 
 @app.command()
 def chat(
-    team: str = typer.Argument(..., help="Team name to access documents"),
+    teams: str = typer.Argument(..., help="Team names (comma-separated, e.g. 'team1,team2')"),
     max_turns: int = typer.Option(
         0, "--max-turns", "-m",
         help="Maximum number of turns to keep in chat history"
@@ -199,7 +199,7 @@ def chat(
     skip_migrations: bool = typer.Option(
         False, "--skip-migrations", help="Skip automatic database migrations"),
 ):
-    """Start an interactive chat session with a team's documents"""
+    """Start an interactive chat session with teams' documents"""
 
     # Check if installation is complete
     _check_maru_app_installation()
@@ -225,7 +225,7 @@ def chat(
         typer.echo(f"Warning: Could not check config differences: {e}\n")
 
     # Run with ORM context (required for document search)
-    run_with_orm_context(chat_session, team, max_turns)
+    run_with_orm_context(chat_session, teams, max_turns)
 
 
 @app.command("install")

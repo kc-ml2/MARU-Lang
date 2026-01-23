@@ -28,7 +28,7 @@ class AgentFactory:
         self,
         agent_name: str,
         agent_config: AgentConfig
-    ) -> Optional[BaseAgent]:
+    ) -> BaseAgent:
         """
         Create an agent instance based on name and configuration
 
@@ -42,24 +42,17 @@ class AgentFactory:
         # Get agent class from registry
         agent_class = self.registry.get_agent_class(agent_name)
         if not agent_class:
-            print(f"Agent not found in registry: {agent_name}")
-            return None
+            raise ValueError(f"Agent class not found for: {agent_name}")
 
-        # Create agent instance
-        try:
-            if issubclass(agent_class, MCPClientAgent):
-                # Other MCP agents need name, server_params, and llm_client
-                if not agent_config.mcp_config:
-                    raise ValueError(
-                        f"MCP agent {agent_name} missing mcp_config")
-            return agent_class(
-                name=agent_name,
-                config=agent_config,  # Pass full agent_config as config
-            )
-            
-        except Exception as e:
-            print(f"Error creating agent {agent_name}: {e}")
-            return None
+        if issubclass(agent_class, MCPClientAgent):
+            # Other MCP agents need name, server_params, and llm_client
+            if not agent_config.mcp_config:
+                raise ValueError(
+                    f"MCP agent {agent_name} missing mcp_config")
+        return agent_class(
+            name=agent_name,
+            config=agent_config,  # Pass full agent_config as config
+        )
 
     def create_agents_from_config(self) -> Dict[str, BaseAgent]:
         """

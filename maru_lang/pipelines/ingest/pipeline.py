@@ -234,6 +234,7 @@ class IngestPipeline(BasePipeline):
                             "document_id": doc.id,
                             "document_name": doc.name,
                             "team_id": self.team_id,
+                            "group_id": doc.group_id,  # type: ignore
                             "file_path": doc.file_path or "",
                             "chunk_number": idx,
                         },

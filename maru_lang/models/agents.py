@@ -13,40 +13,9 @@ from maru_lang.schemas.chat import DocumentReference
 @dataclass
 class AgentResult:
     """Result from individual agent execution"""
-    success: bool
-    result: Optional[Union[str, AsyncGenerator[str, None]]] = None
-    data: Optional[Dict[str, Any]] = None  # 추가 정보 (선택)
+    status: str
+    payload: Optional[Any] = None
     error: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-    def _serialize_value(self, value: Any) -> Any:
-        """Recursively serialize values to JSON-compatible format"""
-        if value is None or isinstance(value, (str, int, float, bool)):
-            return value
-        elif isinstance(value, dict):
-            return {k: self._serialize_value(v) for k, v in value.items()}
-        elif isinstance(value, (list, tuple)):
-            return [self._serialize_value(item) for item in value]
-        elif hasattr(value, 'text'):
-            # Handle MCP TextContent objects
-            return value.text
-        elif hasattr(value, 'to_dict'):
-            return self._serialize_value(value.to_dict())
-        elif hasattr(value, '__dict__'):
-            return self._serialize_value(value.__dict__)
-        else:
-            # Fallback: convert to string
-            return str(value)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary with safe serialization"""
-        return {
-            "success": self.success,
-            "result": self.result,
-            "data": self._serialize_value(self.data),
-            "error": self.error,
-            "metadata": self._serialize_value(self.metadata)
-        }
 
 
 @dataclass
@@ -74,6 +43,11 @@ class ExecutionContext:
     """Context of agent execution"""
     question: str
     progress_queue: asyncio.Queue
+    agent_selection: AgentSelection
+    agent_results: Dict[str, AgentResult] = field(default_factory=dict)
+    team_ids: List[int] = field(default_factory=list)
+    team_names: List[str] = field(default_factory=list)
+    accessible_groups: List[str] = field(default_factory=list)
     chat_history: Optional[ChatHistory] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -93,6 +67,7 @@ class ExecutionResult:
     """Result of agent execution orchestration"""
     agent_results: Dict[str, AgentResult]
     execution_order: List[str]
+
     success: bool
     errors: Dict[str, str] = field(default_factory=dict)
 

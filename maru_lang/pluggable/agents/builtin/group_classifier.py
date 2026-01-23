@@ -3,6 +3,7 @@ import json
 import asyncio
 from typing import Dict, Any, Optional, List, Tuple
 from maru_lang.configs import RagConfig
+from maru_lang.models.agents import ExecutionContext
 from maru_lang.pipelines.base import PipelineMessage
 from maru_lang.pluggable.agents.base import BaseAgent, AgentResult
 from maru_lang.configs.manager import get_config_manager
@@ -18,24 +19,13 @@ class GroupClassifierAgent(BaseAgent):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.available_groups: Dict[str, Any] = {}
-        self.rag_config: RagConfig = None
-        self.keyword_mappings = {}
-
-    async def _setup(self) -> None:
-        """Initialize group classification capabilities"""
         config_manager = get_config_manager()
-        config_manager.ensure_loaded()
-
         self.rag_config = config_manager.get_rag_config()
         self.embedder_config = config_manager.get_embedder_config()
 
     async def execute(
         self,
-        question: str,
-        metadata: Optional[Dict[str, Any]] = {},
-        progress_queue: Optional[asyncio.Queue] = None,
-        **kwargs
+        context: ExecutionContext,
     ) -> AgentResult:
         """
         Execute group classification
@@ -51,49 +41,41 @@ class GroupClassifierAgent(BaseAgent):
         # Set progress queue if provided
         try:
 
-            if progress_queue:
-                self.set_progress_queue(progress_queue)
-
-            accessible_groups = metadata.get('accessible_groups', None)
-
             # 모든 사용 가능한 그룹으로 포맷
-            available_groups_str = await self._format_available_groups(accessible_groups)
+            available_groups_str = await self._format_available_groups(context.accessible_groups)
             if not available_groups_str:
                 return AgentResult(
-                    success=False,
-                    result="",
-                    data={
-                        'selected_groups': {},
-                        'total_retrieval_count': self.rag_config.retriever.default_k,
-                        'default_embedding_model': self._get_embedding_model(),
-                        'confidence': 0.0,
-                        'reasoning': 'No available groups provided'
-                    }
+                    status="error",
+                    error="No available groups provided for classification."
                 )
 
             classification_result = await self._classify_with_llm(
-                question,
+                context.question,
                 available_groups_str,
             )
 
-            selected_groups, confidence, reasoning, group_confidences = self._parse_classification_result(classification_result)
+            selected_groups, confidence, reasoning, group_confidences = self._parse_classification_result(
+                classification_result)
             if not selected_groups:
                 return AgentResult(
-                    success=False,
-                    result="",
-                    data={
+                    status="success",
+                    payload={
                         'selected_groups': {},
-                        'total_retrieval_count': self.rag_config.retriever.default_k,
-                        'default_embedding_model': self._get_embedding_model(),
-                        'confidence': confidence,
-                        'reasoning': reasoning
-                    })
-            
-            group_with_weights_str = [f"{group_name}: {group_confidence}" for group_name, group_confidence in zip(selected_groups, group_confidences)]
+                        "confidence": confidence,
+                        "reasoning": reasoning
+                    }
+                )
+
+            group_with_weights_str = [f"{group_name}: {group_confidence}" for group_name, group_confidence in zip(
+                selected_groups, group_confidences)]
             selected_group_message = f"Group Classifier: Selected groups: {group_with_weights_str}"
-            await self.log_info(selected_group_message)
-            await self.log_info(f"Group Classifier: Confidence: {confidence} and threshold: {self._get_confidence_threshold()}")
-            await self.log_info(f"Group Classifier: Reasoning: {reasoning}")
+            await context.progress_queue.put(
+                PipelineMessage.debug(selected_group_message)
+            )
+            await context.progress_queue.put(
+                PipelineMessage.debug(
+                    f"Group Classifier: Confidence: {confidence} and threshold: {self._get_confidence_threshold()}")
+            )
             # 2) 길이 보정 + 타입/음수 방어
             safe_confidences = []
             for v in group_confidences:
@@ -108,67 +90,59 @@ class GroupClassifierAgent(BaseAgent):
             if len(selected_groups) != len(safe_confidences):
                 safe_confidences = (
                     safe_confidences[:len(selected_groups)]
-                    + [0.0] * max(0, len(selected_groups) - len(safe_confidences))
+                    + [0.0] * max(0, len(selected_groups) -
+                                  len(safe_confidences))
                 )
 
             # 3) 합 0 방지 + 정규화
             total = sum(safe_confidences)
             if total <= 0:
                 # 점수가 전부 0이면 우선 균등분포
-                safe_confidences = [1.0 / len(selected_groups)] * len(selected_groups)
+                safe_confidences = [
+                    1.0 / len(selected_groups)] * len(selected_groups)
             else:
                 safe_confidences = [v / total for v in safe_confidences]
 
             # 4) 전체 신뢰도 임계치 체크
             if confidence < self._get_confidence_threshold():
                 # 전반 신뢰도가 낮으면 균등분포로 ‘내려앉기’
-                # normalized_scores: Dict[str, float] = {
-                #     group: 1.0 / len(selected_groups) for group in selected_groups
-                # }
+                normalized_scores: Dict[str, float] = {
+                    group: 1.0 / len(selected_groups) for group in selected_groups
+                }
                 normalized_scores = {
                     group: 1.0 if group == selected_groups[0] else 0.0 for group in selected_groups
                 }
                 # 전반 신뢰가 낮으면 가장 높은 [1]번 그룹을 1로 선택 나머지는 0으로 선택
-                await self.log_info("Confidence is too low, selected the highest confidence group and set the rest to 0")
+                await context.progress_queue.put(
+                    PipelineMessage.debug(
+                        "Confidence is too low, selected the highest confidence group and set the rest to 0")
+                )
                 return AgentResult(
-                    success=True,
-                    result="",
-                    data={
+                    status="success",
+                    payload={
                         'selected_groups': self._group_result_package(selected_groups, list(normalized_scores.values())),
-                        'total_retrieval_count': self.rag_config.retriever.default_k,
-                        'default_embedding_model': self._get_embedding_model(),
                         'confidence': confidence,
                         'reasoning': reasoning + 'Confidence is too low',
-                    })
+                    }
+                )
 
             # 5) 신뢰도 충분: 정규화한 점수 사용
             return AgentResult(
-                success=True,
-                result="",
-                data={
+                status="success",
+                payload={
                     'selected_groups': self._group_result_package(selected_groups, safe_confidences),
-                    'total_retrieval_count': self.rag_config.retriever.default_k,
-                    'default_embedding_model': self._get_embedding_model(),
                     'confidence': confidence,
                     'reasoning': reasoning,
-                })      
-            
+                })
 
         except Exception as e:
             # Fallback to default group on error
             return AgentResult(
-                success=False,
-                result="",
-                data={
-                    'selected_groups': {},
-                    'total_retrieval_count': self.rag_config.retriever.default_k,
-                    'default_embedding_model': self._get_embedding_model(),
-                    'confidence': 0.0,
-                    'reasoning': f'Fallback due to error: {str(e)}'
-                }
+                status="error",
+                error=f"Fallback due to error: {str(e)}"
             )
 
-    async def _format_available_groups(self, accessible_groups: Optional[List[str]] = None) -> str:
+    async def _format_available_groups(self, accessible_groups: List[str]) -> str:
         """Format all available groups for LLM prompt"""
 
         # 1. Get descriptions from DocumentGroup DB (only non-null descriptions)
@@ -202,7 +176,8 @@ class GroupClassifierAgent(BaseAgent):
     ):
 
         allocated_results = allocate_by_weight(
-            groups_with_weights=[(group_name, group_confidence) for group_name, group_confidence in zip(gruop_names, group_confidences)],
+            groups_with_weights=[(group_name, group_confidence) for group_name,
+                                 group_confidence in zip(gruop_names, group_confidences)],
             max_results=self.rag_config.retriever.default_k,
         )
         return {
@@ -227,7 +202,6 @@ class GroupClassifierAgent(BaseAgent):
             # Fallback: assume result is already the arguments
             arguments = result
 
-
         # Extract and validate groups
         selected_groups = arguments.get('selected_groups', [])
         confidence = arguments.get('confidence', 0.0)
@@ -236,20 +210,20 @@ class GroupClassifierAgent(BaseAgent):
 
         return selected_groups, confidence, reasoning, group_confidences
 
-
     async def _classify_with_llm(
         self,
         question: str,
         available_groups: str,
-        **kwargs
     ) -> Dict[str, Any]:
         """Use LLM for detailed group classification with fallback"""
         # Prepare tool definition
         tools = [
             tool.to_dict(tool_name=tool_name) for tool_name, tool in self.config.tools.items()
         ]
-
         prompts = self.config.prompts
+        if prompts is None:
+            raise ValueError(
+                "Prompts configuration is missing in GroupClassifierAgent")
 
         user_prompt = prompts.user_prompt_template.format(
             question=question,
@@ -273,21 +247,15 @@ class GroupClassifierAgent(BaseAgent):
 
         return response
 
-       
     def _get_confidence_threshold(self) -> float:
         """Retrieve confidence threshold from configuration with fallback"""
-        try:
-            threshold = self.config.config.classification_config.confidence_threshold
-            return float(threshold)
-        except (AttributeError, TypeError, ValueError):
+        if self.config.config is None:
             return 0.5
-
-    def get_available_groups(self) -> Dict[str, str]:
-        """Get available groups with descriptions"""
-        return {
-            name: config.description
-            for name, config in self.available_groups.items()
-        }
+        classification_config = self.config.config.classification_config
+        if not classification_config:
+            return 0.5
+        threshold = classification_config.confidence_threshold
+        return float(threshold)
 
     def _get_embedding_model(self, group_name: Optional[str] = None) -> str:
         """Get embedding model from configuration"""

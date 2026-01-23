@@ -3,6 +3,7 @@ Keyword Extractor Agent - Extracts BM25-optimized keywords from questions
 """
 from typing import Dict, Any, Optional, List
 from maru_lang.pluggable.agents.base import BaseAgent, AgentResult
+from maru_lang.models.agents import ExecutionContext
 
 
 class KeywordExtractorAgent(BaseAgent):
@@ -21,9 +22,7 @@ class KeywordExtractorAgent(BaseAgent):
 
     async def execute(
         self,
-        question: str,
-        max_keywords: int = 7,
-        **kwargs
+        context: ExecutionContext,
     ) -> AgentResult:
         """
         Execute keyword extraction optimized for BM25 search
@@ -38,52 +37,36 @@ class KeywordExtractorAgent(BaseAgent):
         """
         try:
             # Extract keywords using LLM
-            keywords_text = await self._extract_keywords_with_llm(question)
+            keywords_text = await self._extract_keywords_with_llm(context.question)
 
             # Process and validate keywords
             processed_keywords = self._process_keywords(
                 keywords_text,
-                question,
-                max_keywords
+                context.question,
             )
 
             return AgentResult(
-                success=True,
-                result=' '.join(processed_keywords),  # 주요 출력: 키워드 문자열
-                data={
-                    'original_question': question,
-                    'extracted_keywords': processed_keywords,
-                    'bm25_optimized': True
-                },
-                metadata={
-                    'extraction_method': 'llm_based',
-                    'preprocessing_applied': True
+                status="success",
+                payload={
+                    "extracted_keywords": processed_keywords,
                 }
             )
-
         except Exception as e:
             return AgentResult(
-                success=True,
-                result=question,  # 주요 출력: 원본 질문
-                data={
-                    'original_question': question,
-                    'extracted_keywords': [question],
-                    'bm25_optimized': False
-                },
-                metadata={
-                    'extraction_method': 'fallback',
-                    'preprocessing_applied': False
-                }
+                status="error",
+                error=str(e)
             )
 
     async def _extract_keywords_with_llm(
         self,
         question: str,
-        **kwargs
     ) -> str:
         """Extract keywords using LLM with fallback"""
         # YAML 설정에서 프롬프트 가져오기
         prompts = self.config.prompts
+        if prompts is None:
+            raise ValueError(
+                "Prompts configuration is missing in GroupClassifierAgent")
         system_prompt = prompts.system_prompt if prompts.system_prompt else ""
         user_prompt_template = prompts.user_prompt_template if prompts.user_prompt_template else ""
 
@@ -107,7 +90,6 @@ class KeywordExtractorAgent(BaseAgent):
         self,
         keywords_text: str,
         original_question: str,
-        max_keywords: int
     ) -> List[str]:
         """Process and validate extracted keywords"""
         if not keywords_text.strip():
@@ -130,5 +112,13 @@ class KeywordExtractorAgent(BaseAgent):
             if keyword not in seen:
                 unique_keywords.append(keyword)
                 seen.add(keyword)
+
+        general_config = self.config.config
+        if general_config is None:
+            return unique_keywords
+        extraction_config = general_config.extraction_config
+        if extraction_config is None:
+            return unique_keywords
+        max_keywords = extraction_config.max_keywords
 
         return unique_keywords[:max_keywords]
