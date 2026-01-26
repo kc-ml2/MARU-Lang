@@ -22,6 +22,8 @@ class KnowledgeSearchAgent(BaseAgent):
     ):
         super().__init__(**kwargs)
         self.retriever = None
+        self.rag_config = None
+        self.embedder_config = None
         # Preprocessing agents (will be initialized in _setup)
         self.group_classifier = None
         self.intent_extractor = None
@@ -40,6 +42,7 @@ class KnowledgeSearchAgent(BaseAgent):
         self.retriever = get_retriever()
         # Determine whether any groups are configured; if not, disable group classifier
         self.rag_config = config_manager.get_rag_config()
+        self.embedder_config = config_manager.get_embedder_config()
 
         # Create and initialize group_classifier
         group_classifier_cfg = config_manager.get_agent('group_classifier')
@@ -68,7 +71,6 @@ class KnowledgeSearchAgent(BaseAgent):
             'keyword_extractor',
             keyword_extractor_cfg
         )
-
         await self.group_classifier.initialize()
         await self.intent_extractor.initialize()
         await self.keyword_extractor.initialize()
@@ -80,9 +82,11 @@ class KnowledgeSearchAgent(BaseAgent):
         """Parse group classifier agent result to extract selected groups"""
         if result.status != "success":
             return [], 0.0, "Group classifier failed"
-        selected_groups = getattr(result.payload, 'selected_groups', [])
-        confidence = getattr(result.payload, 'confidence', 0.0)
-        reasoning = getattr(result.payload, 'reasoning', "")
+        if not isinstance(result.payload, dict):
+            return [], 0.0, "Invalid payload type"
+        selected_groups = result.payload.get('selected_groups', [])
+        confidence = result.payload.get('confidence', 0.0)
+        reasoning = result.payload.get('reasoning', "")
         return selected_groups, confidence, reasoning
 
     def _parse_intent_extractor_result(
@@ -92,7 +96,9 @@ class KnowledgeSearchAgent(BaseAgent):
         """Parse intent extractor agent result to get rewritten query"""
         if result.status != "success":
             return ""
-        rewritten_query = getattr(result.payload, 'rewritten_question', "")
+        if not isinstance(result.payload, dict):
+            return ""
+        rewritten_query = result.payload.get('rewritten_question', "")
         return rewritten_query
 
     def _parse_keyword_extractor_result(
@@ -102,7 +108,9 @@ class KnowledgeSearchAgent(BaseAgent):
         """Parse keyword extractor agent result to get extracted keywords"""
         if result.status != "success":
             return []
-        extracted_keywords = getattr(result.payload, 'extracted_keywords', [])
+        if not isinstance(result.payload, dict):
+            return []
+        extracted_keywords = result.payload.get('extracted_keywords', [])
         return extracted_keywords
 
     async def execute(
@@ -114,7 +122,6 @@ class KnowledgeSearchAgent(BaseAgent):
                 status="error",
                 error="No team IDs provided - cannot search documents")
 
-        retrive_method = self.rag_config.retriever.default_method
         # Step 1: Execute preprocessing agents in parallel
 
         group_classifier_result, intent_extractor_result, keyword_extractor_result = await self._execute_preprocessing_agents(
@@ -128,73 +135,63 @@ class KnowledgeSearchAgent(BaseAgent):
         rewritten_question = self._parse_intent_extractor_result(
             intent_extractor_result
         )
-
         extracted_keywords = self._parse_keyword_extractor_result(
             keyword_extractor_result
         )
 
+        target_groups = selected_groups if selected_groups else context.accessible_groups
+        target_query = rewritten_question if rewritten_question else context.question
+        target_keywords = extracted_keywords if extracted_keywords else []
+
+        internal_results = await self._search_internal_documents(
+            question=target_query,
+            search_keywords=target_keywords,
+            team_ids=context.team_ids,
+            total_retrieval_count=self.rag_config.retriever.default_k,
+            retrive_method=self.rag_config.retriever.default_method,
+            default_embedding_model=self.embedder_config.default_model
+        )
+
+        # # Send pre-reranking results to progress queue
+        # pre_rerank_summary = self._format_search_results_summary(
+        #     internal_results,
+        #     "Search results before reranking"
+        # )
+        # # await self.log_info(pre_rerank_summary)
+
+        # # rerank internal results
+        # if self.retriever.should_rerank():
+        #     reranked_results = await self.retriever.rerank_results(
+        #         target_query,
+        #         internal_results,
+        #     )
+        #     internal_results = reranked_results
+
+        #     # Send post-reranking results to progress queue
+        #     post_rerank_summary = self._format_search_results_summary(
+        #         reranked_results,
+        #         "Search results after reranking"
+        #     )
+        #     # await self.log_info(post_rerank_summary)
+
+        internal_context = self._format_internal_results(internal_results)
+        internal_results_count = sum(len(docs)
+                                     for docs in internal_results.values())
+
+        response_text = await self._generate_response(
+            target_query,
+            internal_context,
+            context.chat_history,
+        )
         return AgentResult(
             status="success",
             payload={
-                "HI"
+                "message": response_text,
+                "selected_groups": selected_groups,
+                "internal_results": internal_results,
+                "internal_results_count": internal_results_count,
             },
         )
-
-        # # accessible_groups 기반으로만 검색 (selected_groups가 없으면 검색 안함)
-        # if selected_groups:
-        #     internal_results = await self._search_internal_documents(
-        #         question=search_query,
-        #         search_keywords=search_keywords,
-        #         team_ids=team_ids,
-        #         total_retrieval_count=total_retrieval_count,
-        #         retrive_method=retrive_method,
-        #         default_embedding_model=default_embedding_model,
-        #     )
-
-        #     # Send pre-reranking results to progress queue
-        #     pre_rerank_summary = self._format_search_results_summary(
-        #         internal_results,
-        #         "Search results before reranking"
-        #     )
-        #     await self.log_info(pre_rerank_summary)
-
-        #     # rerank internal results
-        #     if self.retriever.should_rerank():
-        #         reranked_results = await self.retriever.rerank_results(
-        #             question,
-        #             internal_results,
-        #         )
-        #         internal_results = reranked_results
-
-        #         # Send post-reranking results to progress queue
-        #         post_rerank_summary = self._format_search_results_summary(
-        #             reranked_results,
-        #             "Search results after reranking"
-        #         )
-        #         await self.log_info(post_rerank_summary)
-        # else:
-        #     internal_results = {}
-        #     await self.log_warning("No accessible document groups - skipping knowledge search")
-
-        # internal_context = self._format_internal_results(internal_results)
-        # internal_results_count = sum(len(docs)
-        #                              for docs in internal_results.values())
-
-        # response_text = await self._generate_response(
-        #     question,
-        #     internal_context,
-        #     kwargs.get('chat_history', None)
-        # )
-
-        # return AgentResult(
-        #     success=True,
-        #     result=response_text,  # 주요 응답 텍스트
-        #     data={
-        #         "selected_groups": selected_groups,
-        #         "internal_results": internal_results,
-        #         "internal_results_count": internal_results_count,
-        #     }
-        # )
 
     async def _execute_preprocessing_agents(
         self,
@@ -241,8 +238,6 @@ class KnowledgeSearchAgent(BaseAgent):
         """Search internal documents and policies by team_ids"""
         if not self.retriever:
             return {}
-
-        # await self.log_info(f"Searching teams {team_ids} with top_k={total_retrieval_count} using {default_embedding_model}")
 
         results = await self.retriever.search(
             query=question,
