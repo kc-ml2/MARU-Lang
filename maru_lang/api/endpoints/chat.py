@@ -30,6 +30,7 @@ from maru_lang.services.chat import (
     fetch_conversation_by_user_and_date,
     create_conversation,
 )
+from maru_lang.services.team import list_teams_by_user, Team
 from maru_lang.models.chat import ChatHistory
 from maru_lang.models.agents import ChatProcess, ChatResult
 from maru_lang.enums.chat import ChatProcessStep
@@ -89,7 +90,7 @@ async def chat_websocket(websocket: WebSocket):
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type")
-
+            all_user_teams: list[Team] = []
             # 인증 전: auth 메시지만 허용
             if not authenticated:
                 if msg_type != "auth":
@@ -111,6 +112,7 @@ async def chat_websocket(websocket: WebSocket):
                         "error",
                         "Invalid or expired chat_token")
                     break
+                all_user_teams = await list_teams_by_user(user)
                 authenticated = True
                 continue
 
@@ -123,15 +125,11 @@ async def chat_websocket(websocket: WebSocket):
                         "error",
                         "message content is required")
                     break
-                target_groups = data.get("target_groups", [])
-                #  TODO check permission for target_groups
-                #  TODO need to some validation?
-                # if not target_groups:
-                #     await _streaming_message(
-                #         "error",
-                #         "target_groups is required")
-                #     break
-
+                if not all_user_teams:
+                    await _streaming_message(
+                        "error",
+                        "User does not belong to any team")
+                    break
                 chat_pipeline = get_chat_pipeline()
                 if not chat_pipeline:
                     await _streaming_message(
@@ -141,6 +139,7 @@ async def chat_websocket(websocket: WebSocket):
 
                 # Process stream and yield events
                 async for step in chat_pipeline.run(
+                    teams=all_user_teams,
                     question=content,
                 ):
                     if (

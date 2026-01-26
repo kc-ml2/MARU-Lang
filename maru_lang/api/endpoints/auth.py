@@ -7,6 +7,7 @@ from maru_lang.services.auth import (
     refresh_token_flow,
     generate_chat_token,
 )
+from maru_lang.services.team import get_or_create_team, add_member_to_team
 from maru_lang.schemas.auth import (
     VerifyCodeRequest,
     SignUpRequest,
@@ -122,6 +123,18 @@ async def verify_code(
             raise Exception("Invalid or expired code")
 
         user = await create_or_get_user(request.email)
+
+        # set up default team using domain
+        # if kct.co.kr -> kct
+        email_domain = request.email.split("@")[-1]
+        domain_prefix = email_domain.split(".")[0]
+        team, _ = await get_or_create_team(
+            name=domain_prefix,
+            manager=user)
+
+        await add_member_to_team(
+            team=team,
+            user=user)
 
         access_token, refresh_token = await generate_token(
             user.id,
