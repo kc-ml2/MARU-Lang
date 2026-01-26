@@ -21,21 +21,8 @@ class KnowledgeSearchAgent(BaseAgent):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.retriever = None
-        self.rag_config = None
-        self.embedder_config = None
-        # Preprocessing agents (will be initialized in _setup)
-        self.group_classifier = None
-        self.intent_extractor = None
-        self.keyword_extractor = None
-
-    async def _setup(self) -> None:
-        """Initialize knowledge search capabilities"""
-        # Initialize VectorDB (system_config.yaml의 vector_db.type에 따라 자동 선택)
-        # Initialize preprocessing agents
         config_manager = get_config_manager()
-        config_manager.ensure_loaded()
-
+        config_manager.ensure_loaded()  # TODO require?
         factory = AgentFactory()
 
         # Initialize Retriever (새로운 Retriever 사용)
@@ -71,6 +58,12 @@ class KnowledgeSearchAgent(BaseAgent):
             'keyword_extractor',
             keyword_extractor_cfg
         )
+
+    async def _setup(self) -> None:
+        """Initialize knowledge search capabilities"""
+        # Initialize VectorDB (system_config.yaml의 vector_db.type에 따라 자동 선택)
+        # Initialize preprocessing agents
+
         await self.group_classifier.initialize()
         await self.intent_extractor.initialize()
         await self.keyword_extractor.initialize()
@@ -112,6 +105,39 @@ class KnowledgeSearchAgent(BaseAgent):
             return []
         extracted_keywords = result.payload.get('extracted_keywords', [])
         return extracted_keywords
+
+    async def _execute_preprocessing_agents(
+        self,
+        context: ExecutionContext,
+    ) -> List[AgentResult]:
+        """Execute preprocessing agents in parallel"""
+        if (
+            not self.group_classifier or
+            not self.intent_extractor or
+            not self.keyword_extractor
+        ):
+            raise ValueError(
+                "Preprocessing agents are not properly initialized."
+            )
+        # Create tasks for parallel execution
+
+        tasks = [
+            self.group_classifier.execute(context),
+            self.intent_extractor.execute(context),
+            self.keyword_extractor.execute(context),
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Build result dictionary
+        preprocessing_results = []
+        for result in results:
+            if isinstance(result, Exception):
+                preprocessing_results.append(AgentResult(
+                    status="error",
+                    error=str(result)
+                ))
+            else:
+                preprocessing_results.append(result)
+        return preprocessing_results
 
     async def execute(
         self,
@@ -178,7 +204,7 @@ class KnowledgeSearchAgent(BaseAgent):
         internal_results_count = sum(len(docs)
                                      for docs in internal_results.values())
 
-        response_text = await self._generate_response(
+        response = await self._generate_response(
             target_query,
             internal_context,
             context.chat_history,
@@ -186,45 +212,12 @@ class KnowledgeSearchAgent(BaseAgent):
         return AgentResult(
             status="success",
             payload={
-                "message": response_text,
+                "message": response,
                 "selected_groups": selected_groups,
                 "internal_results": internal_results,
                 "internal_results_count": internal_results_count,
             },
         )
-
-    async def _execute_preprocessing_agents(
-        self,
-        context: ExecutionContext,
-    ) -> List[AgentResult]:
-        """Execute preprocessing agents in parallel"""
-        if (
-            not self.group_classifier or
-            not self.intent_extractor or
-            not self.keyword_extractor
-        ):
-            raise ValueError(
-                "Preprocessing agents are not properly initialized."
-            )
-        # Create tasks for parallel execution
-
-        tasks = [
-            self.group_classifier.execute(context),
-            self.intent_extractor.execute(context),
-            self.keyword_extractor.execute(context),
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        # Build result dictionary
-        preprocessing_results = []
-        for result in results:
-            if isinstance(result, Exception):
-                preprocessing_results.append(AgentResult(
-                    status="error",
-                    error=str(result)
-                ))
-            else:
-                preprocessing_results.append(result)
-        return preprocessing_results
 
     async def _search_internal_documents(
         self,

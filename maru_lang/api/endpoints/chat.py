@@ -86,11 +86,11 @@ async def chat_websocket(websocket: WebSocket):
 
     user: User | None = None
     authenticated = False
+    all_user_teams: list[Team] = []
     try:
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type")
-            all_user_teams: list[Team] = []
             # 인증 전: auth 메시지만 허용
             if not authenticated:
                 if msg_type != "auth":

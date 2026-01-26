@@ -2,6 +2,7 @@
 Keyword Extractor Agent - Extracts BM25-optimized keywords from questions
 """
 from typing import Dict, Any, Optional, List
+from maru_lang.pipelines.base import PipelineMessage
 from maru_lang.pluggable.agents.base import BaseAgent, AgentResult
 from maru_lang.models.agents import ExecutionContext
 
@@ -43,6 +44,11 @@ class KeywordExtractorAgent(BaseAgent):
             processed_keywords = self._process_keywords(
                 keywords_text,
                 context.question,
+            )
+
+            await context.progress_queue.put(
+                PipelineMessage.debug(
+                    f"KeywordExtractorAgent extracted keywords: {processed_keywords}")
             )
 
             return AgentResult(
