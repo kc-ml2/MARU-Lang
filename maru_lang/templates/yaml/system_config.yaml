@@ -47,9 +47,6 @@ auth:
   # Validation
   default_validation_code: ${ENV:DEFAULT_VALIDATION_CODE:456123}
 
-  # Auto-create user groups based on email domain
-  auto_create_group_by_domain: ${ENV:AUTO_CREATE_GROUP_BY_DOMAIN:true}
-
 # ============================================================
 # Email Service Configuration
 # ============================================================

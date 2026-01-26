@@ -125,7 +125,7 @@ async def verify_code(
         user = await create_or_get_user(request.email)
 
         # set up default team using domain
-        # if kct.co.kr -> kct
+        # if example.co.kr -> example
         email_domain = request.email.split("@")[-1]
         domain_prefix = email_domain.split(".")[0]
         team, _ = await get_or_create_team(

@@ -61,7 +61,6 @@ class AuthConfig:
     access_token_expire_minutes: int = 15
     refresh_token_expire_minutes: int = 43200  # 30 days
     default_validation_code: str = "456123"
-    auto_create_group_by_domain: bool = True
 
 
 @dataclass
@@ -255,8 +254,7 @@ class SystemConfigLoader:
             algorithm=data.get('algorithm', 'HS256'),
             access_token_expire_minutes=int(data.get('access_token_expire_minutes', 15)),
             refresh_token_expire_minutes=int(data.get('refresh_token_expire_minutes', 43200)),
-            default_validation_code=data.get('default_validation_code', '456123'),
-            auto_create_group_by_domain=bool(data.get('auto_create_group_by_domain', True))
+            default_validation_code=data.get('default_validation_code', '456123')
         )
 
     def _parse_email_config(self, data: Dict[str, Any]) -> EmailConfig:
