@@ -23,6 +23,11 @@ class GroupClassifierAgent(BaseAgent):
         self.rag_config = config_manager.get_rag_config()
         self.embedder_config = config_manager.get_embedder_config()
 
+    async def _setup(self) -> None:
+        """Initialize group classifier capabilities"""
+        pass
+
+
     async def execute(
         self,
         context: ExecutionContext,

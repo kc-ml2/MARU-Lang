@@ -34,18 +34,21 @@ class AgentExecutor:
         Returns:
             Tuple of (success, error_message)
         """
-        if agent_name not in self.agent_registry:
-            return False, f"Agent '{agent_name}' not found in registry"
+        try:
+            if agent_name not in self.agent_registry:
+                return False, f"Agent '{agent_name}' not found in registry"
 
-        if agent_name not in self._initialized_agents:
-            try:
-                agent = self.agent_registry[agent_name]
-                await agent.initialize()
-                self._initialized_agents.add(agent_name)
-                return True, None
-            except Exception as e:
-                error_msg = f"Failed to initialize agent '{agent_name}': {str(e)}"
-                return False, error_msg
+            if agent_name not in self._initialized_agents:
+                try:
+                    agent = self.agent_registry[agent_name]
+                    await agent.initialize()
+                    self._initialized_agents.add(agent_name)
+                    return True, None
+                except Exception as e:
+                    error_msg = f"Failed to initialize agent '{agent_name}': {str(e)}"
+                    return False, error_msg
+        except Exception as e:
+            return False, f"Failed to initialize agent '{agent_name}': {str(e)}"
 
         return True, None
 
@@ -114,32 +117,32 @@ class AgentExecutor:
 
             # Execute agent
             result = await agent.execute(context)
-
             # TODO dettach
             # 만약 stream이면 다음 agent를 실행하기전에 결과를 받아오도록 하자,
-            if isinstance(result.payload, AsyncGenerator):
-                # Collect stream result
-                stream_output = ""
-                await context.progress_queue.put(
-                    PipelineMessage.info(
-                        f"Agent '{agent_name}' streaming output...")
-                )
-                async for chunk in result.payload:
-                    stream_output += chunk
+            if isinstance(result.payload, dict) and 'message' in result.payload:
+                if isinstance(result.payload['message'], AsyncGenerator):
+                    # Collect stream result
+                    stream_output = ""
                     await context.progress_queue.put(
-                        PipelineMessage.info(chunk))
-                result.payload = stream_output
-                await context.progress_queue.put(
-                    PipelineMessage.info(
-                        f"Agent '{agent_name}' completed streaming."))
-            elif isinstance(result.payload, str):
-                await context.progress_queue.put(
-                    PipelineMessage.info(
-                        f"Agent '{agent_name}' completed with result: {result.payload[:100]}..."))
-            else:
-                await context.progress_queue.put(
-                    PipelineMessage.info(
-                        f"Agent '{agent_name}' completed with non-string result."))
+                        PipelineMessage.info(
+                            f"Agent '{agent_name}' streaming output...")
+                    )
+                    async for chunk in result.payload['message']:
+                        stream_output += chunk
+                        await context.progress_queue.put(
+                            PipelineMessage.info(chunk))
+                    result.payload['message'] = stream_output
+                    await context.progress_queue.put(
+                        PipelineMessage.info(
+                            f"Agent '{agent_name}' completed streaming."))
+                elif isinstance(result.payload['message'], str):
+                    await context.progress_queue.put(
+                        PipelineMessage.info(
+                            f"Agent '{agent_name}' completed with result: {result.payload['message'][:100]}..."))
+                else:
+                    await context.progress_queue.put(
+                        PipelineMessage.info(
+                            f"Agent '{agent_name}' completed with non-string result."))
 
             if result.status == "error":
                 await context.progress_queue.put(
@@ -175,9 +178,14 @@ class AgentExecutor:
 
         result = await response_agent.execute(context)
         if result.status == "success":
-            if not isinstance(result.payload, (str, AsyncGenerator)):
+            # payload가 dict이고 'message' 키가 있으면 반환
+            if isinstance(result.payload, dict) and 'message' in result.payload:
+                return result.payload['message']
+            # 후방 호환성: payload가 직접 str/AsyncGenerator인 경우
+            elif isinstance(result.payload, (str, AsyncGenerator)):
+                return result.payload
+            else:
                 return "Sorry, the response agent returned an invalid payload."
-            return result.payload
         return "Sorry, unable to generate a response."
 
     def get_agent_capabilities(self) -> Dict[str, Dict[str, Any]]:

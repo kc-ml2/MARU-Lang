@@ -74,18 +74,11 @@ config:
   # Scenario-specific LLM guidance (appended to the prompt)
   scenario_config:
     no_agents: "No agents were selected. Ask the user for more details or offer general assistance."
+    no_results: "Agents were selected but produced no results. Explain politely and suggest checking the request."
     errors: "An error occurred while running the agents. Explain the issue politely and suggest trying again."
     success: "Agents completed successfully. Present the results in a user-friendly manner."
     partial_success: "Some agents succeeded while others failed. Share the successful results first and briefly mention the failures."
     unknown: "The situation is unclear. Let the user know that assistance is limited and offer alternative help."
-
-  # Fallback responses when no LLM output is available
-  fallback_config:
-    no_agents: "I’m sorry, I couldn’t find an appropriate agent to handle that question. Could you provide more details?"
-    errors: "I’m sorry, something went wrong while processing your request."
-    success: ""  # Empty string: use the formatted_context as-is
-    partial_success: ""  # Empty string: use the formatted_context as-is
-    unknown: "I’m sorry, I’m unable to generate a response right now."
 
 # Examples (this agent formats outputs from other agents)
 examples:
