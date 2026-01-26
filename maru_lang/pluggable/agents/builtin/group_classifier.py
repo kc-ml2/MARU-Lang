@@ -27,7 +27,6 @@ class GroupClassifierAgent(BaseAgent):
         """Initialize group classifier capabilities"""
         pass
 
-
     async def execute(
         self,
         context: ExecutionContext,
@@ -49,6 +48,10 @@ class GroupClassifierAgent(BaseAgent):
             # 모든 사용 가능한 그룹으로 포맷
             available_groups_str = await self._format_available_groups(context.accessible_groups)
             if not available_groups_str:
+                await context.progress_queue.put(
+                    PipelineMessage.debug(
+                        "No accessible groups available for classification.")
+                )
                 return AgentResult(
                     status="error",
                     error="No available groups provided for classification."

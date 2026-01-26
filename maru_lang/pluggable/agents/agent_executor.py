@@ -120,6 +120,8 @@ class AgentExecutor:
             # TODO dettach
             # 만약 stream이면 다음 agent를 실행하기전에 결과를 받아오도록 하자,
             if isinstance(result.payload, dict) and 'message' in result.payload:
+                await context.progress_queue.put(
+                    PipelineMessage.info(f"Agent '{agent_name}' completed with result:"))
                 if isinstance(result.payload['message'], AsyncGenerator):
                     # Collect stream result
                     stream_output = ""
@@ -138,7 +140,12 @@ class AgentExecutor:
                 elif isinstance(result.payload['message'], str):
                     await context.progress_queue.put(
                         PipelineMessage.info(
-                            f"Agent '{agent_name}' completed with result: {result.payload['message'][:100]}..."))
+                            f"{result.payload['message'][:200]}..."))
+                    remain_len = len(result.payload['message']) - 200
+                    if remain_len > 0:
+                        await context.progress_queue.put(
+                            PipelineMessage.info(
+                                f"... (and {remain_len} more characters)"))
                 else:
                     await context.progress_queue.put(
                         PipelineMessage.info(

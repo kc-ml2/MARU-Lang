@@ -30,7 +30,9 @@ async def chat_session(
     """
 
     # Parse comma-separated team names
-    team_name_list = [name.strip() for name in team_names.split(",") if name.strip()]
+    team_name_list = [
+        name.strip()
+        for name in team_names.split(",") if name.strip()]
     if not team_name_list:
         console.print("[red]Error: No team names provided[/red]")
         return
@@ -46,7 +48,8 @@ async def chat_session(
             not_found.append(name)
 
     if not_found:
-        console.print(f"[red]Error: Teams not found: {', '.join(not_found)}[/red]")
+        console.print(
+            f"[red]Error: Teams not found: {', '.join(not_found)}[/red]")
         # Show available teams
         all_teams = await Team.all().values_list("name", flat=True)
         if all_teams:
@@ -174,7 +177,6 @@ async def chat_session(
 
                 # Process chat
                 answer = ""
-                logs = []
 
                 with console.status("[cyan]Processing...[/cyan]", spinner="dots"):
                     async for msg in chat_pipeline.run(
@@ -183,33 +185,33 @@ async def chat_session(
                         chat_history=chat_history,
                     ):
                         if msg.message_type == MessageType.INFO:
-                            logs.append(msg.message)
+                            console.print(f"[dim]<INFO>[/dim]")
                             if msg.data and 'selected_agents' in msg.data:
                                 agents = msg.data['selected_agents']
                                 if agents:
-                                    logs.append(
-                                        f"Selected: {', '.join(agents)}")
-
+                                    console.print(
+                                        f"[bold cyan]Selected agents: {', '.join(agents)}[/bold cyan]")
+                            console.print(f"[cyan]{msg.message}[/cyan]")
+                            console.print(f"[dim]</INFO>[/dim]")
+                        elif msg.message_type == MessageType.DEBUG:
+                            console.print(f"[dim]<DEBUG>[/dim]")
+                            console.print(f"[dim]{msg.message}[/dim]")
+                            console.print(f"[dim]</DEBUG>[/dim]")
                         elif msg.message_type == MessageType.NORMAL:
                             if msg.data == "answer":
                                 answer = msg.message
 
                         elif msg.message_type == MessageType.ERROR:
-                            logs.append(f"[red]Error: {msg.message}[/red]")
+                            console.print(f"[dim]<Error>[/dim]")
+                            console.print(f"[red]{msg.message}[/red]")
+                            console.print(f"[dim]</Error>[/dim]")
 
                         elif msg.message_type == MessageType.WARNING:
-                            logs.append(f"[yellow]{msg.message}[/yellow]")
-
+                            console.print(f"[dim]<Warning>[/dim]")
+                            console.print(f"[yellow]{msg.message}[/yellow]")
+                            console.print(f"[dim]</Warning>[/dim]")
                         elif msg.message_type == MessageType.COMPLETE:
                             break
-
-                # Display thinking process
-                if logs:
-                    console.print(Panel(
-                        "\n".join(logs),
-                        title="[dim]Thinking[/dim]",
-                        border_style="dim",
-                    ))
 
                 # Display result
                 if answer:
