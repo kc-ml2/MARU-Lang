@@ -8,6 +8,7 @@ from maru_lang.services.auth import (
     generate_chat_token,
 )
 from maru_lang.services.team import get_or_create_team, add_member_to_team
+from maru_lang.services.admin import get_or_create_public_team
 from maru_lang.schemas.auth import (
     VerifyCodeRequest,
     SignUpRequest,
@@ -134,6 +135,12 @@ async def verify_code(
 
         await add_member_to_team(
             team=team,
+            user=user)
+
+        # Add user to public team
+        public_team = await get_or_create_public_team()
+        await add_member_to_team(
+            team=public_team,
             user=user)
 
         access_token, refresh_token = await generate_token(
