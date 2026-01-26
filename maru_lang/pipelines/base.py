@@ -10,6 +10,7 @@ class MessageType(str, Enum):
     INFO = "info"
     DEBUG = "debug"
     NORMAL = "normal"
+    RETRIEVE = "retrieve"
     ERROR = "error"
     WARNING = "warning"
     COMPLETE = "complete"
@@ -21,6 +22,11 @@ class PipelineMessage:
     message_type: MessageType
     message: Union[str, AsyncGenerator[str, None]]
     data: Any = None
+
+    @classmethod
+    def retrieve(cls, message: str, data: Any):
+        """RETRIEVE 메시지 생성"""
+        return cls(message_type=MessageType.RETRIEVE, message=message, data=data)
 
     @classmethod
     def normal(cls, message: Union[str, AsyncGenerator[str, None]], data: Any = None):
