@@ -15,11 +15,24 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 from maru_lang.configs.system_config import get_system_config
-
-config = get_system_config()
-
+from maru_lang.configs.manager import get_config_manager
 
 app = typer.Typer()
+
+
+@app.callback()
+def common_init(ctx: typer.Context):
+    """Common initialization before all commands"""
+    # Skip for install command (no config needed yet)
+    if ctx.invoked_subcommand == "install":
+        return
+
+    # Load system config (DB, auth, etc.)
+    get_system_config()
+
+    # Load plugin configs (LLM, RAG, Agent, etc.)
+    config_manager = get_config_manager()
+    config_manager.ensure_loaded()
 
 
 @app.command()
@@ -36,6 +49,8 @@ def serve(
         False, "--skip-migrations", help="Skip automatic database migrations"),
 ):
     """Start the chatbot FastAPI server (default: maru_app/main.py)"""
+
+    config = get_system_config()
 
     # Check if installation is complete
     _check_maru_app_installation()
@@ -191,7 +206,8 @@ def remove(
 
 @app.command()
 def chat(
-    teams: str = typer.Argument(..., help="Team names (comma-separated, e.g. 'team1,team2')"),
+    teams: str = typer.Argument(...,
+                                help="Team names (comma-separated, e.g. 'team1,team2')"),
     max_turns: int = typer.Option(
         0, "--max-turns", "-m",
         help="Maximum number of turns to keep in chat history"
