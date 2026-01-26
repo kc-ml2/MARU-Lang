@@ -144,6 +144,7 @@ class FormattingConfig:
 class ScenarioConfig:
     """Scenario-specific configuration for response_agent"""
     no_agents: str = "어떤 에이전트도 선택되지 않았습니다. 사용자에게 더 구체적인 질문을 요청하거나 일반적인 도움을 제공하세요."
+    no_results: str = "선택된 에이전트가 유용한 정보를 반환하지 못했습니다. 사용자에게 추가 정보를 요청하거나 다른 방법으로 도움을 제공하세요."
     errors: str = "에이전트 실행 중 오류가 발생했습니다. 사용자에게 오류를 친절하게 설명하고 재시도를 제안하세요."
     success: str = "에이전트가 성공적으로 실행되었습니다. 결과를 사용자 친화적으로 전달하세요."
     partial_success: str = "일부 에이전트는 성공했지만 일부는 실패했습니다. 성공한 결과를 우선 전달하고 실패한 부분은 간략히 언급하세요."
