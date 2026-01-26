@@ -30,6 +30,25 @@ class Team(Model):
     created_at = fields.DatetimeField(auto_now_add=True)
 
 
+class TeamMember(Model):
+    id = fields.IntField(pk=True)
+    user = fields.ForeignKeyField(
+        "models.User",
+        related_name="team_memberships",
+        on_delete=fields.CASCADE
+    )
+    team = fields.ForeignKeyField(
+        "models.Team",
+        related_name="members",
+        on_delete=fields.CASCADE
+    )
+    role = fields.CharField(max_length=50, default="member")
+    joined_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:  # type: ignore[override]
+        unique_together = (("user", "team"),)
+
+
 class EmailVerificationCode(Model):
     id = fields.IntField(pk=True)
     email = fields.CharField(max_length=255, index=True)
