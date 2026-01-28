@@ -42,7 +42,7 @@ auth:
 
   # Token expiration times (in minutes)
   access_token_expire_minutes: ${ENV:ACCESS_TOKEN_EXPIRE_MINUTES:15}
-  refresh_token_expire_minutes: ${ENV:REFRESH_TOKEN_EXPIRE_MINUTES:43200}  # 30 days
+  refresh_token_expire_minutes: ${ENV:REFRESH_TOKEN_EXPIRE_MINUTES:43200} # 30 days
 
   # Validation
   default_validation_code: ${ENV:DEFAULT_VALIDATION_CODE:456123}
@@ -89,6 +89,14 @@ vector_db:
     port: ${ENV:MILVUS_PORT:19530}
     user: ${ENV:MILVUS_USER:root}
     password: ${ENV:MILVUS_PASSWORD:Milvus}
+
+# ============================================================
+# LLM Configuration
+# ============================================================
+llm:
+  # Default timeout for LLM requests in seconds
+  # Can be overridden per-model in LLMConfig or per-request
+  default_timeout: ${ENV:LLM_DEFAULT_TIMEOUT:120}
 
 # ============================================================
 # External Services Configuration

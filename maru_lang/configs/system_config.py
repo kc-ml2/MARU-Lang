@@ -132,6 +132,13 @@ class VectorDBConfig:
 
 
 @dataclass
+class LLMSystemConfig:
+    """LLM system configuration"""
+    # Default timeout for LLM requests in seconds
+    default_timeout: float = 120.0
+
+
+@dataclass
 class SystemConfig:
     """Complete system configuration"""
     server: ServerConfig
@@ -140,6 +147,7 @@ class SystemConfig:
     auth: AuthConfig
     email: EmailConfig
     vector_db: VectorDBConfig
+    llm: LLMSystemConfig
 
 
 class SystemConfigLoader:
@@ -297,6 +305,11 @@ class SystemConfigLoader:
             )
         )
 
+    def _parse_llm_config(self, data: Dict[str, Any]) -> LLMSystemConfig:
+        """Parse LLM system configuration"""
+        return LLMSystemConfig(
+            default_timeout=float(data.get('default_timeout', 120.0))
+        )
 
     def load(self) -> SystemConfig:
         """Load system configuration from YAML file"""
@@ -309,7 +322,8 @@ class SystemConfigLoader:
                 database=DatabaseConfig(),
                 auth=AuthConfig(),
                 email=EmailConfig(),
-                vector_db=VectorDBConfig()
+                vector_db=VectorDBConfig(),
+                llm=LLMSystemConfig()
             )
             return self.config
 
@@ -330,7 +344,8 @@ class SystemConfigLoader:
                 database=self._parse_database_config(data.get('database', {})),
                 auth=self._parse_auth_config(data.get('auth', {})),
                 email=self._parse_email_config(data.get('email', {})),
-                vector_db=self._parse_vector_db_config(data.get('vector_db', {}))
+                vector_db=self._parse_vector_db_config(data.get('vector_db', {})),
+                llm=self._parse_llm_config(data.get('llm', {}))
             )
 
             logger.info(f"Loaded system configuration from {self.config_path}")
