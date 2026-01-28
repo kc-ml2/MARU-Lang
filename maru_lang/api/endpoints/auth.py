@@ -64,7 +64,8 @@ async def logout(
         response.delete_cookie(
             key="refresh_token",
             path="/",
-            samesite="strict"
+            samesite="none",
+            secure=True
         )
         return {"message": "Logged out successfully"}
     except Exception as e:
@@ -90,7 +91,8 @@ async def refresh(
         response.delete_cookie(
             key="refresh_token",
             path="/",
-            samesite="strict"
+            samesite="none",
+            secure=True
         )
         raise HTTPException(
             status_code=401,
@@ -104,8 +106,8 @@ async def refresh(
         value=new_refresh_token,
         httponly=True,
         secure=True,
-        samesite="strict",
-        max_age=config.auth.refresh_token_expire_minutes * 60
+        samesite="none",
+        max_age=config.auth.refresh_token_expire_minutes * 60,
     )
 
     return {"access_token": access_token}
@@ -153,7 +155,7 @@ async def verify_code(
             value=refresh_token,
             httponly=True,
             secure=True,
-            samesite="strict",
+            samesite="none",
             max_age=config.auth.refresh_token_expire_minutes * 60
         )
 
