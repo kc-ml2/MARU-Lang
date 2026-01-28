@@ -65,6 +65,7 @@ class MaruLangApp(FastAPI):
         """Return default CORS origins."""
         return [
             "http://localhost:5173",  # Vite dev server
+            # Add more default origins as needed
         ]
 
     async def _startup_sequence(self):

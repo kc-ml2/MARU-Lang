@@ -205,6 +205,7 @@ async def chat_session(
                             console.print(f"[dim]<Error>[/dim]")
                             console.print(f"[red]{msg.message}[/red]")
                             console.print(f"[dim]</Error>[/dim]")
+                            break
 
                         elif msg.message_type == MessageType.WARNING:
                             console.print(f"[dim]<Warning>[/dim]")
