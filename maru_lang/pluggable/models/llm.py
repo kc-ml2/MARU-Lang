@@ -20,6 +20,8 @@ class LLMConfig:
     config: Dict[str, Any] = field(default_factory=dict)
     source_path: str = ""
     is_override: bool = False
+    # Request timeout in seconds. None means use system default.
+    timeout: Optional[float] = None
 
     def __post_init__(self):
         """Process environment variables in api_key"""

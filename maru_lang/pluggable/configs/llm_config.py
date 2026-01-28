@@ -30,7 +30,8 @@ class LLMConfigLoader(DefaultConfigLoader[LLMConfig]):
                 description=data.get('description', ''),
                 config=data.get('config', {}),
                 source_path=source_path,
-                is_override=is_user
+                is_override=is_user,
+                timeout=data.get('timeout')
             )
         except KeyError as e:
             import logging

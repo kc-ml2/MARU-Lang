@@ -1,8 +1,10 @@
 from __future__ import annotations
+import asyncio
 from typing import AsyncGenerator, Optional, List, Dict, Any, Union, Literal, overload
 from any_llm import AnyLLM
 from any_llm.types.completion import ChatCompletion
 from maru_lang.pluggable.models import LLMConfig
+from maru_lang.configs.system_config import get_system_config
 
 
 class LLMClient:
@@ -21,6 +23,14 @@ class LLMClient:
             api_base=self.config.base_url
         )
 
+    def _get_timeout(self, timeout: Optional[float] = None) -> float:
+        """Get effective timeout value with priority: request > config > system default."""
+        if timeout is not None:
+            return timeout
+        if self.config.timeout is not None:
+            return self.config.timeout
+        return get_system_config().llm.default_timeout
+
     @overload
     async def request(
         self,
@@ -28,6 +38,7 @@ class LLMClient:
         user_prompt: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
         stream: Literal[False] = False,
+        timeout: Optional[float] = None,
         **kwargs
     ) -> str: ...
 
@@ -38,6 +49,7 @@ class LLMClient:
         user_prompt: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
         stream: Literal[True] = ...,
+        timeout: Optional[float] = None,
         **kwargs
     ) -> AsyncGenerator[str, None]: ...
 
@@ -47,6 +59,7 @@ class LLMClient:
         user_prompt: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
         stream: bool = False,
+        timeout: Optional[float] = None,
         **kwargs
     ) -> Union[str, AsyncGenerator[str, None]]:
         """Send a request to the LLM.
@@ -56,10 +69,15 @@ class LLMClient:
             user_prompt: User prompt used when messages is omitted.
             messages: Explicit message list to send to the LLM.
             stream: If True, returns an async generator yielding chunks.
+            timeout: Request timeout in seconds. Falls back to config.timeout,
+                then system default (llm.default_timeout in system_config.yaml).
             **kwargs: Additional parameters such as temperature or max_tokens.
 
         Returns:
             The LLM response content as a string, or async generator if streaming.
+
+        Raises:
+            asyncio.TimeoutError: If the request exceeds the timeout.
         """
         if messages is None:
             messages = [
@@ -71,11 +89,20 @@ class LLMClient:
         params = {**self.config.config, **kwargs}
         params["stream"] = stream
 
+        effective_timeout = self._get_timeout(timeout)
+
         try:
-            response = await self.client.acompletion(
-                model=self.config.model_name,
-                messages=messages,  # type: ignore
-                **params
+            response = await asyncio.wait_for(
+                self.client.acompletion(
+                    model=self.config.model_name,
+                    messages=messages,  # type: ignore
+                    **params
+                ),
+                timeout=effective_timeout
+            )
+        except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(
+                f"LLM request timed out after {effective_timeout}s"
             )
         except Exception as e:
             print(f"LLM request failed: {e}")
@@ -104,6 +131,7 @@ class LLMClient:
         messages: Optional[List[Dict[str, Any]]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Union[str, Dict[str, Any]] = "auto",
+        timeout: Optional[float] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Send a request that allows tool usage.
@@ -114,10 +142,15 @@ class LLMClient:
             messages: Explicit message list to send to the LLM.
             tools: Tool definitions available to the LLM.
             tool_choice: Tool selection mode.
+            timeout: Request timeout in seconds. Falls back to config.timeout,
+                then system default (llm.default_timeout in system_config.yaml).
             **kwargs: Additional parameters for the request.
 
         Returns:
             Dict with content and tool_calls keys.
+
+        Raises:
+            asyncio.TimeoutError: If the request exceeds the timeout.
         """
         if messages is None:
             messages = [
@@ -133,11 +166,21 @@ class LLMClient:
 
         params["stream"] = False  # Tool calls not supported in streaming mode
 
-        response = await self.client.acompletion(
-            model=self.config.model_name,
-            messages=messages,  # type: ignore
-            **params
-        )
+        effective_timeout = self._get_timeout(timeout)
+
+        try:
+            response = await asyncio.wait_for(
+                self.client.acompletion(
+                    model=self.config.model_name,
+                    messages=messages,  # type: ignore
+                    **params
+                ),
+                timeout=effective_timeout
+            )
+        except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(
+                f"LLM request timed out after {effective_timeout}s"
+            )
 
         if not isinstance(response, ChatCompletion):
             raise ValueError("Expected ChatCompletion response type")
