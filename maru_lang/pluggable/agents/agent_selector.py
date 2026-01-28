@@ -139,10 +139,8 @@ class AgentSelector:
 
                 # Parse response and create selection
                 result = self._parse_response(response)
-
                 # Check if we got a valid selection
-                if result and result.selected_agents:
-                    return result
+                return result
             except Exception as e:
                 continue
         # All LLMs failed

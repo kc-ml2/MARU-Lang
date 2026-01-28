@@ -13,10 +13,6 @@ class NoneAccsessibleDocumentException(Exception):
     pass
 
 
-class NoneAgentSelectedException(Exception):
-    pass
-
-
 class NoneAvailableLLMException(Exception):
     pass
 
@@ -76,9 +72,6 @@ class ChatPipeline(BasePipeline):
                 # Agent selection failed
                 raise AgentSelectionFailedException("Agent selection failed")
 
-            if not selection.selected_agents:
-                raise NoneAgentSelectedException("No agents selected")
-
             # Get accessible groups for these teams
             try:
                 accessible_groups = []
@@ -115,17 +108,10 @@ class ChatPipeline(BasePipeline):
         except NoneAvailableLLMException as e:
             await self.queue.put(PipelineMessage.error("Sorry, no LLM servers are available at the moment. Please try again later."))
             return
-        except NoneAgentSelectedException:
-            # No agents selected
-            # system is successfully working but no agents are applicable
-            pass
-            await self.queue.put(PipelineMessage.error(
-                "Sorry, I couldn't find any suitable agents to answer your question at the moment. Please try rephrasing your question or come back later."
-            ))
         except AgentSelectionFailedException:
             # system failed to select agents
             await self.queue.put(PipelineMessage.error(
-                "Sorry, I couldn't find any suitable agents to answer your question at the moment. Please try rephrasing your question or come back later."
+                "Sorry, I couldn't determine which agents to use for your question. Please try rephrasing your question."
             ))
         except AgentExecutionFailedException as e:
             await self.queue.put(PipelineMessage.error(
