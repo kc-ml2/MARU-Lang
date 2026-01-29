@@ -69,8 +69,19 @@ class ChatPipeline(BasePipeline):
             )
 
             if not selection:
-                # Agent selection failed
                 raise AgentSelectionFailedException("Agent selection failed")
+
+            if not selection.selected_agents:
+                execution_context = ExecutionContext(
+                    question=question,
+                    progress_queue=self.queue,
+                    agent_selection=selection,
+                    team_ids=[team.id for team in teams],
+                    team_names=[team.name for team in teams],
+                    accessible_groups=[],
+                    chat_history=chat_history,
+                )
+                return
 
             # Get accessible groups for these teams
             try:

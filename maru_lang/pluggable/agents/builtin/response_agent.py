@@ -57,13 +57,14 @@ class ResponseAgent(BaseAgent):
         self,
         results: Dict[str, AgentResult],
     ) -> str:
+        if not results:
+            return "No relevant agents results."
 
         formatted_parts = []
 
         for agent_name, result in results.items():
-            if result.status == "success":
-                # message가 있는 agent만 포맷팅 (중간 처리용 agent는 스킵)
-                message = result.payload.get('message', '')
+            if result.status == "success" and result.payload:
+                message = result.payload.get('message', '') if isinstance(result.payload, dict) else str(result.payload)
                 if message:
                     formatted_parts.append(f"=== [{agent_name}] agent result ===")
                     formatted_parts.append(message)
@@ -73,7 +74,6 @@ class ResponseAgent(BaseAgent):
                 formatted_parts.append(f"=== [{agent_name}] agent error ===")
                 formatted_parts.append(result.error)
                 formatted_parts.append("")
-
 
         return "\n".join(formatted_parts) if formatted_parts else "No relevant agents results."
 
@@ -141,19 +141,22 @@ class ResponseAgent(BaseAgent):
             Final response text, or async generator if streaming
         """
 
-
         # Use prompts from YAML configuration
         prompts = self.config.prompts
         if not prompts:
             raise ValueError(
                 "Response agent requires prompts in configuration")
 
+        scenario = self._determine_scenario(context)
+        agent_result_text = self._format_agent_results(context.agent_results)
 
-        # Add scenario context to the prompt
+        if scenario == "no_agents" and context.agent_selection and context.agent_selection.reasoning:
+            agent_result_text = context.agent_selection.reasoning
+
         user_prompt = prompts.user_prompt_template.format(
             question=context.question,
-            agent_result=self._format_agent_results(context.agent_results),
-            scenario=self._get_scenario_context(self._determine_scenario(context))
+            agent_result=agent_result_text,
+            scenario=self._get_scenario_context(scenario)
         )
 
         override_params = self.get_override_params()

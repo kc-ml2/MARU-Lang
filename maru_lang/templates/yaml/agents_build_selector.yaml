@@ -12,12 +12,11 @@ system_prompt: |
 
   Guidelines:
   - Select only the agents that are necessary to answer the question.
-  - Consider execution order when multiple agents are required.
-  - Clearly explain the reasoning behind your choices.
-
-  Important: use agent names directly in execution_order.
-  Example: ["tech_prophet", "calculator"] (valid)
-  Example: ["use_tech_prophet", "use_calculator"] (invalid)
+  - If no agents are needed (e.g., simple greetings, general conversation), return an empty array [].
+  - The selected_agents array determines both selection and execution order (first in list = first to execute).
+  - Maximum 3 agents can be selected.
+  - Clearly explain the reasoning behind your choices, including why agents were or were not selected.
+  - Even if there is no agent to choose from, select the **select_agents** tool.
 
 # User prompt template
 user_prompt: |

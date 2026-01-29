@@ -189,29 +189,31 @@ class AgentSelector:
 
     def _parse_response(self, response: Dict[str, Any]) -> Optional[AgentSelection]:
         """Parse LLM response and create AgentSelection"""
-        # Check for tool calls in response
         if not response or 'tool_calls' not in response:
             return None
 
         tool_calls = response.get('tool_calls', [])
         if not tool_calls:
+            content = response.get('content', '').strip()
+            if content:
+                return AgentSelection(
+                    selected_agents=[],
+                    execution_order=[],
+                    reasoning=content,
+                    parameters={}
+                )
             return None
 
-        # Parse tool call arguments
         tool_call_args = self._extract_tool_arguments(tool_calls[0])
-
-        # Extract and process agent selection
         selected_agents = self._extract_selected_agents(tool_call_args)
 
         execution_order = self._clean_execution_order(
             tool_call_args.get("execution_order", selected_agents)
         )
 
-        # If selected_agents is empty but execution_order exists, use execution_order
         if not selected_agents and execution_order:
             selected_agents = execution_order
 
-        # Ensure execution order is not empty if we have selected agents
         if not execution_order and selected_agents:
             execution_order = selected_agents
 
