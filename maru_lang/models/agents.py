@@ -50,6 +50,7 @@ class ExecutionContext:
     accessible_groups: List[str] = field(default_factory=list)
     chat_history: Optional[ChatHistory] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    retrieved_documents: List[RetrieveDocument] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""

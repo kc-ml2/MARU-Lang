@@ -24,7 +24,7 @@ class PipelineMessage:
     data: Any = None
 
     @classmethod
-    def retrieve(cls, message: str, data: Any):
+    def retrieve(cls, message: str, data: Any = None):
         """RETRIEVE 메시지 생성"""
         return cls(message_type=MessageType.RETRIEVE, message=message, data=data)
 

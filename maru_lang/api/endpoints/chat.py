@@ -151,6 +151,10 @@ async def chat_websocket(websocket: WebSocket):
                             step.message)
                     elif step.message_type == MessageType.DEBUG:
                         pass  # currently ignore debug messages
+                    elif step.message_type == MessageType.RETRIEVE:
+                        await _streaming_message(
+                            "retrieve",
+                            step.message)
                     elif step.message_type == MessageType.INFO:
                         await _streaming_message(
                             "thinking",

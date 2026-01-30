@@ -1,3 +1,4 @@
+import json
 from typing import Optional, List
 from maru_lang.configs.manager import get_config_manager
 from maru_lang.pipelines.base import BasePipeline, PipelineMessage
@@ -141,6 +142,18 @@ class ChatPipeline(BasePipeline):
                 execution_context
             )
             await self.queue.put(PipelineMessage.normal(summarized_answer, "answer"))
+            if execution_context.retrieved_documents:
+                docs_schema = [
+                    doc.to_document_reference()
+                    for doc in execution_context.retrieved_documents
+                ]
+                json_str = json.dumps(
+                    [doc.model_dump() for doc in docs_schema],
+                    ensure_ascii=False
+                )
+                await self.queue.put(PipelineMessage.retrieve(
+                    json_str
+                ))
             await self.queue.put(PipelineMessage.complete())
 
     async def cleanup(self):

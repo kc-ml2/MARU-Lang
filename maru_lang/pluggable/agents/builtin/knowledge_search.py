@@ -203,7 +203,8 @@ class KnowledgeSearchAgent(BaseAgent):
         internal_context = self._format_internal_results(internal_results)
         internal_results_count = sum(len(docs)
                                      for docs in internal_results.values())
-
+        context.retrieved_documents = [
+            doc for docs in internal_results.values() for doc in docs]
         response = await self._generate_response(
             target_query,
             internal_context,
