@@ -60,14 +60,22 @@ async def chat_websocket(websocket: WebSocket):
             }
         )
         if isinstance(stream, str):
-            for c in stream:
+            if rate > 0:
+                for c in stream:
+                    await websocket.send_json(
+                        {
+                            "type": "stream",
+                            "content": c
+                        }
+                    )
+                    await asyncio.sleep(rate)
+            else:
                 await websocket.send_json(
                     {
                         "type": "stream",
-                        "content": c
+                        "content": stream
                     }
                 )
-                await asyncio.sleep(rate)
         else:
             async for content in stream:
                 await websocket.send_json(
@@ -154,7 +162,8 @@ async def chat_websocket(websocket: WebSocket):
                     elif step.message_type == MessageType.RETRIEVE:
                         await _streaming_message(
                             "retrieve",
-                            step.message)
+                            step.message,
+                            0)
                     elif step.message_type == MessageType.INFO:
                         await _streaming_message(
                             "thinking",

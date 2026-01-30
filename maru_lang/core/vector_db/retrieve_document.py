@@ -59,6 +59,7 @@ class RetrieveDocument(BaseModel):
             id=self.id,
             source=self.source,
             document_id=self.metadata.get("document_id"),
+            content=self.page_content,
             group=self.metadata.get("group"),
             file_path=self.metadata.get("file_path")
         )
