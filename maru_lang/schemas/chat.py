@@ -9,7 +9,10 @@ class DocumentReference(BaseModel):
     """Cleaned document reference without page_content (for API responses)"""
     id: str = Field(..., description="Document chunk ID")
     source: str = Field(..., description="Document name/source")
-    document_id: Optional[str] = Field(None, description="Original document ID")
+    document_id: Optional[str] = Field(
+        None, description="Original document ID")
+    content: Optional[str] = Field(
+        None, description="Document content preview")
     group: Optional[str] = Field(None, description="Document group")
     file_path: Optional[str] = Field(None, description="File path")
 
@@ -19,6 +22,7 @@ class ChatRequest(BaseModel):
     session_start_time: Optional[datetime] = Field(
         default=None,
         description="세션 시작 시간")
+
 
 class ChatResponse(BaseModel):
     answer: str
