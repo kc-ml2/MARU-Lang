@@ -26,7 +26,7 @@ async def chat_websocket(websocket: WebSocket):
     async def _streaming_message(
         type: str,
         stream: Union[str, AsyncGenerator],
-        rate: float = 0.015
+        rate: float = 0.0
     ):
         await websocket.send_json(
             {
@@ -138,8 +138,7 @@ async def chat_websocket(websocket: WebSocket):
                     elif step.message_type == MessageType.RETRIEVE:
                         await _streaming_message(
                             "retrieve",
-                            step.message,
-                            0)
+                            step.message)
                     elif step.message_type == MessageType.INFO:
                         await _streaming_message(
                             "thinking",
