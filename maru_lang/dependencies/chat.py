@@ -17,12 +17,12 @@ class ChatPipelineManager:
     def get_instance(cls) -> ChatPipeline | None:
         """Get or create ChatPipeline singleton instance"""
         if not cls._initialized:
-            cls._instance = cls._create_pipeline()
+            cls._instance = cls.create_pipeline()
             cls._initialized = True
         return cls._instance
 
     @classmethod
-    def _create_pipeline(cls) -> ChatPipeline | None:
+    def create_pipeline(cls) -> ChatPipeline | None:
         """Create ChatPipeline instance with all dependencies"""
         try:
             # Register all agents from config

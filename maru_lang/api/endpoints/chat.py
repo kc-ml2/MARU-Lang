@@ -2,39 +2,13 @@ import asyncio
 import json
 from typing import AsyncGenerator, Union
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
 from maru_lang.services.auth import verify_chat_token
 from maru_lang.core.relation_db.models.auth import User
 from starlette.websockets import WebSocketState
-from starlette.requests import ClientDisconnect
-from fastapi_pagination.ext.tortoise import apaginate
-from fastapi_pagination import Page
-from maru_lang.enums.auth import UserRoleCode
-from maru_lang.dependencies.auth import get_user_with_role, User
-from maru_lang.dependencies.chat import get_chat_pipeline
-from maru_lang.pipelines.chat import ChatPipeline
-from maru_lang.pipelines.base import PipelineMessage, MessageType
-from maru_lang.schemas.chat import (
-    ChatRequest,
-    ChatResponse,
-    ConversationResponse,
-    # WSAuthenticatedMessage,
-    # WSAuthErrorMessage,
-    # WSStartMessage,
-    # WSStreamMessage,
-    # WSCompleteMessage,
-    # WSErrorMessage,
-)
-from maru_lang.services.chat import (
-    fetch_conversation_queryset_by_user,
-    fetch_conversation_by_user_and_date,
-    create_conversation,
-)
+from maru_lang.dependencies.auth import User
+from maru_lang.dependencies.chat import ChatPipelineManager
+from maru_lang.pipelines.base import MessageType
 from maru_lang.services.team import list_teams_by_user, Team
-from maru_lang.models.chat import ChatHistory
-from maru_lang.models.agents import ChatProcess, ChatResult
-from maru_lang.enums.chat import ChatProcessStep
-
 
 router = APIRouter(
     prefix="/chat",
@@ -138,7 +112,9 @@ async def chat_websocket(websocket: WebSocket):
                         "error",
                         "User does not belong to any team")
                     break
-                chat_pipeline = get_chat_pipeline()
+                # TODO pass conversation_id for context-aware chat
+                # TODO or something like specification in the message
+                chat_pipeline = ChatPipelineManager.create_pipeline()
                 if not chat_pipeline:
                     await _streaming_message(
                         "error",
