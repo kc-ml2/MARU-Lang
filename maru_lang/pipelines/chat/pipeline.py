@@ -63,27 +63,6 @@ class ChatPipeline(BasePipeline):
                 # No LLM servers available - return friendly message
                 raise NoneAvailableLLMException()
 
-            # Step 1: Select agents
-            selection = await self.agent_selector.select_agents(
-                question=question,
-                chat_history=chat_history
-            )
-
-            if not selection:
-                raise AgentSelectionFailedException("Agent selection failed")
-
-            if not selection.selected_agents:
-                execution_context = ExecutionContext(
-                    question=question,
-                    progress_queue=self.queue,
-                    agent_selection=selection,
-                    team_ids=[team.id for team in teams],
-                    team_names=[team.name for team in teams],
-                    accessible_groups=[],
-                    chat_history=chat_history,
-                )
-                return
-
             # Get accessible groups for these teams
             try:
                 accessible_groups = []
@@ -95,12 +74,16 @@ class ChatPipeline(BasePipeline):
             except:
                 raise NoneAccsessibleDocumentException()
 
-            await self.queue.put(PipelineMessage.info(
-                message=selection.reasoning,
-                data=selection.to_dict(),
-            ))
+            # Step 1: Select agents
+            selection = await self.agent_selector.select_agents(
+                question=question,
+                chat_history=chat_history
+            )
 
-            # Step 2: Execute agents
+            if not selection:
+                raise AgentSelectionFailedException("Agent selection failed")
+
+            # Step 2: generate execution context
             execution_context = ExecutionContext(
                 question=question,
                 progress_queue=self.queue,
@@ -111,12 +94,21 @@ class ChatPipeline(BasePipeline):
                 chat_history=chat_history,
             )
 
+            await self.queue.put(PipelineMessage.info(
+                message=selection.reasoning,
+                data=selection.to_dict(),
+            ))
+
+            # Step 3: Execute selected agents
             await self.agent_executor.execute(execution_context=execution_context)
 
         except NoneAccsessibleDocumentException:
             # No accessible documents for the team
             # problem with DB or team is disabled
-            pass
+            await self.queue.put(PipelineMessage.error(
+                "Sorry, there are no accessible documents for your team. Please contact your administrator to resolve this issue."
+            ))
+            return
         except NoneAvailableLLMException as e:
             await self.queue.put(PipelineMessage.error("Sorry, no LLM servers are available at the moment. Please try again later."))
             return

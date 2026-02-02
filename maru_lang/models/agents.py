@@ -3,11 +3,9 @@ Agent-related data models
 """
 import asyncio
 from dataclasses import dataclass, field
-from typing import AsyncGenerator, List, Dict, Any, Optional, Union, TYPE_CHECKING
-from maru_lang.enums.chat import ChatProcessStep as ChatStep
+from typing import List, Dict, Any, Optional
 from maru_lang.models.chat import ChatHistory
 from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
-from maru_lang.schemas.chat import DocumentReference
 
 
 @dataclass
@@ -63,47 +61,3 @@ class ExecutionContext:
         }
 
 
-@dataclass
-class ExecutionResult:
-    """Result of agent execution orchestration"""
-    agent_results: Dict[str, AgentResult]
-    execution_order: List[str]
-
-    success: bool
-    errors: Dict[str, str] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
-        return {
-            "agent_results": {
-                name: result.to_dict()
-                for name, result in self.agent_results.items()
-            },
-            "execution_order": self.execution_order,
-            "success": self.success,
-            "errors": self.errors
-        }
-
-
-@dataclass
-class ChatResult:
-    """Final chat processing result"""
-    answer: str
-    internal_documents: List[DocumentReference] = field(default_factory=list)
-
-
-@dataclass
-class ChatProcess:
-    """Chat processing result"""
-    step: ChatStep
-    data: Union[AgentSelection, ExecutionResult, str, ChatResult]
-
-
-@dataclass
-class GenerateAnswerResult:
-    """Result from answer generation"""
-    answer: str
-    documents: List[Any] = field(default_factory=list)
-    success: bool = True
-    confidence: Optional[float] = None
-    metadata: Optional[Dict[str, Any]] = None
