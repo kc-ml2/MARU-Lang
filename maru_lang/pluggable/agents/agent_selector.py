@@ -194,14 +194,12 @@ class AgentSelector:
 
         tool_calls = response.get('tool_calls', [])
         if not tool_calls:
+            # LLM returned content instead of tool calls - try to parse as JSON
             content = response.get('content', '').strip()
             if content:
-                return AgentSelection(
-                    selected_agents=[],
-                    execution_order=[],
-                    reasoning=content,
-                    parameters={}
-                )
+                parsed = self._try_parse_content_as_selection(content)
+                if parsed:
+                    return parsed
             return None
 
         tool_call_args = self._extract_tool_arguments(tool_calls[0])
@@ -214,6 +212,32 @@ class AgentSelector:
         if not selected_agents and execution_order:
             selected_agents = execution_order
 
+        if not execution_order and selected_agents:
+            execution_order = selected_agents
+
+        return AgentSelection(
+            selected_agents=selected_agents,
+            execution_order=execution_order,
+            reasoning=tool_call_args.get("reasoning", ""),
+            parameters=tool_call_args.get("parameters", {})
+        )
+
+    def _try_parse_content_as_selection(self, content: str) -> Optional[AgentSelection]:
+        """Fallback: parse content as JSON when LLM returns tool args in content instead of tool_calls"""
+        try:
+            tool_call_args = json.loads(content)
+            if not isinstance(tool_call_args, dict):
+                return None
+        except json.JSONDecodeError:
+            return None
+
+        selected_agents = self._extract_selected_agents(tool_call_args)
+        execution_order = self._clean_execution_order(
+            tool_call_args.get("execution_order", selected_agents)
+        )
+
+        if not selected_agents and execution_order:
+            selected_agents = execution_order
         if not execution_order and selected_agents:
             execution_order = selected_agents
 
