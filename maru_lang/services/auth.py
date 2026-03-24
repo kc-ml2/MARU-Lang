@@ -48,6 +48,8 @@ async def generate_email_verification_code(
     email_service: EmailService | None = None
 ) -> EmailVerificationCode:
     if not email_service:
+        if config.environment.production:
+            raise ValueError("Email service is not configured")
         code = config.auth.default_validation_code
     else:
         code = str(random.randint(100000, 999999))
