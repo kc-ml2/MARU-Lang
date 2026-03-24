@@ -26,7 +26,7 @@ async def chat_websocket(websocket: WebSocket):
     async def _streaming_message(
         type: str,
         stream: Union[str, AsyncGenerator],
-        rate: float = 0.0
+        rate: float = 0.006
     ):
         await websocket.send_json(
             {
@@ -44,12 +44,15 @@ async def chat_websocket(websocket: WebSocket):
                     )
                     await asyncio.sleep(rate)
             else:
-                await websocket.send_json(
-                    {
-                        "type": "stream",
-                        "content": stream
-                    }
-                )
+                try:
+                    await websocket.send_json(
+                        {
+                            "type": "stream",
+                            "content": stream
+                        }
+                    )
+                except Exception:
+                    print("Failed to send stream message")
         else:
             async for content in stream:
                 await websocket.send_json(
