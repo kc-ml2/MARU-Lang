@@ -49,7 +49,7 @@ class SMTPEmailManager(EmailService):
             return False
 
     def send_otp(self, recipient: str, code: str) -> bool:
-        subject = f"{code} - Maru Lang Verification Code"
+        subject = f"{code} - Maru Lang Code"
         body = f"Your verification code is: {code}\n\nThis code expires in 5 minutes."
         return self.send_email(recipient, subject, body)
 
