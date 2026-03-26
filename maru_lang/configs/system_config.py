@@ -64,14 +64,6 @@ class AuthConfig:
 
 
 @dataclass
-class O365Config:
-    """Office 365 configuration"""
-    client_id: Optional[str] = None
-    client_secret: Optional[str] = None
-    tenant_id: Optional[str] = None
-
-
-@dataclass
 class SMTPConfig:
     """SMTP configuration"""
     host: Optional[str] = None
@@ -83,14 +75,9 @@ class SMTPConfig:
 @dataclass
 class EmailConfig:
     """Email service configuration"""
-    service_type: Literal["o365", "smtp"] = "o365"
-    sender_email: Optional[str] = None
-    o365: O365Config = None
     smtp: SMTPConfig = None
 
     def __post_init__(self):
-        if self.o365 is None:
-            self.o365 = O365Config()
         if self.smtp is None:
             self.smtp = SMTPConfig()
 
@@ -267,17 +254,9 @@ class SystemConfigLoader:
 
     def _parse_email_config(self, data: Dict[str, Any]) -> EmailConfig:
         """Parse email configuration"""
-        o365_data = data.get('o365', {})
         smtp_data = data.get('smtp', {})
 
         return EmailConfig(
-            service_type=data.get('service_type', 'o365'),
-            sender_email=data.get('sender_email'),
-            o365=O365Config(
-                client_id=o365_data.get('client_id'),
-                client_secret=o365_data.get('client_secret'),
-                tenant_id=o365_data.get('tenant_id')
-            ),
             smtp=SMTPConfig(
                 host=smtp_data.get('host'),
                 port=int(smtp_data.get('port', 587)),
