@@ -48,21 +48,9 @@ auth:
   default_validation_code: ${ENV:DEFAULT_VALIDATION_CODE:456123}
 
 # ============================================================
-# Email Service Configuration
+# Email Service Configuration (SMTP)
 # ============================================================
 email:
-  # Email service type: "o365" or "smtp"
-  service_type: ${ENV:EMAIL_SERVICE_TYPE:o365}
-
-  sender_email: ${ENV:SENDER_EMAIL:}
-
-  # Office 365 settings (required when service_type is "o365")
-  o365:
-    client_id: ${ENV:O365_CLIENT_ID:}
-    client_secret: ${ENV:O365_CLIENT_SECRET:}
-    tenant_id: ${ENV:O365_TENANT_ID:}
-
-  # SMTP settings (required when service_type is "smtp")
   smtp:
     host: ${ENV:SMTP_HOST:}
     port: ${ENV:SMTP_PORT:587}

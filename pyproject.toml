@@ -52,10 +52,6 @@ vector-db = [
     "pymilvus[model]>=2.3.0",
 ]
 
-# Email integration
-email = [
-    "O365>=2.0.0",
-]
 
 # Development / testing
 dev = [
@@ -69,7 +65,6 @@ dev = [
 # Bundle of all optional features
 all = [
     "pymilvus[model]>=2.3.0",
-    "O365>=2.0.0",
 ]
 
 [build-system]
