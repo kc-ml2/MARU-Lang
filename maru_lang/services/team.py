@@ -1,21 +1,134 @@
 """
 Team management service
 """
+from tortoise.exceptions import IntegrityError
+
 from maru_lang.core.relation_db.models.auth import Team, TeamMember, User
+from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
 
 
-async def list_teams_by_user(user: User) -> list[Team]:
+async def list_teams_by_user(user: User) -> list[dict]:
     """
-    User가 속한 Team 목록 조회
-
-    Args:
-        user: User 인스턴스
-
-    Returns:
-        list[Team]: User가 속한 Team 목록
+    User가 속한 Team 목록을 역할 정보와 함께 조회
     """
-    teams = await Team.filter(members__user=user).all()
-    return teams
+    memberships = await TeamMember.filter(user=user).select_related("team")
+    return [
+        {"id": m.team.id, "name": m.team.name, "role": m.role}
+        for m in memberships
+    ]
+
+
+async def get_team_detail(team_id: int, user: User) -> dict:
+    """
+    Team 상세 조회: 멤버 목록 + 폴더(DocumentGroup) 목록
+    해당 팀의 멤버만 조회 가능
+    """
+    membership = await TeamMember.get_or_none(team_id=team_id, user=user)
+    if not membership:
+        raise PermissionError("해당 팀의 멤버가 아닙니다")
+
+    team = await Team.get(id=team_id)
+
+    # 멤버 목록
+    members_qs = await TeamMember.filter(team_id=team_id).select_related("user")
+    members = [
+        {
+            "id": m.user.id,
+            "email": m.user.email,
+            "name": m.user.name,
+            "role": m.role,
+        }
+        for m in members_qs
+    ]
+
+    # 폴더(DocumentGroup) 목록 + 문서 수
+    doc_groups = await DocumentGroup.filter(team_id=team_id).all()
+    folders = []
+    for dg in doc_groups:
+        doc_count = await Document.filter(group_id=dg.id).count()
+        folders.append({"id": dg.id, "name": dg.name, "document_count": doc_count})
+
+    return {
+        "id": team.id,
+        "name": team.name,
+        "members": members,
+        "folders": folders,
+    }
+
+
+async def create_team(name: str, creator: User) -> Team:
+    """
+    새 팀 생성. 생성자는 자동으로 admin.
+    동일 이름 중복 방지.
+    """
+    if await Team.exists(name=name):
+        raise ValueError(f"'{name}' 팀이 이미 존재합니다")
+
+    team = await Team.create(name=name, manager=creator, is_private=True)
+    await TeamMember.create(user=creator, team=team, role="admin")
+    return team
+
+
+async def invite_member(team_id: int, email: str, name: str, inviter: User) -> dict:
+    """
+    이메일로 기존 사용자를 팀에 초대. admin만 가능.
+    """
+    await _check_admin(team_id, inviter)
+
+    target_user = await User.get_or_none(email=email)
+    if not target_user:
+        raise ValueError(f"'{email}' 사용자를 찾을 수 없습니다")
+
+    # 이름 업데이트 (초대 시 제공된 이름)
+    if name and target_user.name != name:
+        target_user.name = name
+        await target_user.save()
+
+    try:
+        membership = await TeamMember.create(
+            user=target_user, team_id=team_id, role="member"
+        )
+    except IntegrityError:
+        raise ValueError("이미 팀에 속한 멤버입니다")
+
+    return {
+        "id": target_user.id,
+        "email": target_user.email,
+        "name": target_user.name,
+        "role": membership.role,
+    }
+
+
+async def remove_member(team_id: int, user_id: int, requester: User) -> None:
+    """
+    팀에서 멤버 제거. admin만 가능. 최소 1명의 admin 유지.
+    """
+    await _check_admin(team_id, requester)
+
+    if requester.id == user_id:
+        raise PermissionError("본인을 제거할 수 없습니다")
+
+    membership = await TeamMember.get_or_none(team_id=team_id, user_id=user_id)
+    if not membership:
+        raise ValueError("해당 멤버를 찾을 수 없습니다")
+
+    # admin 제거 시 최소 1명 유지 체크
+    if membership.role == "admin":
+        admin_count = await TeamMember.filter(
+            team_id=team_id, role="admin"
+        ).count()
+        if admin_count <= 1:
+            raise PermissionError("팀에 최소 1명의 admin이 필요합니다")
+
+    await membership.delete()
+
+
+async def _check_admin(team_id: int, user: User) -> TeamMember:
+    """admin 권한 확인 헬퍼"""
+    membership = await TeamMember.get_or_none(team_id=team_id, user=user)
+    if not membership or membership.role != "admin":
+        raise PermissionError("admin 권한이 필요합니다")
+    return membership
 
 
 async def get_or_create_team(
