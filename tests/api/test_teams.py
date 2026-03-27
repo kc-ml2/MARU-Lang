@@ -1,0 +1,270 @@
+"""
+Teams API 통합 테스트
+
+엔드포인트:
+  GET    /teams                          — 내 팀 목록
+  GET    /teams/{team_id}                — 팀 상세 (멤버 + 폴더)
+  POST   /teams                          — 팀 생성
+  POST   /teams/{team_id}/members        — 멤버 초대
+  DELETE /teams/{team_id}/members/{uid}  — 멤버 제거
+"""
+import pytest
+from httpx import AsyncClient
+
+from maru_lang.core.relation_db.models.auth import User, Team, TeamMember
+from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
+from tests.conftest import auth_header
+
+
+# ──────────────────────────────────────────────
+# 1. GET /teams — 팀 목록 조회
+# ──────────────────────────────────────────────
+
+class TestListTeams:
+    """로그인한 사용자가 속한 팀 목록을 반환하는 API 테스트"""
+
+    async def test_returns_teams_with_role(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team
+    ):
+        """팀에 소속된 사용자가 요청하면 팀 이름과 본인의 역할(admin)이 포함된 목록을 반환한다"""
+        resp = await client.get("/teams", headers=auth_header(user_alice.id))
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["name"] == "TestTeam"
+        assert data[0]["role"] == "admin"
+
+    async def test_empty_when_no_membership(
+        self, client: AsyncClient, user_bob: User
+    ):
+        """어떤 팀에도 소속되지 않은 사용자는 빈 목록을 받는다"""
+        resp = await client.get("/teams", headers=auth_header(user_bob.id))
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_unauthorized_without_token(self, client: AsyncClient):
+        """인증 토큰 없이 요청하면 401 Unauthorized를 반환한다"""
+        resp = await client.get("/teams")
+        assert resp.status_code == 401
+
+
+# ──────────────────────────────────────────────
+# 2. GET /teams/{team_id} — 팀 상세 조회
+# ──────────────────────────────────────────────
+
+class TestGetTeamDetail:
+    """특정 팀의 멤버 목록과 업로드된 폴더(DocumentGroup) 목록을 반환하는 API 테스트"""
+
+    async def test_returns_members_and_folders(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team
+    ):
+        """팀 멤버가 요청하면 멤버(이름, 이메일, 역할)와 폴더(이름, 문서 수)를 함께 반환한다"""
+        # 폴더(DocumentGroup) + 문서 1건 추가
+        dg = await DocumentGroup.create(name="Folder1", team=team_with_admin)
+        await Document.create(
+            id="doc1", name="file.pdf", group=dg, status=2
+        )
+
+        resp = await client.get(
+            f"/teams/{team_with_admin.id}", headers=auth_header(user_alice.id)
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # 멤버 정보 검증
+        assert data["name"] == "TestTeam"
+        assert len(data["members"]) == 1
+        assert data["members"][0]["email"] == "alice@example.com"
+        assert data["members"][0]["role"] == "admin"
+
+        # 폴더 정보 검증
+        assert len(data["folders"]) == 1
+        assert data["folders"][0]["name"] == "Folder1"
+        assert data["folders"][0]["document_count"] == 1
+
+    async def test_non_member_gets_403(
+        self, client: AsyncClient, user_bob: User, team_with_admin: Team
+    ):
+        """팀에 소속되지 않은 사용자가 요청하면 403 Forbidden을 반환한다"""
+        resp = await client.get(
+            f"/teams/{team_with_admin.id}", headers=auth_header(user_bob.id)
+        )
+        assert resp.status_code == 403
+
+
+# ──────────────────────────────────────────────
+# 3. POST /teams — 팀 생성
+# ──────────────────────────────────────────────
+
+class TestCreateTeam:
+    """새 팀을 생성하는 API 테스트. 생성자는 자동으로 admin이 된다."""
+
+    async def test_create_team_success(
+        self, client: AsyncClient, user_alice: User
+    ):
+        """유효한 팀 이름으로 생성하면 201을 반환하고, 생성자가 admin으로 등록된다"""
+        resp = await client.post(
+            "/teams",
+            json={"name": "NewTeam"},
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["name"] == "NewTeam"
+        assert data["role"] == "admin"
+
+        # DB에서 admin 멤버십이 실제로 생성되었는지 확인
+        membership = await TeamMember.get(
+            team_id=data["id"], user=user_alice
+        )
+        assert membership.role == "admin"
+
+    async def test_duplicate_name_returns_409(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team
+    ):
+        """이미 존재하는 팀 이름으로 생성을 시도하면 409 Conflict를 반환한다"""
+        resp = await client.post(
+            "/teams",
+            json={"name": "TestTeam"},
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 409
+
+
+# ──────────────────────────────────────────────
+# 4. POST /teams/{team_id}/members — 멤버 초대
+# ──────────────────────────────────────────────
+
+class TestInviteMember:
+    """사내 이메일로 기존 가입 사용자를 팀에 초대하는 API 테스트"""
+
+    async def test_admin_invites_member(
+        self, client: AsyncClient, user_alice: User, user_bob: User,
+        team_with_admin: Team,
+    ):
+        """admin이 유효한 이메일로 초대하면 201을 반환하고, member 역할로 추가된다"""
+        resp = await client.post(
+            f"/teams/{team_with_admin.id}/members",
+            json={"email": "bob@example.com", "name": "Bob"},
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["email"] == "bob@example.com"
+        assert data["role"] == "member"
+
+    async def test_non_admin_cannot_invite(
+        self, client: AsyncClient, user_alice: User, user_bob: User,
+        team_with_admin: Team,
+    ):
+        """member 역할의 사용자가 초대를 시도하면 403 Forbidden을 반환한다"""
+        await TeamMember.create(
+            user=user_bob, team=team_with_admin, role="member"
+        )
+        resp = await client.post(
+            f"/teams/{team_with_admin.id}/members",
+            json={"email": "new@example.com", "name": "New"},
+            headers=auth_header(user_bob.id),
+        )
+        assert resp.status_code == 403
+
+    async def test_invite_nonexistent_user_returns_400(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team
+    ):
+        """가입되지 않은 이메일로 초대하면 400 Bad Request를 반환한다"""
+        resp = await client.post(
+            f"/teams/{team_with_admin.id}/members",
+            json={"email": "nobody@example.com", "name": "Nobody"},
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 400
+
+    async def test_invite_already_member_returns_400(
+        self, client: AsyncClient, user_alice: User, user_bob: User,
+        team_with_admin: Team,
+    ):
+        """이미 팀에 소속된 사용자를 다시 초대하면 400 Bad Request를 반환한다"""
+        await TeamMember.create(
+            user=user_bob, team=team_with_admin, role="member"
+        )
+        resp = await client.post(
+            f"/teams/{team_with_admin.id}/members",
+            json={"email": "bob@example.com", "name": "Bob"},
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 400
+
+
+# ──────────────────────────────────────────────
+# 5. DELETE /teams/{team_id}/members/{user_id} — 멤버 제거
+# ──────────────────────────────────────────────
+
+class TestRemoveMember:
+    """팀에서 특정 멤버를 제거하는 API 테스트. admin만 제거 가능하며, 최소 1명의 admin이 유지되어야 한다."""
+
+    async def test_admin_removes_member(
+        self, client: AsyncClient, user_alice: User, user_bob: User,
+        team_with_admin: Team,
+    ):
+        """admin이 member를 제거하면 204를 반환하고, DB에서 멤버십이 삭제된다"""
+        await TeamMember.create(
+            user=user_bob, team=team_with_admin, role="member"
+        )
+        resp = await client.delete(
+            f"/teams/{team_with_admin.id}/members/{user_bob.id}",
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 204
+
+        # DB에서 실제로 삭제되었는지 확인
+        assert await TeamMember.get_or_none(
+            team=team_with_admin, user=user_bob
+        ) is None
+
+    async def test_cannot_remove_self(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team
+    ):
+        """admin이 본인을 제거하려고 하면 403 Forbidden을 반환한다"""
+        resp = await client.delete(
+            f"/teams/{team_with_admin.id}/members/{user_alice.id}",
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 403
+
+    async def test_non_admin_cannot_remove(
+        self, client: AsyncClient, user_alice: User, user_bob: User,
+        team_with_admin: Team,
+    ):
+        """member 역할의 사용자가 다른 멤버를 제거하려고 하면 403 Forbidden을 반환한다"""
+        await TeamMember.create(
+            user=user_bob, team=team_with_admin, role="member"
+        )
+        resp = await client.delete(
+            f"/teams/{team_with_admin.id}/members/{user_alice.id}",
+            headers=auth_header(user_bob.id),
+        )
+        assert resp.status_code == 403
+
+    async def test_last_admin_cannot_be_removed(
+        self, client: AsyncClient, user_alice: User, user_bob: User,
+        team_with_admin: Team,
+    ):
+        """admin이 2명인 경우 한 명을 제거할 수 있다 (최소 1명 유지 조건 충족)"""
+        await TeamMember.create(
+            user=user_bob, team=team_with_admin, role="admin"
+        )
+        resp = await client.delete(
+            f"/teams/{team_with_admin.id}/members/{user_bob.id}",
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 204
+
+    async def test_remove_nonexistent_member_returns_400(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team
+    ):
+        """존재하지 않는 사용자 ID로 제거를 시도하면 400 Bad Request를 반환한다"""
+        resp = await client.delete(
+            f"/teams/{team_with_admin.id}/members/9999",
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 400
