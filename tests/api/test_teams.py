@@ -8,11 +8,15 @@ Teams API 통합 테스트
   POST   /teams/{team_id}/members        — 멤버 초대
   DELETE /teams/{team_id}/members/{uid}  — 멤버 제거
 """
+from unittest.mock import MagicMock
+
 import pytest
 from httpx import AsyncClient
 
-from maru_lang.core.relation_db.models.auth import User, Team, TeamMember
+from maru_lang.core.relation_db.models.auth import User, Team, TeamMember, UserRole
 from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
+from maru_lang.dependencies.email import get_email_service_dependency
+from maru_lang.enums.auth import UserRoleCode
 from tests.conftest import auth_header
 
 
@@ -136,13 +140,13 @@ class TestCreateTeam:
 # ──────────────────────────────────────────────
 
 class TestInviteMember:
-    """사내 이메일로 기존 가입 사용자를 팀에 초대하는 API 테스트"""
+    """이메일로 사용자를 팀에 초대하는 API 테스트 (기존 유저 + 미가입 유저)"""
 
-    async def test_admin_invites_member(
+    async def test_admin_invites_existing_member(
         self, client: AsyncClient, user_alice: User, user_bob: User,
         team_with_admin: Team,
     ):
-        """admin이 유효한 이메일로 초대하면 201을 반환하고, member 역할로 추가된다"""
+        """admin이 기존 유저 이메일로 초대하면 201을 반환하고, member 역할로 추가된다"""
         resp = await client.post(
             f"/teams/{team_with_admin.id}/members",
             json={"email": "bob@example.com", "name": "Bob"},
@@ -152,6 +156,80 @@ class TestInviteMember:
         data = resp.json()
         assert data["email"] == "bob@example.com"
         assert data["role"] == "member"
+
+    async def test_invite_unregistered_email_creates_anonymous_user(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team,
+    ):
+        """미가입 이메일로 초대하면 anonymous 롤의 유저를 생성하고 팀에 추가한다"""
+        resp = await client.post(
+            f"/teams/{team_with_admin.id}/members",
+            json={"email": "nobody@example.com", "name": "Nobody"},
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["email"] == "nobody@example.com"
+        assert data["name"] == "Nobody"
+        assert data["role"] == "member"
+
+        # DB에서 anonymous 유저가 생성되었는지 확인
+        created_user = await User.get(email="nobody@example.com")
+        assert created_user is not None
+        user_role = await UserRole.get(id=created_user.role_id)
+        assert user_role.name == UserRoleCode.ANONYMOUS.value
+
+        # 팀 멤버십 확인
+        membership = await TeamMember.get(
+            team=team_with_admin, user=created_user
+        )
+        assert membership.role == "member"
+
+    async def test_invite_sends_invitation_email_for_new_user(
+        self, app, client: AsyncClient, user_alice: User, team_with_admin: Team,
+    ):
+        """미가입 유저 초대 시 invitation 이메일이 전송된다"""
+        mock_email = MagicMock()
+        mock_email.send_invitation.return_value = True
+        mock_email.send_notification.return_value = True
+
+        app.dependency_overrides[get_email_service_dependency] = lambda: mock_email
+        try:
+            resp = await client.post(
+                f"/teams/{team_with_admin.id}/members",
+                json={"email": "newuser@example.com", "name": "NewUser"},
+                headers=auth_header(user_alice.id),
+            )
+            assert resp.status_code == 201
+            mock_email.send_invitation.assert_called_once_with(
+                "newuser@example.com", "TestTeam", "Alice"
+            )
+            mock_email.send_notification.assert_not_called()
+        finally:
+            app.dependency_overrides.pop(get_email_service_dependency, None)
+
+    async def test_invite_sends_notification_email_for_existing_user(
+        self, app, client: AsyncClient, user_alice: User, user_bob: User,
+        team_with_admin: Team,
+    ):
+        """기존 유저 초대 시 notification 이메일이 전송된다"""
+        mock_email = MagicMock()
+        mock_email.send_invitation.return_value = True
+        mock_email.send_notification.return_value = True
+
+        app.dependency_overrides[get_email_service_dependency] = lambda: mock_email
+        try:
+            resp = await client.post(
+                f"/teams/{team_with_admin.id}/members",
+                json={"email": "bob@example.com", "name": "Bob"},
+                headers=auth_header(user_alice.id),
+            )
+            assert resp.status_code == 201
+            mock_email.send_notification.assert_called_once_with(
+                "bob@example.com", "TestTeam", "Alice"
+            )
+            mock_email.send_invitation.assert_not_called()
+        finally:
+            app.dependency_overrides.pop(get_email_service_dependency, None)
 
     async def test_non_admin_cannot_invite(
         self, client: AsyncClient, user_alice: User, user_bob: User,
@@ -167,17 +245,6 @@ class TestInviteMember:
             headers=auth_header(user_bob.id),
         )
         assert resp.status_code == 403
-
-    async def test_invite_nonexistent_user_returns_400(
-        self, client: AsyncClient, user_alice: User, team_with_admin: Team
-    ):
-        """가입되지 않은 이메일로 초대하면 400 Bad Request를 반환한다"""
-        resp = await client.post(
-            f"/teams/{team_with_admin.id}/members",
-            json={"email": "nobody@example.com", "name": "Nobody"},
-            headers=auth_header(user_alice.id),
-        )
-        assert resp.status_code == 400
 
     async def test_invite_already_member_returns_400(
         self, client: AsyncClient, user_alice: User, user_bob: User,

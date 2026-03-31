@@ -43,6 +43,10 @@
 - Request: `{ "email": "user@example.com", "name": "John Doe" }`
 - Response (201): `{ "id": 2, "email": "user@example.com", "name": "John Doe", "role": "member" }`
 
+**동작:**
+- **기존 유저**: 팀에 추가 + notification 이메일 전송
+- **미가입 유저**: `anonymous` 롤의 유저 자동 생성 → 팀에 추가 + invitation 이메일 전송. 해당 유저가 나중에 로그인하면 자동으로 팀에 소속되어 보인다.
+
 ### Remove Member (`DELETE /teams/{id}/members/{user_id}`)
 
 - Response: `204 No Content`
@@ -51,7 +55,7 @@
 
 - Member responses always include **email address** (frontend can display email when name is not set)
 - Duplicate team name on creation → `409 Conflict`
-- Inviting an unregistered email → `400 Bad Request`
+- Inviting an unregistered email → anonymous 유저 생성 후 팀에 추가 (201)
 - Inviting an existing member → `400 Bad Request`
 - Non-member accessing team detail → `403 Forbidden`
 - Non-admin attempting invite/remove → `403 Forbidden`
@@ -60,7 +64,7 @@
 
 ## Tests
 
-16 integration tests passing
+18 integration tests passing
 
 ```bash
 pytest tests/api/test_teams.py -v
@@ -75,9 +79,11 @@ pytest tests/api/test_teams.py -v
 | `test_non_member_gets_403` | Non-member blocked from detail |
 | `test_create_team_success` | Team created with admin membership |
 | `test_duplicate_name_returns_409` | Duplicate name prevented |
-| `test_admin_invites_member` | Admin invites member successfully |
+| `test_admin_invites_existing_member` | Admin invites existing member successfully |
+| `test_invite_unregistered_email_creates_anonymous_user` | Unregistered email creates anonymous user and adds to team |
+| `test_invite_sends_invitation_email_for_new_user` | Invitation email sent for unregistered user |
+| `test_invite_sends_notification_email_for_existing_user` | Notification email sent for existing user |
 | `test_non_admin_cannot_invite` | Member role cannot invite |
-| `test_invite_nonexistent_user_returns_400` | Unregistered email rejected |
 | `test_invite_already_member_returns_400` | Duplicate invite rejected |
 | `test_admin_removes_member` | Admin removes member + DB verified |
 | `test_cannot_remove_self` | Self-removal blocked |

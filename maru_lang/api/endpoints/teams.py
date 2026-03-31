@@ -1,6 +1,9 @@
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Depends
 
 from maru_lang.dependencies.auth import get_user
+from maru_lang.dependencies.email import EmailService, get_email_service_dependency
 from maru_lang.schemas.team import (
     CreateTeamRequest,
     InviteMemberRequest,
@@ -46,11 +49,16 @@ async def create_new_team(request: CreateTeamRequest, user=Depends(get_user)):
 
 @router.post("/{team_id}/members", response_model=TeamMemberResponse, status_code=201)
 async def invite_team_member(
-    team_id: int, request: InviteMemberRequest, user=Depends(get_user)
+    team_id: int,
+    request: InviteMemberRequest,
+    user=Depends(get_user),
+    email_service: Optional[EmailService] = Depends(get_email_service_dependency),
 ):
     """팀에 멤버 초대 (admin만 가능)"""
     try:
-        return await invite_member(team_id, request.email, request.name, user)
+        return await invite_member(
+            team_id, request.email, request.name, user, email_service
+        )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:

@@ -19,6 +19,14 @@ class EmailService(ABC):
     def send_otp(self, recipient: str, code: str) -> bool:
         pass
 
+    @abstractmethod
+    def send_invitation(self, recipient: str, team_name: str, inviter_name: str) -> bool:
+        pass
+
+    @abstractmethod
+    def send_notification(self, recipient: str, team_name: str, inviter_name: str) -> bool:
+        pass
+
 
 class SMTPEmailManager(EmailService):
     """SMTP email service implementation"""
@@ -51,6 +59,23 @@ class SMTPEmailManager(EmailService):
     def send_otp(self, recipient: str, code: str) -> bool:
         subject = f"{code} - Maru Lang Code"
         body = f"Your verification code is: {code}\n\nThis code expires in 5 minutes."
+        return self.send_email(recipient, subject, body)
+
+    def send_invitation(self, recipient: str, team_name: str, inviter_name: str) -> bool:
+        subject = f"Maru Lang - {team_name} 팀 초대"
+        body = (
+            f"{inviter_name}님이 {team_name} 팀에 초대했습니다.\n\n"
+            f"Maru Lang에 가입하여 팀에 참여하세요.\n"
+            f"가입 후 자동으로 팀에 소속됩니다."
+        )
+        return self.send_email(recipient, subject, body)
+
+    def send_notification(self, recipient: str, team_name: str, inviter_name: str) -> bool:
+        subject = f"Maru Lang - {team_name} 팀에 추가되었습니다"
+        body = (
+            f"{inviter_name}님이 {team_name} 팀에 추가했습니다.\n\n"
+            f"로그인하여 팀을 확인하세요."
+        )
         return self.send_email(recipient, subject, body)
 
 

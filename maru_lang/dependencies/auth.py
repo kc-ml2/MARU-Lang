@@ -61,6 +61,7 @@ def get_user_with_role(
     ):
         # 역할 우선순위 (낮은 권한부터 높은 권한 순)
         ROLE_HIERARCHY = [
+            UserRoleCode.ANONYMOUS,
             UserRoleCode.EDITOR,
             UserRoleCode.ADMIN,
         ]
