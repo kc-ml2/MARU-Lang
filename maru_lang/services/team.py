@@ -114,9 +114,10 @@ async def invite_member(
             target_user.name = name
             await target_user.save()
 
+    member_role = "pending" if is_new_user else "member"
     try:
         membership = await TeamMember.create(
-            user=target_user, team_id=team_id, role="member"
+            user=target_user, team_id=team_id, role=member_role
         )
     except IntegrityError:
         raise ValueError("이미 팀에 속한 멤버입니다")
