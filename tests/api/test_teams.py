@@ -170,7 +170,7 @@ class TestInviteMember:
         data = resp.json()
         assert data["email"] == "nobody@example.com"
         assert data["name"] == "Nobody"
-        assert data["role"] == "member"
+        assert data["role"] == "pending"
 
         # DB에서 anonymous 유저가 생성되었는지 확인
         created_user = await User.get(email="nobody@example.com")
@@ -178,11 +178,11 @@ class TestInviteMember:
         user_role = await UserRole.get(id=created_user.role_id)
         assert user_role.name == UserRoleCode.ANONYMOUS.value
 
-        # 팀 멤버십 확인
+        # 팀 멤버십 확인 (익명 유저는 pending)
         membership = await TeamMember.get(
             team=team_with_admin, user=created_user
         )
-        assert membership.role == "member"
+        assert membership.role == "pending"
 
     async def test_invite_sends_invitation_email_for_new_user(
         self, app, client: AsyncClient, user_alice: User, team_with_admin: Team,

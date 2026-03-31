@@ -17,25 +17,44 @@ from maru_lang.core.relation_db.models.auth import (
     UserRole,
     EmailVerificationCode,
     UserChatToken,
+    TeamMember,
 )
+from maru_lang.enums.auth import UserRoleCode
 
 config = get_system_config()
 
 
 async def create_or_get_user(email: str) -> User:
     if user := await User.get_or_none(email=email):
+        await _activate_anonymous_user(user)
         return user
     try:
         name = email.split('@')[0]
     except Exception as e:
         name = None
 
-    # 3. Create the user
     new_user = await User.create(
         email=email,
-        name=name,  # Defaults to None when not provided
+        name=name,
     )
     return new_user
+
+
+async def _activate_anonymous_user(user: User) -> None:
+    """익명 유저가 최초 로그인하면 anonymous 롤 제거 + pending 멤버십을 member로 변경"""
+    if not user.role_id:
+        return
+
+    role = await UserRole.get_or_none(id=user.role_id)
+    if not role or role.name != UserRoleCode.ANONYMOUS.value:
+        return
+
+    # anonymous 롤 제거
+    user.role = None
+    await user.save()
+
+    # pending 멤버십을 member로 변경
+    await TeamMember.filter(user=user, role="pending").update(role="member")
 
 
 async def set_user_name(user: User, name: str):
