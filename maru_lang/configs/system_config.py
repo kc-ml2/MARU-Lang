@@ -61,6 +61,18 @@ class AuthConfig:
     access_token_expire_minutes: int = 15
     refresh_token_expire_minutes: int = 43200  # 30 days
     default_validation_code: str = "456123"
+    allowed_domains: list = None
+
+    def __post_init__(self):
+        if self.allowed_domains is None:
+            self.allowed_domains = []
+
+    def is_domain_allowed(self, email: str) -> bool:
+        """허용된 도메인인지 확인. 빈 리스트면 모든 도메인 허용."""
+        if not self.allowed_domains:
+            return True
+        domain = email.split("@")[-1].lower()
+        return domain in [d.lower() for d in self.allowed_domains]
 
 
 @dataclass
@@ -249,7 +261,8 @@ class SystemConfigLoader:
             algorithm=data.get('algorithm', 'HS256'),
             access_token_expire_minutes=int(data.get('access_token_expire_minutes', 15)),
             refresh_token_expire_minutes=int(data.get('refresh_token_expire_minutes', 43200)),
-            default_validation_code=data.get('default_validation_code', '456123')
+            default_validation_code=data.get('default_validation_code', '456123'),
+            allowed_domains=data.get('allowed_domains', []),
         )
 
     def _parse_email_config(self, data: Dict[str, Any]) -> EmailConfig:

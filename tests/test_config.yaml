@@ -18,6 +18,7 @@ auth:
   access_token_expire_minutes: 30
   refresh_token_expire_minutes: 43200
   default_validation_code: "123456"
+  allowed_domains: []
 
 email:
   smtp:
