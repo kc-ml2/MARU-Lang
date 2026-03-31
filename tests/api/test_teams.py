@@ -294,6 +294,36 @@ class TestInviteMember:
         )
         assert resp.status_code == 201
 
+    async def test_reinvite_anonymous_user_after_removal_stays_pending(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team,
+    ):
+        """익명 유저를 제거 후 다시 초대하면 여전히 pending으로 추가된다"""
+        # 1차 초대 (anonymous 유저 생성 + pending)
+        resp = await client.post(
+            f"/teams/{team_with_admin.id}/members",
+            json={"email": "reinvite@example.com", "name": "ReInvite"},
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["role"] == "pending"
+        user_id = resp.json()["id"]
+
+        # 멤버 제거
+        resp = await client.delete(
+            f"/teams/{team_with_admin.id}/members/{user_id}",
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 204
+
+        # 2차 초대 (이미 DB에 anonymous 유저 존재)
+        resp = await client.post(
+            f"/teams/{team_with_admin.id}/members",
+            json={"email": "reinvite@example.com", "name": "ReInvite"},
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["role"] == "pending"
+
 
 # ──────────────────────────────────────────────
 # 5. DELETE /teams/{team_id}/members/{user_id} — 멤버 제거
