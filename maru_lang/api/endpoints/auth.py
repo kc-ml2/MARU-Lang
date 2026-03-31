@@ -38,6 +38,11 @@ async def login(
         get_email_service_dependency)
 ) -> str:
     """Send OTP verification code to email."""
+    if not config.auth.is_domain_allowed(request.email):
+        raise HTTPException(
+            status_code=403,
+            detail="허용되지 않은 이메일 도메인입니다",
+        )
     try:
         otp = await generate_email_verification_code(request.email, email_service)
         if email_service:

@@ -261,6 +261,39 @@ class TestInviteMember:
         )
         assert resp.status_code == 400
 
+    async def test_invite_blocked_domain_returns_400(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team,
+        monkeypatch,
+    ):
+        """allowed_domains에 포함되지 않은 도메인의 이메일로 초대하면 400을 반환한다"""
+        from maru_lang.services import team as team_module
+        monkeypatch.setattr(
+            team_module.config.auth, "allowed_domains", ["example.com"]
+        )
+        resp = await client.post(
+            f"/teams/{team_with_admin.id}/members",
+            json={"email": "user@blocked.com", "name": "Blocked"},
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 400
+        assert "허용되지 않은 이메일 도메인" in resp.json()["detail"]
+
+    async def test_invite_allowed_domain_succeeds(
+        self, client: AsyncClient, user_alice: User, user_bob: User,
+        team_with_admin: Team, monkeypatch,
+    ):
+        """allowed_domains에 포함된 도메인이면 정상적으로 초대된다"""
+        from maru_lang.services import team as team_module
+        monkeypatch.setattr(
+            team_module.config.auth, "allowed_domains", ["example.com"]
+        )
+        resp = await client.post(
+            f"/teams/{team_with_admin.id}/members",
+            json={"email": "bob@example.com", "name": "Bob"},
+            headers=auth_header(user_alice.id),
+        )
+        assert resp.status_code == 201
+
 
 # ──────────────────────────────────────────────
 # 5. DELETE /teams/{team_id}/members/{user_id} — 멤버 제거

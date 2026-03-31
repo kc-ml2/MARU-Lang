@@ -5,10 +5,13 @@ from typing import Optional
 
 from tortoise.exceptions import IntegrityError
 
+from maru_lang.configs.system_config import get_system_config
 from maru_lang.core.relation_db.models.auth import Team, TeamMember, User, UserRole
 from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
 from maru_lang.dependencies.email import EmailService
 from maru_lang.enums.auth import UserRoleCode
+
+config = get_system_config()
 
 
 async def list_teams_by_user(user: User) -> list[dict]:
@@ -86,6 +89,9 @@ async def invite_member(
     - 기존 유저: 팀 추가 + notification 이메일
     """
     await _check_admin(team_id, inviter)
+
+    if not config.auth.is_domain_allowed(email):
+        raise ValueError("허용되지 않은 이메일 도메인입니다")
 
     team = await Team.get(id=team_id)
     target_user = await User.get_or_none(email=email)
