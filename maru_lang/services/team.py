@@ -95,9 +95,8 @@ async def invite_member(
 
     team = await Team.get(id=team_id)
     target_user = await User.get_or_none(email=email)
-    is_new_user = target_user is None
 
-    if is_new_user:
+    if target_user is None:
         # 익명 유저 생성
         anonymous_role, _ = await UserRole.get_or_create(
             name=UserRoleCode.ANONYMOUS.value,
@@ -114,7 +113,9 @@ async def invite_member(
             target_user.name = name
             await target_user.save()
 
-    member_role = "pending" if is_new_user else "member"
+    # 유저 롤이 anonymous면 아직 미가입 상태 → pending
+    is_anonymous = await _is_anonymous_user(target_user)
+    member_role = "pending" if is_anonymous else "member"
     try:
         membership = await TeamMember.create(
             user=target_user, team_id=team_id, role=member_role
@@ -122,10 +123,10 @@ async def invite_member(
     except IntegrityError:
         raise ValueError("이미 팀에 속한 멤버입니다")
 
-    # 이메일 전송
+    # 이메일 전송: 미가입(anonymous) 유저면 invitation, 기존 유저면 notification
     if email_service:
         inviter_name = inviter.name or inviter.email
-        if is_new_user:
+        if is_anonymous:
             email_service.send_invitation(email, team.name, inviter_name)
         else:
             email_service.send_notification(email, team.name, inviter_name)
@@ -160,6 +161,14 @@ async def remove_member(team_id: int, user_id: int, requester: User) -> None:
             raise PermissionError("팀에 최소 1명의 admin이 필요합니다")
 
     await membership.delete()
+
+
+async def _is_anonymous_user(user: User) -> bool:
+    """유저가 anonymous 롤인지 확인"""
+    if not user.role_id:
+        return False
+    role = await UserRole.get_or_none(id=user.role_id)
+    return role is not None and role.name == UserRoleCode.ANONYMOUS.value
 
 
 async def _check_admin(team_id: int, user: User) -> TeamMember:
