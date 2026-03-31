@@ -1,10 +1,14 @@
 """
 Team management service
 """
+from typing import Optional
+
 from tortoise.exceptions import IntegrityError
 
-from maru_lang.core.relation_db.models.auth import Team, TeamMember, User
+from maru_lang.core.relation_db.models.auth import Team, TeamMember, User, UserRole
 from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
+from maru_lang.dependencies.email import EmailService
+from maru_lang.enums.auth import UserRoleCode
 
 
 async def list_teams_by_user(user: User) -> list[dict]:
@@ -69,20 +73,40 @@ async def create_team(name: str, creator: User) -> Team:
     return team
 
 
-async def invite_member(team_id: int, email: str, name: str, inviter: User) -> dict:
+async def invite_member(
+    team_id: int,
+    email: str,
+    name: str,
+    inviter: User,
+    email_service: Optional[EmailService] = None,
+) -> dict:
     """
-    이메일로 기존 사용자를 팀에 초대. admin만 가능.
+    이메일로 사용자를 팀에 초대. admin만 가능.
+    - 미가입 유저: 익명 유저 생성 + invitation 이메일
+    - 기존 유저: 팀 추가 + notification 이메일
     """
     await _check_admin(team_id, inviter)
 
+    team = await Team.get(id=team_id)
     target_user = await User.get_or_none(email=email)
-    if not target_user:
-        raise ValueError(f"'{email}' 사용자를 찾을 수 없습니다")
+    is_new_user = target_user is None
 
-    # 이름 업데이트 (초대 시 제공된 이름)
-    if name and target_user.name != name:
-        target_user.name = name
-        await target_user.save()
+    if is_new_user:
+        # 익명 유저 생성
+        anonymous_role, _ = await UserRole.get_or_create(
+            name=UserRoleCode.ANONYMOUS.value,
+            defaults={"description": "초대로 생성된 미가입 유저"},
+        )
+        target_user = await User.create(
+            email=email,
+            name=name or email.split("@")[0],
+            role=anonymous_role,
+        )
+    else:
+        # 이름 업데이트 (초대 시 제공된 이름)
+        if name and target_user.name != name:
+            target_user.name = name
+            await target_user.save()
 
     try:
         membership = await TeamMember.create(
@@ -90,6 +114,14 @@ async def invite_member(team_id: int, email: str, name: str, inviter: User) -> d
         )
     except IntegrityError:
         raise ValueError("이미 팀에 속한 멤버입니다")
+
+    # 이메일 전송
+    if email_service:
+        inviter_name = inviter.name or inviter.email
+        if is_new_user:
+            email_service.send_invitation(email, team.name, inviter_name)
+        else:
+            email_service.send_notification(email, team.name, inviter_name)
 
     return {
         "id": target_user.id,
