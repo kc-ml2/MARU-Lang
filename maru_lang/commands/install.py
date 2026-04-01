@@ -29,7 +29,7 @@ def create_config_directories(base_path: Path, force: bool = False) -> bool:
         base_path.mkdir(parents=True, exist_ok=True)
 
         # Configuration directories to create
-        config_dirs = ['llms', 'agents', 'loaders', 'chunkers', 'embedders', 'rerankers']
+        config_dirs = ['llms', 'agents', 'embedders', 'rerankers']
 
         # Create root-level config files first
         # 1. system_config.yaml (central system configuration)
@@ -71,34 +71,6 @@ def create_config_directories(base_path: Path, force: bool = False) -> bool:
                             f"llms_{base_name}")
                         sample_path.write_text(sample_content)
                         console.print(f"  ✅ Created {dir_name}/{sample_file}")
-            elif dir_name == "loaders":
-                # Create sample parser file
-                sample_path = dir_path / "custom_parser.py.sample"
-                if not sample_path.exists() or force:
-                    sample_content = get_sample_content("loaders_custom")
-                    sample_path.write_text(sample_content)
-                    console.print(f"  ✅ Created {dir_name}/custom_parser.py.sample")
-
-                # Create loader_config.yaml
-                config_path = dir_path / "loader_config.yaml"
-                if not config_path.exists() or force:
-                    config_content = get_sample_content("loaders_config")
-                    config_path.write_text(config_content)
-                    console.print(f"  ✅ Created {dir_name}/loader_config.yaml")
-            elif dir_name == "chunkers":
-                # Create sample chunker file
-                sample_path = dir_path / "custom_chunker.py.sample"
-                if not sample_path.exists() or force:
-                    sample_content = get_sample_content("chunkers_custom")
-                    sample_path.write_text(sample_content)
-                    console.print(f"  ✅ Created {dir_name}/custom_chunker.py.sample")
-
-                # Create chunker_config.yaml
-                config_path = dir_path / "chunker_config.yaml"
-                if not config_path.exists() or force:
-                    config_content = get_sample_content("chunkers_config")
-                    config_path.write_text(config_content)
-                    console.print(f"  ✅ Created {dir_name}/chunker_config.yaml")
             elif dir_name == "embedders":
                 # Create embedder_config.yaml
                 config_path = dir_path / "embedder_config.yaml"
@@ -360,8 +332,6 @@ def get_sample_content(content_type: str) -> str:
             # Python files from templates/python
             template_dir = Path(__file__).parent.parent / "templates" / "python"
             template_map = {
-                "loaders_custom": "custom_parser.py",
-                "chunkers_custom": "custom_chunker.py",
             }
             if content_type in template_map:
                 template_file = template_dir / template_map[content_type]

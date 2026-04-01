@@ -1,11 +1,9 @@
 """
-Pluggable components for extensibility
+Pluggable components
 
-This package contains all pluggable/extensible components:
-- loaders: File parsers (txt, pdf, docx, etc.)
-- chunkers: Text chunking strategies (paragraph, sentence, etc.)
-- embedders: Embedding models management
+- llms: LLM provider management (LangChain BaseChatModel)
 - rerankers: Result reranking models
-- configs: Configuration loaders for pluggable components
+- retrievers: Search orchestration (VectorDB + Embeddings + Reranker)
+- configs: Configuration loaders (LLM, Agent, Embedder, Reranker, RAG)
 - models: Data models for configurations
 """
