@@ -1,3 +1,8 @@
+"""LLM dependency injection"""
+from typing import Optional
+
+from langchain_core.language_models import BaseChatModel
+
 from maru_lang.pluggable.llms import LLMClient, LLMManager
 
 
@@ -13,7 +18,19 @@ def get_llm_manager() -> LLMManager:
     return _llm_manager
 
 
-def get_llm() -> LLMClient | None:
-    """Return an LLM client."""
+def get_llm() -> Optional[LLMClient]:
+    """Return the first available LLMClient."""
     manager = get_llm_manager()
     return manager.get_client()
+
+
+def get_model(name: Optional[str] = None) -> Optional[BaseChatModel]:
+    """Return a LangChain ChatModel directly."""
+    manager = get_llm_manager()
+    return manager.get_model(name)
+
+
+def get_model_with_fallbacks(primary_name: Optional[str] = None) -> Optional[BaseChatModel]:
+    """Return a ChatModel with fallback chain."""
+    manager = get_llm_manager()
+    return manager.get_model_with_fallbacks(primary_name)
