@@ -5,14 +5,14 @@ import asyncio
 import logging
 import numpy as np
 from typing import List, Optional, Tuple, Dict
-from maru_lang.pluggable.embedders import Embedder, get_embedder
+from langchain_core.embeddings import Embeddings
+from maru_lang.pipelines.ingest.embedder import get_embeddings
 from maru_lang.core.vector_db.factory import get_vector_db
 from maru_lang.core.vector_db.base import RetrieveDocument, VectorDB
 from maru_lang.configs import get_config_manager
 from maru_lang.pluggable.rerankers import get_reranker, Reranker
 from maru_lang.pluggable.models.reranker import RerankerConfig
 from maru_lang.pluggable.models.rag import RagConfig
-from maru_lang.pluggable.agents.agent_factory import AgentFactory
 
 
 logger = logging.getLogger(__name__)
@@ -50,20 +50,19 @@ class Retriever:
 
     def __init__(
         self,
-        embedder: Optional[Embedder] = None,
+        embeddings: Optional[Embeddings] = None,
         reranker: Optional[Reranker] = None,
         reranker_config: Optional[RerankerConfig] = None,
         rag_config: Optional[RagConfig] = None,
     ):
-        """
-        Args:
-            reranker: Reranker 인스턴스 (method="model"일 때만 필요)
-            reranker_config: Reranker 설정
-        """
         config_manager = get_config_manager()
+        embedder_config = config_manager.get_embedder_config()
 
         self._server_vdb = get_vector_db()
-        self.embedder = embedder or get_embedder()
+        self.embeddings = embeddings or get_embeddings(
+            model_name=embedder_config.default_model if embedder_config else "BAAI/bge-m3",
+            device=getattr(embedder_config, "device", None),
+        )
         self.reranker = reranker or get_reranker()
         self.rag_config = rag_config or config_manager.get_rag_config()
         self.reranker_config = reranker_config or config_manager.get_reranker_config()
@@ -96,7 +95,7 @@ class Retriever:
             print("⚠️ No team_ids provided - refusing to search all documents")
             return []
 
-        query_embedding = self.embedder.encode([query], embedding_model)[0]
+        query_embedding = self.embeddings.embed_query(query)
 
         try:
             results = await self._search_vdb(
@@ -261,70 +260,9 @@ class Retriever:
         results: List[RetrieveDocument],
         top_k: int,
     ) -> List[RetrieveDocument]:
-        """Agent 기반 reranking (LLM 등)"""
-
-        try:
-            # Agent 이름 확인
-            agent_name = self.reranker_config.agent_name if self.reranker_config else None
-            if not agent_name:
-                logger.error(
-                    "Reranking method is 'agent' but agent_name is not configured. "
-                    "Skipping reranking. Please configure reranker_config.yaml with agent_name."
-                )
-                return results
-
-            # Agent 로드
-            config_manager = get_config_manager()
-            agent_config = config_manager.get_agent(agent_name)
-            if not agent_config:
-                logger.error(
-                    f"Reranker agent '{agent_name}' not found in agent_config.yaml. "
-                    f"Skipping reranking. Please register the agent in agent_config.yaml."
-                )
-                return results
-
-            # Agent 생성 및 실행
-            factory = AgentFactory()
-            agent = factory.create_agent(agent_name, agent_config)
-            if not agent:
-                logger.error(
-                    f"Failed to create reranker agent '{agent_name}'. "
-                    f"Skipping reranking. Check agent implementation and configuration."
-                )
-                return results
-
-            # Sync context에서 async agent 실행
-            agent_result = await agent.execute(
-                query=query,
-                documents=results,
-                top_k=top_k,
-            )
-
-            # Agent 결과 처리
-            if agent_result.success and agent_result.data:
-                # data는 reranked document indices와 scores 리스트
-                # 형식: [(idx, score), (idx, score), ...]
-                reranked_results = []
-                for idx, score in agent_result.data[:top_k]:
-                    if 0 <= idx < len(results):
-                        doc = results[idx]
-                        doc.metadata["reranker_score"] = score
-                        reranked_results.append(doc)
-
-                return reranked_results
-            else:
-                logger.error(
-                    f"Reranker agent '{agent_name}' execution failed: {agent_result.error}. "
-                    f"Skipping reranking. Returning original results."
-                )
-                return results
-
-        except Exception as e:
-            logger.error(
-                f"Error during agent-based reranking: {e}. "
-                f"Skipping reranking. Returning original results."
-            )
-            return results
+        """Agent 기반 reranking - TODO: LangGraph tool로 재구현"""
+        logger.warning("Agent-based reranking not yet implemented in LangGraph. Returning original results.")
+        return results
 
     def _get_semantic_weights(
         self,
@@ -389,9 +327,7 @@ class Retriever:
 
                 self._representative_vectors = {}
                 for query_type, query_text in representative_queries.items():
-                    embedding = self.embedder.encode(
-                        [query_text], embedding_model
-                    )[0]
+                    embedding = self.embeddings.embed_query(query_text)
                     self._representative_vectors[query_type] = embedding
             except Exception as e:
                 print(f"⚠️ Failed to initialize representative vectors: {e}")
