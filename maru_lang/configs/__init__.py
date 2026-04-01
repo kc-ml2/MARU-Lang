@@ -1,37 +1,25 @@
-"""
-Unified configuration management system
-
-Note: Most config loaders have been moved to pluggable.configs
-This module provides backward compatibility imports and manages non-pluggable configs
-"""
+"""Unified configuration management system"""
 from .base import DefaultConfigLoader
 from .manager import ConfigManager, get_config_manager
 from .diff_checker import check_config_differences, ConfigDiffChecker
 
-# Import pluggable configs for backward compatibility
 from maru_lang.pluggable.configs import (
     LLMConfigLoader,
     AgentConfigLoader,
-    LoaderConfigLoader,
-    ChunkerConfigLoader,
     EmbedderConfigLoader,
     RerankerConfigLoader,
     RagConfigLoader,
 )
 
-# Import models for convenience
 from maru_lang.models.configs import (
     LLMConfig,
     GroupConfig,
     GroupsConfig,
     AgentConfig,
-    LoaderConfig,
-    ChunkerConfig,
     EmbedderConfig,
     RerankerConfig,
 )
 
-# Import RAG models
 from maru_lang.pluggable.models import (
     RagConfig,
     RetrieverConfig,
@@ -39,38 +27,25 @@ from maru_lang.pluggable.models import (
 )
 
 __all__ = [
-    # Base
     'DefaultConfigLoader',
-
-    # RAG (replaces Group)
+    'ConfigManager',
+    'get_config_manager',
+    'check_config_differences',
+    'ConfigDiffChecker',
+    # Models
+    'LLMConfig',
+    'AgentConfig',
+    'EmbedderConfig',
+    'RerankerConfig',
     'RagConfig',
     'RetrieverConfig',
     'GroupRagConfig',
-    'RagConfigLoader',
-
-    # Backward compatibility - Group (deprecated, use RAG instead)
     'GroupConfig',
     'GroupsConfig',
-
-    # Pluggable configs (re-exported for convenience)
-    'LLMConfig',
+    # Config Loaders
     'LLMConfigLoader',
-    'AgentConfig',
     'AgentConfigLoader',
-    'LoaderConfig',
-    'LoaderConfigLoader',
-    'ChunkerConfig',
-    'ChunkerConfigLoader',
-    'EmbedderConfig',
     'EmbedderConfigLoader',
-    'RerankerConfig',
     'RerankerConfigLoader',
-
-    # Config Manager
-    'ConfigManager',
-    'get_config_manager',
-
-    # Config Diff Checker
-    'check_config_differences',
-    'ConfigDiffChecker',
+    'RagConfigLoader',
 ]

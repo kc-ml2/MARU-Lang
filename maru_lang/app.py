@@ -131,11 +131,6 @@ class MaruLangApp(FastAPI):
         await Tortoise.close_connections()
         print("✓ Database connections closed")
 
-        # Reset ChatPipeline singleton
-        from maru_lang.dependencies.chat import ChatPipelineManager
-        ChatPipelineManager.reset()
-        print("✓ ChatPipeline reset")
-
         print("✨ Shutdown complete")
 
     def _setup_middleware(self):
