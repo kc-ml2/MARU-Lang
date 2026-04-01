@@ -1,5 +1,9 @@
+"""LLM Manager - LangChain 모델 관리 및 fallback 체인 제공"""
 import logging
 from typing import List, Optional
+
+from langchain_core.language_models import BaseChatModel
+
 from .client import LLMClient
 from maru_lang.configs.manager import get_config_manager
 
@@ -7,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMManager:
-    """Manage configured LLM clients."""
+    """Manage configured LLM clients and provide fallback chains."""
 
     def __init__(self):
         self.config_manager = get_config_manager()
@@ -24,13 +28,46 @@ class LLMManager:
             logger.warning("No LLM configurations found.")
             return
 
-        # Create clients for enabled configurations only
         self.clients = [
             LLMClient(config)
             for config in llm_configs
             if config.enabled
         ]
         logger.info(f"Loaded {len(self.clients)} LLM clients")
+
+    def get_model(self, name: Optional[str] = None) -> Optional[BaseChatModel]:
+        """이름으로 모델 반환. 이름 없으면 첫 번째 모델 반환."""
+        if name:
+            client = self.get_client_by_name(name)
+            return client.model if client else None
+        return self.clients[0].model if self.clients else None
+
+    def get_model_with_fallbacks(
+        self,
+        primary_name: Optional[str] = None,
+    ) -> Optional[BaseChatModel]:
+        """fallback 체인이 적용된 모델 반환.
+
+        primary가 실패하면 나머지 모델들이 순서대로 시도됨.
+        LangChain의 with_fallbacks() 사용.
+        """
+        if not self.clients:
+            return None
+
+        models = [c.model for c in self.clients]
+
+        if primary_name:
+            primary_client = self.get_client_by_name(primary_name)
+            if primary_client:
+                others = [c.model for c in self.clients if c.config.name != primary_name]
+                if others:
+                    return primary_client.model.with_fallbacks(others)
+                return primary_client.model
+
+        # primary 지정 없으면 첫 번째가 primary, 나머지가 fallback
+        if len(models) == 1:
+            return models[0]
+        return models[0].with_fallbacks(models[1:])
 
     def get_client(self) -> Optional[LLMClient]:
         """Return the first available client."""
@@ -63,7 +100,7 @@ class LLMManager:
             {
                 "name": client.config.name,
                 "provider": client.config.provider,
-                "model": client.config.model_name
+                "model": client.config.model_name,
             }
             for client in self.clients
         ]
