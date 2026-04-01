@@ -1,167 +1,137 @@
-import asyncio
+"""Chat WebSocket endpoint - LangGraph 기반"""
 import json
-from typing import AsyncGenerator, Union
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from maru_lang.services.auth import verify_chat_token
-from maru_lang.core.relation_db.models.auth import User
+from langchain_core.messages import HumanMessage, AIMessageChunk
 from starlette.websockets import WebSocketState
+
+from maru_lang.services.auth import verify_chat_token
 from maru_lang.dependencies.auth import User
-from maru_lang.dependencies.chat import ChatPipelineManager
-from maru_lang.pipelines.base import MessageType
+from maru_lang.dependencies.llm import get_model_with_fallbacks
+from maru_lang.graph import create_graph
 from maru_lang.services.team import list_teams_by_user, Team
 
 router = APIRouter(
     prefix="/chat",
-    tags=["Chat"]
+    tags=["Chat"],
 )
+
+# 그래프 인스턴스 (lazy init)
+_graph = None
+
+
+def _get_graph():
+    global _graph
+    if _graph is None:
+        model = get_model_with_fallbacks()
+        if model is None:
+            return None
+        _graph = create_graph(model)
+    return _graph
 
 
 @router.websocket("/connect")
 async def chat_websocket(websocket: WebSocket):
-    """
-    WebSocket chat endpoint with chat_token authentication.
+    """WebSocket chat endpoint.
 
-    Flow: auth -> message -> stream -> complete
+    Protocol:
+        1. Client sends: {"type": "auth", "chat_token": "..."}
+        2. Server authenticates, then client can send messages
+        3. Client sends: {"type": "message", "content": "..."}
+        4. Server streams: {"type": "thinking"|"stream"|"retrieve"|"complete"|"error", ...}
     """
-    async def _streaming_message(
-        type: str,
-        stream: Union[str, AsyncGenerator],
-        rate: float = 0.006
-    ):
-        await websocket.send_json(
-            {
-                "type": type,
-            }
-        )
-        if isinstance(stream, str):
-            if rate > 0:
-                for c in stream:
-                    await websocket.send_json(
-                        {
-                            "type": "stream",
-                            "content": c
-                        }
-                    )
-                    await asyncio.sleep(rate)
-            else:
-                try:
-                    await websocket.send_json(
-                        {
-                            "type": "stream",
-                            "content": stream
-                        }
-                    )
-                except Exception:
-                    print("Failed to send stream message")
-        else:
-            async for content in stream:
-                await websocket.send_json(
-                    {
-                        "type": "stream",
-                        "content": content
-                    }
-                )
-        await websocket.send_json(
-            {
-                "type": "complete",
-            }
-        )
-
     await websocket.accept()
 
     user: User | None = None
     authenticated = False
     all_user_teams: list[Team] = []
+    thread_id: str | None = None
+
     try:
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type")
-            # 인증 전: auth 메시지만 허용
+
+            # ─── 인증 ─────────────────────────────────
             if not authenticated:
                 if msg_type != "auth":
-                    await _streaming_message(
-                        "error",
-                        "Authentication required first, before sending messages.")
+                    await websocket.send_json({"type": "error", "content": "Authentication required"})
                     break
 
                 chat_token = data.get("chat_token")
                 if not chat_token:
-                    await _streaming_message(
-                        "error",
-                        "chat_token is required when authenticating")
+                    await websocket.send_json({"type": "error", "content": "chat_token is required"})
                     break
 
                 user = await verify_chat_token(chat_token)
                 if not user:
-                    await _streaming_message(
-                        "error",
-                        "Invalid or expired chat_token")
+                    await websocket.send_json({"type": "error", "content": "Invalid or expired chat_token"})
                     break
+
                 all_user_teams = await list_teams_by_user(user)
+                thread_id = f"user-{user.id}"
                 authenticated = True
                 continue
 
-            # 인증 후: 메시지 처리
+            # ─── 메시지 처리 ───────────────────────────
             if msg_type == "message":
-
                 content = data.get("content")
                 if not content:
-                    await _streaming_message(
-                        "error",
-                        "message content is required")
+                    await websocket.send_json({"type": "error", "content": "message content is required"})
                     break
                 if not all_user_teams:
-                    await _streaming_message(
-                        "error",
-                        "User does not belong to any team")
-                    break
-                # TODO pass conversation_id for context-aware chat
-                # TODO or something like specification in the message
-                chat_pipeline = ChatPipelineManager.create_pipeline()
-                if not chat_pipeline:
-                    await _streaming_message(
-                        "error",
-                        "ChatPipeline is not available")
+                    await websocket.send_json({"type": "error", "content": "User does not belong to any team"})
                     break
 
-                # Process stream and yield events
-                async for step in chat_pipeline.run(
-                    teams=all_user_teams,
-                    question=content,
+                graph = _get_graph()
+                if not graph:
+                    await websocket.send_json({"type": "error", "content": "LLM not available"})
+                    break
+
+                # LangGraph 입력 구성
+                graph_input = {
+                    "messages": [HumanMessage(content=content)],
+                    "team_ids": [t.id for t in all_user_teams],
+                    "team_names": [t.name for t in all_user_teams],
+                    "accessible_groups": [],  # TODO: 팀별 문서 그룹 조회
+                    "retrieved_documents": [],
+                }
+                config = {"configurable": {"thread_id": thread_id}}
+
+                # 스트리밍
+                await websocket.send_json({"type": "thinking"})
+
+                async for event, metadata in graph.astream(
+                    graph_input,
+                    config=config,
+                    stream_mode="messages",
                 ):
-                    if (
-                        step.message_type == MessageType.WARNING or
-                        step.message_type == MessageType.ERROR
-                    ):
-                        await _streaming_message(
-                            "error",
-                            step.message)
-                    elif step.message_type == MessageType.DEBUG:
-                        pass  # currently ignore debug messages
-                    elif step.message_type == MessageType.RETRIEVE:
-                        await _streaming_message(
-                            "retrieve",
-                            step.message)
-                    elif step.message_type == MessageType.INFO:
-                        await _streaming_message(
-                            "thinking",
-                            step.message)
-                    elif step.message_type == MessageType.NORMAL:
-                        await _streaming_message(
-                            "answer",
-                            step.message)
+                    # LLM 토큰 스트리밍
+                    if isinstance(event, AIMessageChunk) and event.content:
+                        await websocket.send_json({
+                            "type": "stream",
+                            "content": event.content,
+                        })
+
+                    # Tool 호출 결과 (검색 결과 등)
+                    if hasattr(event, "name") and event.name == "knowledge_search":
+                        await websocket.send_json({
+                            "type": "retrieve",
+                            "content": event.content if hasattr(event, "content") else "",
+                        })
+
+                await websocket.send_json({"type": "complete"})
+
             else:
-                await _streaming_message(
-                    "error",
-                    "Unknown message type")
+                await websocket.send_json({"type": "error", "content": "Unknown message type"})
                 break
+
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        await _streaming_message(
-            "error",
-            f"Server error: {str(e)}")
+        try:
+            await websocket.send_json({"type": "error", "content": f"Server error: {str(e)}"})
+        except Exception:
+            pass
     finally:
         if websocket.client_state != WebSocketState.DISCONNECTED:
             await websocket.close()
-        # Cleanup if needed
