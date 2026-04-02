@@ -9,7 +9,7 @@ from maru_lang.core.relation_db.models.documents import (
     Document,
 )
 from maru_lang.services.document import get_all_descendant_groups
-from maru_lang.core.vector_db.factory import get_vector_db
+from maru_lang.graph.vector_db import get_vector_db
 
 
 async def remove_function(

@@ -3,9 +3,9 @@ import hmac
 import uuid
 from datetime import datetime, timedelta, timezone
 from jose import jwt
-from maru_lang.configs.system_config import get_system_config
+from maru_lang.configs import get_config
 
-config = get_system_config()
+config = get_config()
 
 
 def hash_token(token: str) -> str:

@@ -29,16 +29,16 @@ def create_config_directories(base_path: Path, force: bool = False) -> bool:
         base_path.mkdir(parents=True, exist_ok=True)
 
         # Configuration directories to create
-        config_dirs = ['llms', 'agents', 'embedders', 'rerankers']
+        config_dirs = ['llms']
 
         # Create root-level config files first
-        # 1. system_config.yaml (central system configuration)
-        system_config_path = base_path / "system_config.yaml"
-        if not system_config_path.exists() or force:
-            system_config_content = get_sample_content("system_config")
-            if system_config_content:
-                system_config_path.write_text(system_config_content)
-                console.print(f"  ✅ Created system_config.yaml")
+        # 1. maru_config.yaml (unified configuration)
+        maru_config_path = base_path / "maru_config.yaml"
+        if not maru_config_path.exists() or force:
+            maru_config_content = get_sample_content("maru_config")
+            if maru_config_content:
+                maru_config_path.write_text(maru_config_content)
+                console.print(f"  ✅ Created maru_config.yaml")
 
         # 2. build_selector.yaml
         build_selector_path = base_path / "build_selector.yaml"
@@ -214,7 +214,7 @@ def discover_agent_templates():
 
             # Determine target directory based on agent type
             if agent_type == 'builtin':
-                # Builtin agents go to agents/builtin/ (YAML only, Python is in pluggable/agents/builtin)
+                # Builtin agents go to agents/builtin/
                 target_subdir = 'builtin'
             elif agent_type == 'mcp_client':
                 target_subdir = 'mcps'
@@ -344,7 +344,7 @@ def get_sample_content(content_type: str) -> str:
             "llms_local": "local.yaml",
             "rag_config": "rag_config.yaml",
             "agents_build_selector": "agents_build_selector.yaml",
-            "system_config": "system_config.yaml",
+            "maru_config": "maru_config.yaml",
         }
         if content_type in template_map:
             template_file = template_dir / template_map[content_type]

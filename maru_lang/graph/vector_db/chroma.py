@@ -1,11 +1,9 @@
 import chromadb
 from typing import Any
 from chromadb.api.models.Collection import Collection
-from maru_lang.core.vector_db.base import VectorDB
-from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
-from maru_lang.configs.system_config import get_system_config
-
-config = get_system_config()
+from langchain_core.documents import Document
+from maru_lang.constants import CHROMA_MAX_BATCH_SIZE
+from maru_lang.graph.vector_db.base import VectorDB
 
 
 class ChromaVectorDB(VectorDB):
@@ -39,8 +37,7 @@ class ChromaVectorDB(VectorDB):
             documents: 문서 리스트 (id, content, metadata 포함)
             embeddings: 임베딩 벡터 리스트 (외부에서 생성)
         """
-        # ChromaDB 내부 배치 크기 제한 (5461) 고려
-        CHROMA_MAX_BATCH_SIZE = 5000  # 안전 마진
+
 
         contents = [doc["content"] for doc in documents]
         ids = [doc["id"] for doc in documents]
@@ -134,7 +131,6 @@ class ChromaVectorDB(VectorDB):
         embeddings: list[list[float]],
     ) -> None:
         """Add or update documents in VectorDB."""
-        CHROMA_MAX_BATCH_SIZE = 5000
 
         contents = [doc["content"] for doc in documents]
         ids = [doc["id"] for doc in documents]
@@ -181,7 +177,7 @@ class ChromaVectorDB(VectorDB):
         """
         return self.collection.get(include=["metadatas"])["metadatas"]
 
-    def get_documents(self, document_ids: list[str]) -> list[RetrieveDocument]:
+    def get_documents(self, document_ids: list[str]) -> list[Document]:
         results = self.collection.get(
             where={"document_id": {"$in": document_ids}})
 
@@ -190,7 +186,7 @@ class ChromaVectorDB(VectorDB):
         metadatas = results["metadatas"]
 
         return [
-            RetrieveDocument(
+            Document(
                 id=doc_id,
                 page_content=doc,
                 metadata=metadata
@@ -201,7 +197,7 @@ class ChromaVectorDB(VectorDB):
     def get_all_documents(
         self,
         team_ids: list[int]
-    ) -> list[RetrieveDocument]:
+    ) -> list[Document]:
         """
         Get all documents from VectorDB filtered by team IDs
 
@@ -226,7 +222,7 @@ class ChromaVectorDB(VectorDB):
         metadatas = results["metadatas"] or []
 
         return [
-            RetrieveDocument(
+            Document(
                 id=doc_id,
                 page_content=doc,
                 metadata=metadata
@@ -240,7 +236,7 @@ class ChromaVectorDB(VectorDB):
         k: int,
         team_ids: list[int],
         **kwargs: dict[str, Any],
-    ) -> list[RetrieveDocument]:
+    ) -> list[Document]:
         """
         Vector similarity search
 
@@ -266,7 +262,7 @@ class ChromaVectorDB(VectorDB):
         distances = results["distances"][0] if results["distances"] else []
 
         return [
-            RetrieveDocument(
+            Document(
                 id=doc_id,
                 page_content=doc,
                 metadata={**metadata, "score": 1 - distance}
@@ -281,7 +277,7 @@ class ChromaVectorDB(VectorDB):
         k: int,
         team_ids: list[int],
         **kwargs: dict[str, Any]
-    ) -> list[RetrieveDocument]:
+    ) -> list[Document]:
         """
         Hybrid search - Not supported by ChromaDB
 

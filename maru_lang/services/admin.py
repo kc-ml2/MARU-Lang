@@ -3,11 +3,7 @@ Admin user management service
 """
 from maru_lang.core.relation_db.models.auth import Team, User
 from maru_lang.services.team import add_member_to_team
-
-
-ADMIN_EMAIL = "admin@maru.local"
-ADMIN_NAME = "Admin"
-PUBLIC_TEAM_NAME = "public"
+from maru_lang.constants import ADMIN_EMAIL, ADMIN_NAME, PUBLIC_TEAM_NAME
 
 
 async def get_or_create_admin_user() -> User:

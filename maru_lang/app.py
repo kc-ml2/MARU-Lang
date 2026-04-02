@@ -1,13 +1,15 @@
 import asyncio
+import logging
 from typing import Dict, Any, Optional, List, Callable
+
+logger = logging.getLogger(__name__)
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_pagination import add_pagination
 
 from maru_lang.core.relation_db import get_register_orm
-from maru_lang.dependencies.llm import get_llm_manager
-from maru_lang.configs.manager import get_config_manager
+from maru_lang.configs import get_config
 from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.chat import router as chat_router
 from maru_lang.api.endpoints.ingest import router as ingest_router
@@ -96,26 +98,15 @@ class MaruLangApp(FastAPI):
     async def _default_startup(self):
         """Default startup routine."""
         # TODO Initialize logging system
-        config_manager = get_config_manager()
-        config_manager.load_all()
+        cfg = get_config()
 
-        # Validate configuration
-        validation_status = config_manager.validate_all()
-        if not validation_status['valid']:
-            print("❌ Configuration validation failed:")
-            for error in validation_status['errors']:
-                print(f"  - {error}")
-            # Critical errors should stop the app
-            if validation_status['errors']:
-                raise RuntimeError("Critical configuration errors found")
+        if not cfg.llms:
+            logger.warning("No LLM configurations found - chat will not work until configured")
 
         # 2. Register ORM
-        print("🗄️ Initializing databases...")
+        print("Initializing databases...")
         register_orm = get_register_orm()
         async with register_orm(self):
-
-            # Store config manager in app state for access in endpoints
-            self.state.config_manager = config_manager
 
             print("=" * 60)
             print("✨ Application startup complete!")

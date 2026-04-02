@@ -5,7 +5,7 @@ import asyncio
 from pathlib import Path
 from typing import Optional
 from aerich import Command
-from maru_lang.configs.system_config import get_system_config
+from maru_lang.configs import get_config
 
 
 def get_migrations_location() -> str:
@@ -32,10 +32,10 @@ async def run_migrations(location: str = None, app: str = "models") -> bool:
         if location is None:
             location = get_migrations_location()
 
-        config = get_system_config()
+        config = get_config()
 
         tortoise_config = {
-            "connections": {"default": config.database.get_database_url()},
+            "connections": {"default": config.get_database_url_absolute()},
             "apps": {
                 "models": {
                     "models": ["maru_lang.core.relation_db.models", "aerich.models"],
@@ -102,10 +102,10 @@ async def check_migrations_status(location: str = None, app: str = "models") -> 
         if location is None:
             location = get_migrations_location()
 
-        config = get_system_config()
+        config = get_config()
 
         tortoise_config = {
-            "connections": {"default": config.database.get_database_url()},
+            "connections": {"default": config.get_database_url_absolute()},
             "apps": {
                 "models": {
                     "models": ["maru_lang.core.relation_db.models", "aerich.models"],

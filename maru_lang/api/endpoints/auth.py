@@ -19,10 +19,10 @@ from maru_lang.dependencies.email import get_email_service_dependency, EmailServ
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Response, Request, Query
 from maru_lang.enums.auth import UserRoleCode
-from maru_lang.configs.system_config import get_system_config
+from maru_lang.configs import get_config
 from maru_lang.dependencies.auth import get_user
 
-config = get_system_config()
+config = get_config()
 
 
 router = APIRouter(

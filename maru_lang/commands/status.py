@@ -70,7 +70,7 @@ async def show_status(verbose: bool = False):
 
     try:
         # VectorDB 인스턴스 생성 (settings 기본값 사용)
-        from maru_lang.core.vector_db.factory import get_vector_db
+        from maru_lang.graph.vector_db import get_vector_db
 
         vdb = get_vector_db()
 
