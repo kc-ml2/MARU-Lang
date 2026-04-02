@@ -1,8 +1,6 @@
-from maru_lang.commands.tree import show_group_tree_command
 from maru_lang.commands.status import show_status
 from maru_lang.commands.chat import chat_session
 from maru_lang.commands.install import install_configs
-from maru_lang.commands.transfer import transfer_function
 from maru_lang.commands.remove import remove_function
 from maru_lang.commands.ingest import ingest_function
 from maru_lang.core.relation_db.connection import run_with_orm_context
@@ -271,47 +269,20 @@ def status(
     run_with_orm_context(show_status, verbose)
 
 
-@app.command()
-def tree(
-    name: Optional[str] = typer.Argument(
-        None, help="DocumentGroup name (shows only root groups when omitted)"),
-    depth: int = typer.Option(
-        2, "--depth", "-d", help="Maximum depth to display (default: 2)"),
-):
-    """Show the DocumentGroup hierarchy."""
-    run_with_orm_context(show_group_tree_command, name, depth)
-
-
-@app.command()
-def transfer(
-    group_name: str = typer.Argument(...,
-                                     help="DocumentGroup name to transfer"),
-    new_manager_email: str = typer.Argument(...,
-                                            help="Email of the new manager"),
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Transfer without confirmation"
-    ),
-):
-    """Transfer DocumentGroup manager to another user"""
-    run_with_orm_context(transfer_function, group_name,
-                         new_manager_email, force)
-
 
 def _check_maru_app_installation() -> bool:
-    """Check if required files exist and guide user to install if not"""
+    """Check if required files exist and guide user to install if not."""
     maru_app_path = Path.cwd() / "maru_app"
-    main_py = maru_app_path / "main.py"
-    build_selector = maru_app_path / "build_selector.yaml"
 
     missing_items = []
 
     if not maru_app_path.exists():
         missing_items.append("maru_app/ directory")
     else:
-        if not main_py.exists():
+        if not (maru_app_path / "main.py").exists():
             missing_items.append("maru_app/main.py")
-        if not build_selector.exists():
-            missing_items.append("maru_app/build_selector.yaml")
+        if not (maru_app_path / "maru_config.yaml").exists():
+            missing_items.append("maru_app/maru_config.yaml")
 
     if missing_items:
         typer.echo("❌ Error: Installation incomplete!")

@@ -1,43 +1,41 @@
 [project]
 name = "maru-lang"
 version = "0.0.0"
-description = "Advanced LLM-powered chatbot with RAG, multi-agent system, and enterprise features"
+description = "LLM-powered chatbot with RAG and LangGraph pipelines"
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
     {name = "KC ML2"},
 ]
-keywords = ["llm", "chatbot", "rag", "ai", "fastapi", "agents"]
+keywords = ["llm", "chatbot", "rag", "ai", "fastapi", "langgraph"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 dependencies = [
+    # Web framework
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.23.0",
+    "fastapi-pagination>=0.12.0",
+    # CLI
     "typer[all]>=0.9.0",
+    # ORM / DB
     "tortoise-orm[asyncpg]>=0.20.0",
     "aerich>=0.7.2",
+    # Auth
     "python-jose[cryptography]>=3.3.0",
     "passlib>=1.7.4",
+    # HTTP
     "httpx>=0.24.0",
-    "sentence-transformers>=2.2.0",
-    "fastapi-pagination>=0.12.0",
-    "rank-bm25>=0.2.2",
-    "chromadb>=0.4.0",
-    "konlpy>=0.6.0",
-    "mcp>=0.9.0",
+    # Config
     "pyyaml>=6.0.0",
+    # VectorDB
+    "chromadb>=0.4.0",
     # LangChain / LangGraph
     "langgraph>=0.3.0",
     "langchain-core>=0.3.0",
@@ -46,6 +44,8 @@ dependencies = [
     "langchain-community>=0.3.0",
     "langchain-huggingface>=0.1.0",
     "langchain-text-splitters>=0.3.0",
+    # Reranker
+    "sentence-transformers>=2.2.0",
     # Document parsers
     "PyPDF2>=3.0.1",
     "python-docx>=0.8.11",
@@ -55,24 +55,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Vector database backends (alternative to chromadb)
-vector-db = [
-    "pymilvus[model]>=2.3.0",
-]
-
-
-# Development / testing
 dev = [
     "aerich[toml]>=0.7.0",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
-    "notebook>=6.5.0",
-]
-
-# Bundle of all optional features
-all = [
-    "pymilvus[model]>=2.3.0",
 ]
 
 [build-system]
@@ -91,7 +78,6 @@ maru_lang = [
     "templates/**/*.md",
     "core/relation_db/migrations/**/*.sql",
     "core/relation_db/migrations/**/*.py",
-    "py.typed",
 ]
 
 [tool.pytest.ini_options]
@@ -106,27 +92,20 @@ filterwarnings = [
     "ignore::UserWarning",
 ]
 markers = [
-    "slow: long-running tests",
-    "integration: integration tests",
+    "integration: integration tests (require API keys)",
 ]
 
 [tool.coverage.run]
 source = ["maru_lang"]
 omit = [
-    "maru_lang/migrations/*",
-    "maru_lang/alembic/*",
-    "maru_lang/scripts/*",
-    "maru_lang/tests/*",
+    "maru_lang/core/relation_db/migrations/*",
 ]
 
 [tool.coverage.report]
 exclude_lines = [
     "pragma: no cover",
-    "def __repr__",
     "raise NotImplementedError",
     "if __name__ == '__main__':",
-    "pass",
-    "raise ImportError",
 ]
 
 [project.scripts]
