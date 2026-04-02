@@ -1,6 +1,6 @@
-"""Ingest Pipeline LangGraph 테스트
+"""Ingest pipeline LangGraph tests
 
-실행: venv/bin/python -m pytest tests/test_ingest.py -v
+Run: venv/bin/python -m pytest tests/test_ingest.py -v
 """
 import sys
 import types
@@ -9,17 +9,17 @@ from pathlib import Path
 
 import pytest
 
-# maru_lang.__init__의 전체 앱 로딩 우회
+# Bypass maru_lang.__init__ full app loading
 if "maru_lang" not in sys.modules:
     _fake = types.ModuleType("maru_lang")
     _fake.__path__ = ["maru_lang"]
     sys.modules["maru_lang"] = _fake
 
 from maru_lang.constants import SUPPORTED_EXTENSIONS
-from maru_lang.pipelines.ingest.loader import load_file, is_supported
-from maru_lang.pipelines.ingest.splitter import create_splitter, split_documents
-from maru_lang.pipelines.ingest.state import IngestState
-from maru_lang.pipelines.ingest.pipeline import create_ingest_graph
+from maru_lang.graph.ingest.loader import load_file, is_supported
+from maru_lang.graph.ingest.splitter import create_splitter, split_documents
+from maru_lang.graph.ingest.state import IngestState
+from maru_lang.graph.ingest.graph import create_ingest_graph
 
 
 # ─── Fixtures ─────────────────────────────────────────────────
@@ -28,9 +28,9 @@ from maru_lang.pipelines.ingest.pipeline import create_ingest_graph
 @pytest.fixture
 def sample_txt(tmp_path):
     f = tmp_path / "sample.txt"
-    f.write_text("첫 번째 문단입니다. MARU 프로젝트에 대한 설명입니다.\n\n"
-                 "두 번째 문단입니다. LangGraph로 마이그레이션했습니다.\n\n"
-                 "세 번째 문단입니다. 한국어 자연어 처리를 지원합니다.")
+    f.write_text("First paragraph. Description of the MARU project.\n\n"
+                 "Second paragraph. Migrated to LangGraph.\n\n"
+                 "Third paragraph. Supports Korean NLP.")
     return f
 
 
@@ -59,9 +59,9 @@ def sample_csv(tmp_path):
 
 @pytest.fixture
 def long_text(tmp_path):
-    """청킹 테스트용 긴 텍스트"""
+    """Long text for chunking tests"""
     f = tmp_path / "long.txt"
-    paragraphs = [f"문단 {i}. " + "이것은 테스트 문장입니다. " * 20 for i in range(10)]
+    paragraphs = [f"Paragraph {i}. " + "This is a test sentence. " * 20 for i in range(10)]
     f.write_text("\n\n".join(paragraphs))
     return f
 
@@ -130,23 +130,19 @@ class TestSplitter:
     def test_split_short_text(self, sample_txt):
         docs = load_file(sample_txt)
         chunks = split_documents(docs, chunk_size=1000, chunk_overlap=0)
-        # 짧은 텍스트는 1개 청크
         assert len(chunks) >= 1
 
     def test_split_long_text(self, long_text):
         docs = load_file(long_text)
         chunks = split_documents(docs, chunk_size=200, chunk_overlap=50)
-        # 긴 텍스트는 여러 청크
         assert len(chunks) > 1
         for chunk in chunks:
-            assert len(chunk.page_content) <= 250  # chunk_size + 여유
+            assert len(chunk.page_content) <= 250
 
     def test_split_preserves_content(self, sample_txt):
         docs = load_file(sample_txt)
-        original_text = docs[0].page_content
         chunks = split_documents(docs, chunk_size=50, chunk_overlap=10)
         merged = "".join(c.page_content for c in chunks)
-        # 원본 텍스트의 핵심 내용이 보존되는지
         assert "MARU" in merged
         assert "LangGraph" in merged
 
@@ -158,31 +154,29 @@ class TestIngestGraph:
     def test_graph_compiles(self):
         graph = create_ingest_graph()
         nodes = list(graph.get_graph().nodes.keys())
-        assert "sync_documents" in nodes
-        assert "process_documents" in nodes
+        assert "sync_document" in nodes
+        assert "process_document" in nodes
 
     def test_graph_has_correct_flow(self):
         graph = create_ingest_graph()
         edges = str(graph.get_graph().edges)
-        # sync_documents → process_documents → END
-        assert "sync_documents" in edges
-        assert "process_documents" in edges
+        assert "sync_document" in edges
+        assert "process_document" in edges
 
     def test_state_schema(self):
         keys = list(IngestState.__annotations__.keys())
-        assert "files" in keys
+        assert "file" in keys
         assert "team_id" in keys
         assert "messages" in keys
-        assert "failed_documents" in keys
         assert "total_chunks" in keys
         assert "embedder_model" in keys
 
 
-# ─── E2E (Load → Split) ──────────────────────────────────────
+# ─── E2E (Load -> Split) ────────────────────────────────────
 
 
 class TestLoadAndSplit:
-    """Loader + Splitter 통합 테스트"""
+    """Loader + Splitter integration tests"""
 
     def test_txt_e2e(self, sample_txt):
         docs = load_file(sample_txt)
