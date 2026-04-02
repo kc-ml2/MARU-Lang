@@ -3,9 +3,9 @@ Email service dependency for FastAPI
 """
 from abc import ABC, abstractmethod
 from typing import Optional
-from maru_lang.configs.system_config import get_system_config
+from maru_lang.configs import get_config
 
-config = get_system_config()
+config = get_config()
 
 
 class EmailService(ABC):
@@ -24,7 +24,8 @@ class EmailService(ABC):
         pass
 
     @abstractmethod
-    def send_notification(self, recipient: str, team_name: str, inviter_name: str) -> bool:
+    def send_notification(self, recipient:
+         str, team_name: str, inviter_name: str) -> bool:
         pass
 
 
@@ -32,10 +33,10 @@ class SMTPEmailManager(EmailService):
     """SMTP email service implementation"""
 
     def __init__(self):
-        self.host = config.email.smtp.host
-        self.port = config.email.smtp.port
-        self.username = config.email.smtp.username
-        self.password = config.email.smtp.password
+        self.host = config.smtp.host
+        self.port = config.smtp.port
+        self.username = config.smtp.username
+        self.password = config.smtp.password
 
     def send_email(self, recipient: str, subject: str, body: str) -> bool:
         try:
@@ -81,7 +82,7 @@ class SMTPEmailManager(EmailService):
 
 def get_email_manager() -> Optional[EmailService]:
     """Get email service instance based on settings"""
-    smtp = config.email.smtp
+    smtp = config.smtp
     if all([smtp.host, smtp.username, smtp.password]):
         try:
             return SMTPEmailManager()

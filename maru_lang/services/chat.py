@@ -1,5 +1,4 @@
 from typing import Dict, List
-from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
 from maru_lang.schemas.chat import DocumentReference
 from maru_lang.core.relation_db.models.chat import Conversation, ConversationReference
 from maru_lang.core.relation_db.models.documents import Document

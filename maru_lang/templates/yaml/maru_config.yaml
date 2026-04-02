@@ -1,0 +1,60 @@
+# MARU-Lang Configuration
+# All settings have sensible defaults. Only override what you need.
+
+# --- Infrastructure ---
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  reload: false
+  log_level: info
+
+production: false
+
+database_url: sqlite:///chatbot.db
+# database_url: postgres://user:password@localhost:5432/maru
+
+auth:
+  secret_key: ${ENV:SECRET_KEY:your-secret-key-change-in-production}
+  salt: ${ENV:SALT:some-salt}
+  access_token_expire_minutes: 15
+  refresh_token_expire_minutes: 43200
+  # allowed_domains:
+  #   - example.com
+
+# smtp:
+#   host: smtp.gmail.com
+#   port: 587
+#   username: ${ENV:SMTP_USERNAME}
+#   password: ${ENV:SMTP_PASSWORD}
+
+vector_db_url: chroma://data/chroma/maru
+# vector_db_url: lance://data/lance/maru
+
+# --- LLMs ---
+
+llms:
+  # - name: openai
+  #   provider: openai
+  #   model_name: gpt-4o
+  #   api_key: ${ENV:OPENAI_API_KEY}
+  #   config:
+  #     temperature: 0.7
+
+  # - name: anthropic
+  #   provider: anthropic
+  #   model_name: claude-sonnet-4-20250514
+  #   api_key: ${ENV:ANTHROPIC_API_KEY}
+
+# --- AI/ML ---
+
+embedding_model: BAAI/bge-m3
+# embedding_device: cuda  # or mps, cpu (null for auto)
+
+retriever_top_k: 5
+
+reranker_enabled: false
+reranker_type: cross_encoder   # "cross_encoder" or "llm"
+reranker_model: BAAI/bge-reranker-v2-m3  # for cross_encoder type
+# reranker_llm: openai          # for llm type — references a name from llms list
+reranker_top_k: 5

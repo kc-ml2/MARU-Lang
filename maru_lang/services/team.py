@@ -5,13 +5,13 @@ from typing import Optional
 
 from tortoise.exceptions import IntegrityError
 
-from maru_lang.configs.system_config import get_system_config
+from maru_lang.configs import get_config
 from maru_lang.core.relation_db.models.auth import Team, TeamMember, User, UserRole
 from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
 from maru_lang.dependencies.email import EmailService
 from maru_lang.enums.auth import UserRoleCode
 
-config = get_system_config()
+config = get_config()
 
 
 async def list_teams_by_user(user: User) -> list[dict]:

@@ -2,7 +2,6 @@ from typing import Any
 from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
-from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
 
 
 class DocumentReference(BaseModel):
@@ -26,7 +25,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    references: list[RetrieveDocument]
+    references: list[DocumentReference]
 
 
 class ConversationResponse(BaseModel):

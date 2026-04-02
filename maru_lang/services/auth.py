@@ -2,7 +2,7 @@ import random
 import secrets
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
-from maru_lang.configs.system_config import get_system_config
+from maru_lang.configs import get_config
 from maru_lang.dependencies.email import EmailService
 from maru_lang.utils.security import (
     create_jwt_token,
@@ -21,7 +21,7 @@ from maru_lang.core.relation_db.models.auth import (
 )
 from maru_lang.enums.auth import UserRoleCode
 
-config = get_system_config()
+config = get_config()
 
 
 async def create_or_get_user(email: str) -> User:
@@ -67,7 +67,7 @@ async def generate_email_verification_code(
     email_service: EmailService | None = None
 ) -> EmailVerificationCode:
     if not email_service:
-        if config.environment.production:
+        if config.production:
             raise ValueError("Email service is not configured")
         code = config.auth.default_validation_code
     else:

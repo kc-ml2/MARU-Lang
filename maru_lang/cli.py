@@ -1,4 +1,3 @@
-from maru_lang.configs.diff_checker import check_config_differences
 from maru_lang.commands.tree import show_group_tree_command
 from maru_lang.commands.status import show_status
 from maru_lang.commands.chat import chat_session
@@ -14,8 +13,7 @@ import uvicorn
 import subprocess
 from pathlib import Path
 from typing import Optional
-from maru_lang.configs.system_config import get_system_config
-from maru_lang.configs.manager import get_config_manager
+from maru_lang.configs import get_config
 
 app = typer.Typer()
 
@@ -27,12 +25,8 @@ def common_init(ctx: typer.Context):
     if ctx.invoked_subcommand == "install":
         return
 
-    # Load system config (DB, auth, etc.)
-    get_system_config()
-
-    # Load plugin configs (LLM, RAG, Agent, etc.)
-    config_manager = get_config_manager()
-    config_manager.ensure_loaded()
+    # Load config (DB, auth, LLM, RAG, Agent, etc.)
+    get_config()
 
 
 @app.command()
@@ -50,7 +44,7 @@ def serve(
 ):
     """Start the chatbot FastAPI server (default: maru_app/main.py)"""
 
-    config = get_system_config()
+    config = get_config()
 
     # Check if installation is complete
     _check_maru_app_installation()
@@ -73,16 +67,6 @@ def serve(
     maru_app_path = os.path.join(os.getcwd(), 'maru_app')
     if os.path.exists(maru_app_path) and maru_app_path not in sys.path:
         sys.path.insert(0, maru_app_path)
-
-    # Check configuration differences
-    try:
-        diff_report = check_config_differences()
-        if not diff_report.startswith("✓"):
-            typer.echo("\n" + "="*80)
-            typer.echo(diff_report)
-            typer.echo("="*80 + "\n")
-    except Exception as e:
-        typer.echo(f"⚠️  Warning: Could not check config differences: {e}\n")
 
     # Override defaults with CLI arguments when provided
     host = host or config.server.host
@@ -229,16 +213,6 @@ def chat(
             typer.echo(
                 "Migration check failed, but continuing to start chat...")
         typer.echo("")
-
-    # Check configuration differences
-    try:
-        diff_report = check_config_differences()
-        if not diff_report.startswith("✓"):
-            typer.echo("\n" + "="*80)
-            typer.echo(diff_report)
-            typer.echo("="*80 + "\n")
-    except Exception as e:
-        typer.echo(f"Warning: Could not check config differences: {e}\n")
 
     # Run with ORM context (required for document search)
     run_with_orm_context(chat_session, teams, max_turns)

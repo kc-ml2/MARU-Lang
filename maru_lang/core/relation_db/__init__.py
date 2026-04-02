@@ -8,16 +8,16 @@ def get_tortoise_orm():
     This function is called by Aerich when needed, avoiding issues with
     configuration loading at import time.
     """
-    from maru_lang.configs.system_config import get_system_config
+    from maru_lang.configs import get_config
 
-    config = get_system_config()
+    config = get_config()
     if not config:
         raise RuntimeError(
             "System configuration not found. Please run 'maru install' first."
         )
 
     return {
-        "connections": {"default": config.database.get_database_url()},
+        "connections": {"default": config.get_database_url_absolute()},
         "apps": {
             "models": {
                 "models": ["maru_lang.core.relation_db.models", "aerich.models"],

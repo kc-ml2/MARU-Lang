@@ -5,7 +5,7 @@ from typing import Any, Optional, Union
 
 from langchain_core.language_models import BaseChatModel
 
-from maru_lang.pluggable.models import LLMConfig
+from maru_lang.configs.models import LLMConfig
 
 
 def create_chat_model(config: LLMConfig) -> BaseChatModel:
