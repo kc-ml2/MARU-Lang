@@ -1,71 +1,101 @@
-"""Ingest API endpoints - single file pipeline."""
-import json
-import shutil
-import tempfile
-from pathlib import Path
-
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+"""Ingest API endpoints - upload, status, check."""
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 
 from maru_lang.enums.auth import UserRoleCode
+from maru_lang.enums.documents import DocumentStatus
 from maru_lang.dependencies.auth import get_user_with_role, User
-from maru_lang.schemas.ingest import FileInfo, SyncCheckRequest, SyncCheckResponse
-from maru_lang.utils.file_upload import save_uploaded_file
-from maru_lang.graph.ingest import run_ingest
+from maru_lang.schemas.ingest import (
+    UploadResponse,
+    StatusResponse,
+    DocumentStatusItem,
+    CheckRequest,
+    CheckResponse,
+)
+from maru_lang.services.ingest import (
+    upload_and_ingest,
+    run_ingest_for_document,
+    get_team_documents,
+    check_files_to_upload,
+)
 
 router = APIRouter(
-    prefix="/folder",
+    prefix="/ingest",
     tags=["Ingest"],
 )
 
 
-@router.post("/sync/upload")
-async def upload_and_ingest(
-    file: UploadFile = File(..., description="File to upload"),
-    folderName: str = Form(..., description="Project folder name"),
-    folderPath: str = Form(..., description="Project folder path"),
-    fileMetadata: str = Form(
-        ..., description="File metadata JSON: {fileName, createdAt, relativePath, size}"
-    ),
-    userGroupIds: str = Form(None, description="User group IDs JSON array"),
-    description: str = Form(None, description="DocumentGroup description"),
+@router.post("/upload", response_model=UploadResponse)
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    team_id: int = Form(...),
+    folder_path: str = Form(""),
+    mtime: float = Form(..., description="Original file modification time (unix timestamp)"),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
-    upload_dir = None
-    try:
-        try:
-            file_meta = json.loads(fileMetadata)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid fileMetadata format")
+    """Upload a file and start background ingest."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
 
-        upload_base_dir = Path(tempfile.gettempdir()) / "maru_lang_uploads"
-        group_name = f"{user.name}/{folderName}"
-        upload_dir = upload_base_dir / group_name
+    doc = await upload_and_ingest(
+        file_obj=file.file,
+        filename=file.filename,
+        file_size=file.size or 0,
+        team_id=team_id,
+        folder_path=folder_path,
+        mtime=mtime,
+    )
 
-        file_info = await save_uploaded_file(file, file_meta, upload_dir)
+    background_tasks.add_task(run_ingest_for_document, doc, team_id)
 
-        result = await run_ingest(
-            file=file_info,
-            team_id=user.id,
-            re_embed=False,
+    return UploadResponse(
+        document_id=doc.id,
+        name=doc.name,
+        status="uploading",
+    )
+
+
+@router.get("/status", response_model=StatusResponse)
+async def get_status(
+    team_id: int,
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
+):
+    """Get document status for a team."""
+    docs = await get_team_documents(team_id)
+
+    items = [
+        DocumentStatusItem(
+            id=doc.id,
+            name=doc.name,
+            status=DocumentStatus(doc.status).name.lower(),
+            file_size=doc.file_size,
+            created_at=doc.created_at,
+            updated_at=doc.updated_at,
+            error=doc.error_message,
         )
+        for doc in docs
+    ]
 
-        return {
-            "success": True,
-            "message": "Upload and ingestion completed",
-            "data": {
-                "fileName": file_info.fileName,
-                "chunks": result.get("total_chunks", 0),
-                "error": result.get("error"),
-            },
-        }
+    return StatusResponse(
+        team_id=team_id,
+        documents=items,
+        total=len(items),
+    )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if upload_dir and upload_dir.exists():
-            try:
-                shutil.rmtree(upload_dir)
-            except Exception:
-                pass
+
+@router.post("/check", response_model=CheckResponse)
+async def check_files(
+    request: CheckRequest,
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
+):
+    """Check which files need to be uploaded."""
+    files = [
+        {"absolutePath": f.absolutePath, "size": f.size, "mtime": f.mtime}
+        for f in request.files
+    ]
+    indices = await check_files_to_upload(files)
+
+    return CheckResponse(
+        indices_to_upload=indices,
+        total=len(request.files),
+    )
