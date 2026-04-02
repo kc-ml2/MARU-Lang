@@ -5,10 +5,7 @@ from rich.panel import Panel
 from rich.markdown import Markdown
 from rich.live import Live
 
-from langchain_core.messages import HumanMessage, AIMessageChunk
-
-from maru_lang.dependencies.llm import get_model_with_fallbacks
-from maru_lang.graph import create_graph
+from maru_lang.graph import create_chat_graph, stream_chat
 from maru_lang.core.relation_db.models.auth import Team
 from maru_lang.services.document import get_group_names_by_team_id
 
@@ -65,14 +62,16 @@ async def chat_session(
 
     # Initialize LangGraph
     console.print("[cyan]Initializing LangGraph...[/cyan]")
-    model = get_model_with_fallbacks()
-    if not model:
-        console.print("[red]Error: No LLM available[/red]")
+    try:
+        graph = create_chat_graph()
+    except RuntimeError as e:
+        console.print(f"[red]Error: {e}[/red]")
         return
-
-    graph = create_graph(model)
     thread_id = f"cli-{'-'.join(team_name_list)}"
     config = {"configurable": {"thread_id": thread_id}}
+
+    team_ids = [t.id for t in teams]
+    team_name_values = [t.name for t in teams]
 
     console.print(Panel.fit(
         "[bold cyan]MARU Chat CLI (LangGraph)[/bold cyan]\n"
@@ -97,27 +96,21 @@ async def chat_session(
                     console.clear()
                     continue
 
-                # LangGraph 입력
-                graph_input = {
-                    "messages": [HumanMessage(content=question)],
-                    "team_ids": [t.id for t in teams],
-                    "team_names": [t.name for t in teams],
-                    "accessible_groups": accessible_groups,
-                    "retrieved_documents": [],
-                }
-
                 # 스트리밍 응답
                 console.print("\n[bold green]Assistant:[/bold green]")
                 answer = ""
 
                 with Live(console=console, refresh_per_second=10) as live:
-                    async for event, metadata in graph.astream(
-                        graph_input,
+                    async for event_type, content in stream_chat(
+                        message=question,
+                        team_ids=team_ids,
+                        team_names=team_name_values,
+                        accessible_groups=accessible_groups,
+                        graph=graph,
                         config=config,
-                        stream_mode="messages",
                     ):
-                        if isinstance(event, AIMessageChunk) and event.content:
-                            answer += event.content
+                        if event_type == "token":
+                            answer += content
                             live.update(Markdown(answer))
 
                 if not answer:
