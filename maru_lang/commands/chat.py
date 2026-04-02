@@ -14,13 +14,11 @@ console = Console()
 
 async def chat_session(
     team_names: str,
-    max_turns: int = 0,
 ):
     """Interactive chat session using LangGraph.
 
     Args:
-        team_names: Team names to access documents (comma-separated)
-        max_turns: (unused, kept for CLI compat)
+        team_names: Team names to access documents (comma-separated).
     """
     # Parse team names
     team_name_list = [name.strip() for name in team_names.split(",") if name.strip()]

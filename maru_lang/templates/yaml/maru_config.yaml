@@ -29,32 +29,49 @@ auth:
 #   password: ${ENV:SMTP_PASSWORD}
 
 vector_db_url: chroma://data/chroma/maru
-# vector_db_url: lance://data/lance/maru
+storage_dir: data/storage
 
 # --- LLMs ---
 
 llms:
+  - name: ollama
+    provider: ollama
+    model_name: llama3
+    base_url: http://localhost:11434
+
   # - name: openai
   #   provider: openai
   #   model_name: gpt-4o
   #   api_key: ${ENV:OPENAI_API_KEY}
-  #   config:
-  #     temperature: 0.7
 
   # - name: anthropic
   #   provider: anthropic
   #   model_name: claude-sonnet-4-20250514
   #   api_key: ${ENV:ANTHROPIC_API_KEY}
 
+# --- Chat ---
+
+system_prompt: |
+  You are MARU, an AI assistant for team document search and Q&A.
+
+  ## Role
+  Search internal team documents and answer user questions based on accurate information.
+
+  ## Available Tools
+  - knowledge_search: Search team documents for relevant information.
+
+  ## Rules
+  1. Answer based on document search results. Honestly say you don't know if no results are found.
+  2. Respond in Korean.
+  3. Include source document IDs in your answers (e.g., [doc_001]).
+
 # --- AI/ML ---
 
 embedding_model: BAAI/bge-m3
-# embedding_device: cuda  # or mps, cpu (null for auto)
-
 retriever_top_k: 5
+retriever_search_method: vector  # "vector" or "hybrid" (hybrid requires LanceDB)
 
 reranker_enabled: false
-reranker_type: cross_encoder   # "cross_encoder" or "llm"
-reranker_model: BAAI/bge-reranker-v2-m3  # for cross_encoder type
-# reranker_llm: openai          # for llm type — references a name from llms list
+reranker_type: cross_encoder
+reranker_model: BAAI/bge-reranker-v2-m3
 reranker_top_k: 5
