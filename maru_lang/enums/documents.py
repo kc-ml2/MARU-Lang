@@ -1,7 +1,10 @@
+"""Document status enum."""
 from enum import IntEnum
 
 
 class DocumentStatus(IntEnum):
-    PROCESSING = 1  # 처리 중 (파싱/청킹/임베딩 대기)
-    ACTIVE = 2      # 활성화 (임베딩 완료, 검색 가능)
-    INACTIVE = 3    # 비활성화 (검색 불가)
+    UPLOADING  = 1   # File saved, waiting for processing
+    PROCESSING = 2   # Parsing / chunking / embedding in progress
+    ACTIVE     = 3   # Embedding complete, searchable
+    ERROR      = 4   # Processing failed
+    INACTIVE   = 5   # Disabled (not searchable)

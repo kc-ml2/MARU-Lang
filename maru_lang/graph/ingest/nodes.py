@@ -37,14 +37,19 @@ async def sync_document(state: IngestState) -> dict:
             mtime_ns=int(file_info.createdAt.timestamp() * 1e9),
             metadata={
                 "original_filename": file_info.fileName,
-                "temp_file_path": file_info.tempFilePath,
             },
         )
+
+        # Set storage_path if provided (API upload saves file first)
+        if file_info.tempFilePath:
+            doc.storage_path = file_info.tempFilePath
+            await doc.save()
 
         document = {
             "id": doc.id,
             "name": doc.name,
             "file_path": doc.file_path,
+            "storage_path": doc.storage_path,
             "group_id": doc.group_id,
             "metadata": doc.metadata,
         }
@@ -73,20 +78,27 @@ async def process_document(state: IngestState) -> dict:
     if not doc or not state["needs_processing"]:
         return {"messages": ["Skipped (no processing needed)"]}
 
+    # Update status to PROCESSING
+    db_doc = await Document.get(id=doc["id"])
+    await update_document_status(db_doc, DocumentStatus.PROCESSING)
+
     vdb = get_vector_db()
     embeddings = get_embeddings(model_name=embedder_model)
 
     try:
-        read_path = doc["metadata"].get("temp_file_path") or doc["file_path"]
+        # Read from storage_path (permanent) or file_path (original)
+        read_path = doc.get("storage_path") or doc["file_path"]
         file_path = Path(read_path)
 
         lc_docs = await asyncio.to_thread(load_file, file_path)
         if not lc_docs or not any(d.page_content.strip() for d in lc_docs):
-            return {"messages": [f"Empty content: {doc['name']}"]}
+            await _set_error(db_doc, "Empty content")
+            return {"messages": [f"Empty content: {doc['name']}"], "error": "Empty content"}
 
         chunks = await asyncio.to_thread(split_documents, lc_docs)
         if not chunks:
-            return {"messages": [f"No chunks: {doc['name']}"]}
+            await _set_error(db_doc, "No chunks produced")
+            return {"messages": [f"No chunks: {doc['name']}"], "error": "No chunks"}
 
         chunk_texts = [c.page_content for c in chunks]
         vectors = await asyncio.to_thread(embeddings.embed_documents, chunk_texts)
@@ -121,7 +133,6 @@ async def process_document(state: IngestState) -> dict:
         if orphan_ids:
             await asyncio.to_thread(vdb.delete_chunks_by_ids, list(orphan_ids))
 
-        db_doc = await Document.get(id=doc["id"])
         await update_document_status(db_doc, DocumentStatus.ACTIVE)
 
         return {
@@ -130,10 +141,18 @@ async def process_document(state: IngestState) -> dict:
         }
 
     except Exception as e:
+        await _set_error(db_doc, str(e))
         return {
             "error": str(e),
             "messages": [f"{doc['name']}: ERROR - {e}"],
         }
+
+
+async def _set_error(doc: Document, message: str) -> None:
+    """Set document status to ERROR with message."""
+    doc.status = DocumentStatus.ERROR
+    doc.error_message = message
+    await doc.save()
 
 
 async def _get_or_create_group(
