@@ -1,25 +1,28 @@
-"""knowledge_search tool factory.
-
-Receives a pre-built retriever (with or without reranking already composed).
-No config or reranker logic inside — just invoke and format.
-"""
+"""knowledge_search tool factory with intent + keyword preprocessing."""
 import logging
-from typing import Annotated
+from typing import Annotated, Optional
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 
 from maru_lang.graph.chat.retriever import VectorRetriever
+from maru_lang.graph.chat.tools.intent import extract_intent
+from maru_lang.graph.chat.tools.keywords import extract_keywords
 
 logger = logging.getLogger(__name__)
 
 
-def create_knowledge_search_tool(retriever: BaseRetriever):
-    """Create a knowledge_search tool bound to the given retriever.
+def create_knowledge_search_tool(
+    retriever: BaseRetriever,
+    llm: Optional[BaseChatModel] = None,
+):
+    """Create a knowledge_search tool with optional intent/keyword preprocessing.
 
     Args:
-        retriever: A BaseRetriever (plain or ContextualCompressionRetriever).
+        retriever: A BaseRetriever (plain or CompressedRetriever).
+        llm: LLM for intent rewriting and keyword extraction. If None, skips preprocessing.
 
     Returns:
         A @tool-decorated async function.
@@ -46,7 +49,16 @@ def create_knowledge_search_tool(retriever: BaseRetriever):
             if isinstance(base, VectorRetriever):
                 base.team_ids = team_ids
 
-            docs = await retriever.ainvoke(query)
+            # Preprocess query with LLM if available
+            search_query = query
+            if llm is not None:
+                rewritten = await extract_intent(query, llm)
+                keywords = await extract_keywords(rewritten, llm)
+                if keywords:
+                    search_query = " ".join(keywords)
+                    logger.info(f"Query: {query} → Keywords: {search_query}")
+
+            docs = await retriever.ainvoke(search_query)
 
             if not docs:
                 return f"No documents found for '{query}'."

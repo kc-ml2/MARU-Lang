@@ -104,7 +104,7 @@ def create_chat_graph(
 
     if tools is None:
         retriever = _build_retriever(cfg)
-        knowledge_search = create_knowledge_search_tool(retriever)
+        knowledge_search = create_knowledge_search_tool(retriever, llm=model)
         tools = [knowledge_search]
 
     if checkpointer is None:
