@@ -152,16 +152,19 @@ def serve(
 @app.command()
 def ingest(
     path: Path = typer.Argument(...,
-                                help="Folder path that contains documents"),
-    team: str = typer.Argument(...,
-                               help="Team name that will own the documents"),
+                                help="File or directory path to ingest"),
+    team: str = typer.Option(None, "--team", "-t",
+                             help="Team name (prompted if not provided)"),
     re_embed: bool = typer.Option(
         False, "--re-embed", "-r", help="Delete existing embeddings and re-embed all documents from scratch"),
 ):
-    """Parse every document in the folder, chunk it, and store it in the database."""
-    if not path.exists() or not path.is_dir():
+    """Parse documents and store in the database. Accepts a file or directory."""
+    if not path.exists():
         typer.echo(f"Path does not exist: {path}")
         raise typer.Exit(1)
+
+    if not team:
+        team = typer.prompt("Team name")
 
     typer.echo(f"Ingesting {path} for team '{team}'")
 
@@ -188,16 +191,14 @@ def remove(
 
 @app.command()
 def chat(
-    teams: str = typer.Argument(...,
-                                help="Team names (comma-separated, e.g. 'team1,team2')"),
-    max_turns: int = typer.Option(
-        0, "--max-turns", "-m",
-        help="Maximum number of turns to keep in chat history"
-    ),
+    teams: str = typer.Option(None, "--team", "-t",
+                              help="Team names (comma-separated, e.g. 'team1,team2')"),
     skip_migrations: bool = typer.Option(
         False, "--skip-migrations", help="Skip automatic database migrations"),
 ):
-    """Start an interactive chat session with teams' documents"""
+    """Start an interactive chat session with teams' documents."""
+    if not teams:
+        teams = typer.prompt("Team name(s)")
 
     # Check if installation is complete
     _check_maru_app_installation()
@@ -213,7 +214,7 @@ def chat(
         typer.echo("")
 
     # Run with ORM context (required for document search)
-    run_with_orm_context(chat_session, teams, max_turns)
+    run_with_orm_context(chat_session, teams)
 
 
 @app.command("install")
