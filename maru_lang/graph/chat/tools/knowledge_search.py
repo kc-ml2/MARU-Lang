@@ -28,7 +28,6 @@ def create_knowledge_search_tool(retriever: BaseRetriever):
     @tool
     async def knowledge_search(
         query: str,
-        search_method: str = "hybrid",
         state: Annotated[dict, InjectedState] = None,
     ) -> str:
         """Search team documents for relevant information.
@@ -36,20 +35,16 @@ def create_knowledge_search_tool(retriever: BaseRetriever):
 
         Args:
             query: Search query or keywords.
-            search_method: Search method ("vector" or "hybrid"). Defaults to "hybrid".
         """
         try:
-            # Inject team_ids from ChatState into the retriever
             team_ids: list[int] = state.get("team_ids", []) if state else []
 
-            # Set team_ids on the base retriever
+            # Inject team_ids into the base retriever
             base = retriever
             if hasattr(base, "base_retriever"):
-                # CompressedRetriever wraps the real retriever
                 base = base.base_retriever
             if isinstance(base, VectorRetriever):
                 base.team_ids = team_ids
-                base.search_method = search_method
 
             docs = await retriever.ainvoke(query)
 

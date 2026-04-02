@@ -75,6 +75,7 @@ class MaruConfig:
     auth: AuthConfig = field(default_factory=AuthConfig)
     smtp: SMTPConfig = field(default_factory=SMTPConfig)
     vector_db_url: str = "chroma://data/chroma/maru"
+    storage_dir: str = "data/storage"
 
     # LLMs
     llms: list[LLMConfig] = field(default_factory=list)
@@ -85,6 +86,10 @@ class MaruConfig:
 
     # Retriever
     retriever_top_k: int = 5
+    retriever_search_method: str = "vector"  # "vector" or "hybrid"
+
+    # System prompt
+    system_prompt: str = ""
 
     # Reranker
     reranker_enabled: bool = False
@@ -99,7 +104,7 @@ class MaruConfig:
         """Parse from YAML dict. Unknown keys are ignored."""
         # LLMs
         llms = []
-        for llm_data in data.get("llms", []):
+        for llm_data in (data.get("llms") or []):
             if isinstance(llm_data, dict) and "name" in llm_data and "provider" in llm_data:
                 llms.append(LLMConfig(
                     name=llm_data["name"],
@@ -149,10 +154,13 @@ class MaruConfig:
             auth=auth,
             smtp=smtp,
             vector_db_url=data.get("vector_db_url", cls.vector_db_url),
+            storage_dir=data.get("storage_dir", cls.storage_dir),
             llms=llms,
             embedding_model=data.get("embedding_model", cls.embedding_model),
             embedding_device=data.get("embedding_device"),
             retriever_top_k=data.get("retriever_top_k", cls.retriever_top_k),
+            retriever_search_method=data.get("retriever_search_method", cls.retriever_search_method),
+            system_prompt=data.get("system_prompt", cls.system_prompt),
             reranker_enabled=data.get("reranker_enabled", cls.reranker_enabled),
             reranker_type=data.get("reranker_type", cls.reranker_type),
             reranker_model=data.get("reranker_model", cls.reranker_model),

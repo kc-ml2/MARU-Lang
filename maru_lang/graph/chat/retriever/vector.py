@@ -28,7 +28,7 @@ class VectorRetriever(BaseRetriever):
 
     team_ids: list[int] = Field(default_factory=list)
     top_k: int = 5
-    search_method: str = "hybrid"
+    search_method: str = "vector"
 
     _vdb: VectorDB = PrivateAttr()
     _embeddings: Embeddings = PrivateAttr()

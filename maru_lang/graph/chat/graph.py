@@ -20,11 +20,7 @@ from maru_lang.configs.models import MaruConfig
 from maru_lang.graph.llm.client import create_chat_model
 from maru_lang.graph.chat.retriever import VectorRetriever, CompressedRetriever
 from maru_lang.graph.chat.reranker import CrossEncoderCompressor, LLMReranker
-from maru_lang.graph.chat.tools import (
-    create_knowledge_search_tool,
-    memory_read,
-    memory_write,
-)
+from maru_lang.graph.chat.tools import create_knowledge_search_tool
 
 
 def _should_continue(state: ChatState) -> str:
@@ -44,6 +40,7 @@ def _build_retriever(cfg: MaruConfig) -> BaseRetriever:
     """
     base_retriever = VectorRetriever(
         top_k=cfg.retriever_top_k,
+        search_method=cfg.retriever_search_method,
         embedding_model=cfg.embedding_model,
         embedding_device=cfg.embedding_device,
     )
@@ -103,11 +100,12 @@ def create_chat_graph(
         if model is None:
             raise RuntimeError("No LLM model available. Check llms config.")
 
+    cfg = get_config()
+
     if tools is None:
-        cfg = get_config()
         retriever = _build_retriever(cfg)
         knowledge_search = create_knowledge_search_tool(retriever)
-        tools = [knowledge_search, memory_read, memory_write]
+        tools = [knowledge_search]
 
     if checkpointer is None:
         checkpointer = MemorySaver()
@@ -115,7 +113,7 @@ def create_chat_graph(
     model_with_tools = model.bind_tools(tools)
 
     graph = StateGraph(ChatState)
-    graph.add_node("agent", make_agent_node(model_with_tools))
+    graph.add_node("agent", make_agent_node(model_with_tools, system_prompt=cfg.system_prompt))
     graph.add_node("tools", ToolNode(tools))
 
     graph.set_entry_point("agent")
