@@ -13,8 +13,8 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.retrievers import BaseRetriever
 from pydantic import Field, PrivateAttr
 
-from maru_lang.graph.vector_db import get_vector_db
-from maru_lang.graph.vector_db.base import VectorDB
+from maru_lang.core.vector_db import get_vector_db
+from maru_lang.core.vector_db.base import VectorDB
 from maru_lang.graph.ingest.embedder import get_embeddings
 
 logger = logging.getLogger(__name__)

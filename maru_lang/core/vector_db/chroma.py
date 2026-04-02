@@ -3,7 +3,7 @@ from typing import Any
 from chromadb.api.models.Collection import Collection
 from langchain_core.documents import Document
 from maru_lang.constants import CHROMA_MAX_BATCH_SIZE
-from maru_lang.graph.vector_db.base import VectorDB
+from maru_lang.core.vector_db.base import VectorDB
 
 
 class ChromaVectorDB(VectorDB):

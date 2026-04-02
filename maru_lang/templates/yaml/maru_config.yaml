@@ -71,6 +71,8 @@ embedding_model: BAAI/bge-m3
 retriever_top_k: 5
 retriever_search_method: vector  # "vector" or "hybrid" (hybrid requires LanceDB)
 
+evaluate_method: rule  # "rule" (score/count based) or "llm" (LLM judges sufficiency)
+
 reranker_enabled: false
 reranker_type: cross_encoder
 reranker_model: BAAI/bge-reranker-v2-m3

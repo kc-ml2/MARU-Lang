@@ -24,8 +24,8 @@ if "maru_lang" not in sys.modules:
 
 from maru_lang.configs.models import MaruConfig, LLMConfig
 from maru_lang.graph.chat.state import ChatState
-from maru_lang.graph.chat.graph import create_chat_graph, _build_retriever
-from maru_lang.graph.chat.retriever import VectorRetriever, CompressedRetriever
+from maru_lang.graph.chat.graph import create_chat_graph, _build_retriever_and_compressor
+from maru_lang.graph.rag.retriever import VectorRetriever
 
 # ─── Unit Tests (no API key needed) ─────────────────────────
 
@@ -76,26 +76,26 @@ class TestGraphCompilation:
 class TestBuildRetriever:
     def test_no_reranker_returns_vector_retriever(self):
         cfg = MaruConfig(reranker_enabled=False)
-        retriever = _build_retriever(cfg)
+        retriever, compressor = _build_retriever_and_compressor(cfg)
         assert isinstance(retriever, VectorRetriever)
+        assert compressor is None
 
-    def test_cross_encoder_reranker_returns_compressed(self):
+    def test_cross_encoder_reranker(self):
         cfg = MaruConfig(
             reranker_enabled=True,
             reranker_type="cross_encoder",
             reranker_model="BAAI/bge-reranker-v2-m3",
             reranker_top_k=3,
         )
-        retriever = _build_retriever(cfg)
-        assert isinstance(retriever, CompressedRetriever)
-        assert isinstance(retriever.base_retriever, VectorRetriever)
+        retriever, compressor = _build_retriever_and_compressor(cfg)
+        assert isinstance(retriever, VectorRetriever)
 
-        from maru_lang.graph.chat.reranker import CrossEncoderCompressor
-        assert isinstance(retriever.compressor, CrossEncoderCompressor)
-        assert retriever.compressor.model_name == "BAAI/bge-reranker-v2-m3"
-        assert retriever.compressor.top_k == 3
+        from maru_lang.graph.rag.reranker import CrossEncoderCompressor
+        assert isinstance(compressor, CrossEncoderCompressor)
+        assert compressor.model_name == "BAAI/bge-reranker-v2-m3"
+        assert compressor.top_k == 3
 
-    def test_llm_reranker_returns_compressed(self):
+    def test_llm_reranker(self):
         from unittest.mock import patch, MagicMock
         from langchain_core.language_models import BaseChatModel
 
@@ -111,12 +111,12 @@ class TestBuildRetriever:
                               api_key="fake-key"),
                 ],
             )
-            retriever = _build_retriever(cfg)
-            assert isinstance(retriever, CompressedRetriever)
+            retriever, compressor = _build_retriever_and_compressor(cfg)
+            assert isinstance(retriever, VectorRetriever)
 
-            from maru_lang.graph.chat.reranker import LLMReranker
-            assert isinstance(retriever.compressor, LLMReranker)
-            assert retriever.compressor.top_k == 5
+            from maru_lang.graph.rag.reranker import LLMReranker
+            assert isinstance(compressor, LLMReranker)
+            assert compressor.top_k == 5
 
     def test_llm_reranker_falls_back_to_first_llm(self):
         from unittest.mock import patch, MagicMock
@@ -133,8 +133,8 @@ class TestBuildRetriever:
                               api_key="fake-key"),
                 ],
             )
-            retriever = _build_retriever(cfg)
-            assert isinstance(retriever, CompressedRetriever)
+            retriever, compressor = _build_retriever_and_compressor(cfg)
+            assert compressor is not None
 
     def test_llm_reranker_no_llms_raises(self):
         cfg = MaruConfig(
@@ -143,19 +143,19 @@ class TestBuildRetriever:
             llms=[],
         )
         with pytest.raises(RuntimeError, match="LLM reranker requires"):
-            _build_retriever(cfg)
+            _build_retriever_and_compressor(cfg)
 
     def test_retriever_inherits_config_values(self):
         from unittest.mock import patch, MagicMock
 
         mock_embeddings = MagicMock()
-        with patch("maru_lang.graph.chat.retriever.vector.get_embeddings", return_value=mock_embeddings):
+        with patch("maru_lang.graph.rag.retriever.vector.get_embeddings", return_value=mock_embeddings):
             cfg = MaruConfig(
                 retriever_top_k=10,
                 embedding_model="custom/model",
                 reranker_enabled=False,
             )
-            retriever = _build_retriever(cfg)
+            retriever, compressor = _build_retriever_and_compressor(cfg)
             assert isinstance(retriever, VectorRetriever)
             assert retriever.top_k == 10
 

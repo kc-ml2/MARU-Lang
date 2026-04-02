@@ -49,6 +49,26 @@ Query: {query}
 
 Keywords:"""
 
+# --- RAG Evaluate ---
+
+RAG_EVALUATE_MIN_DOCS = 2
+RAG_EVALUATE_MIN_AVG_SCORE = 0.3
+RAG_EVALUATE_MAX_RETRIES = 2
+
+RAG_EVALUATE_PROMPT = """\
+You are evaluating search results for a user query.
+Determine if the retrieved documents sufficiently answer the query.
+Answer only "sufficient" or "insufficient". No explanation needed.
+
+Query: {query}
+
+Documents:
+{documents}
+
+Verdict:"""
+
+# --- Chat ---
+
 SYSTEM_PROMPT = """You are MARU, an AI assistant for team document search and Q&A.
 
 ## Role

@@ -6,7 +6,7 @@ from maru_lang.graph.ingest.state import IngestState
 from maru_lang.graph.ingest.loader import load_file
 from maru_lang.graph.ingest.splitter import split_documents
 from maru_lang.graph.ingest.embedder import get_embeddings
-from maru_lang.graph.vector_db import get_vector_db
+from maru_lang.core.vector_db import get_vector_db
 from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
 from maru_lang.enums.documents import DocumentStatus
 from maru_lang.services.document import (

@@ -38,7 +38,7 @@ async def show_status(verbose: bool = False):
     typer.echo("-" * 50)
 
     try:
-        from maru_lang.graph.vector_db import get_vector_db
+        from maru_lang.core.vector_db import get_vector_db
         vdb = get_vector_db()
         all_meta = vdb.get_all_metadata()
 
