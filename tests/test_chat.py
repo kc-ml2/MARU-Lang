@@ -26,11 +26,6 @@ from maru_lang.configs.models import MaruConfig, LLMConfig
 from maru_lang.graph.chat.state import ChatState
 from maru_lang.graph.chat.graph import create_chat_graph, _build_retriever
 from maru_lang.graph.chat.retriever import VectorRetriever, CompressedRetriever
-from maru_lang.graph.chat.tools.memory import (
-    memory_read,
-    memory_write,
-    clear_memory_store,
-)
 
 # ─── Unit Tests (no API key needed) ─────────────────────────
 
@@ -48,42 +43,22 @@ class TestState:
         assert hasattr(hints["messages"], "__metadata__")
 
 
-class TestMemoryTools:
-    def test_memory_write_and_read(self):
-        clear_memory_store()
-        write_result = memory_write.invoke({
-            "content": "User prefers Python",
-            "memory_type": "preference",
-        })
-        assert "saved" in write_result.lower() or "Memory" in write_result
-
-        read_result = memory_read.invoke({"query": "Python"})
-        assert "Python" in read_result
-        assert "preference" in read_result
-
-    def test_memory_read_empty(self):
-        clear_memory_store()
-        result = memory_read.invoke({"query": "anything"})
-        assert "No saved memories" in result
-
-    def test_memory_read_no_match(self):
-        clear_memory_store()
-        memory_write.invoke({"content": "test memory", "memory_type": "fact"})
-        result = memory_read.invoke({"query": "nonexistent_xyz"})
-        assert "No memories found" in result
-
-
 class TestGraphCompilation:
     @staticmethod
     def _make_graph():
         from unittest.mock import MagicMock
         from langchain_core.language_models import BaseChatModel
+        from langchain_core.tools import tool
 
         mock_model = MagicMock(spec=BaseChatModel)
         mock_model.bind_tools = MagicMock(return_value=mock_model)
 
-        # Pass dummy tools to avoid loading real embeddings
-        return create_chat_graph(mock_model, tools=[memory_read, memory_write])
+        @tool
+        def dummy_tool(query: str) -> str:
+            """Dummy tool for testing."""
+            return "ok"
+
+        return create_chat_graph(mock_model, tools=[dummy_tool])
 
     def test_graph_compiles_with_mock_model(self):
         compiled = self._make_graph()
@@ -122,8 +97,8 @@ class TestBuildRetriever:
 
     def test_llm_reranker_returns_compressed(self):
         from unittest.mock import patch, MagicMock
-
         from langchain_core.language_models import BaseChatModel
+
         mock_llm = MagicMock(spec=BaseChatModel)
         with patch("maru_lang.graph.chat.graph.create_chat_model", return_value=mock_llm):
             cfg = MaruConfig(
@@ -145,8 +120,8 @@ class TestBuildRetriever:
 
     def test_llm_reranker_falls_back_to_first_llm(self):
         from unittest.mock import patch, MagicMock
-
         from langchain_core.language_models import BaseChatModel
+
         mock_llm = MagicMock(spec=BaseChatModel)
         with patch("maru_lang.graph.chat.graph.create_chat_model", return_value=mock_llm):
             cfg = MaruConfig(
@@ -215,7 +190,6 @@ class TestOpenAIIntegration:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        clear_memory_store()
         self.graph = create_chat_graph(_get_openai_model())
         self.config = {"configurable": {"thread_id": "test-openai-1"}}
 
@@ -227,18 +201,6 @@ class TestOpenAIIntegration:
         )
         last_msg = result["messages"][-1].content
         assert len(last_msg) > 10
-
-    @pytest.mark.asyncio
-    async def test_memory_roundtrip(self):
-        await self.graph.ainvoke(
-            _make_input("나는 기술 문서를 선호해. 기억해줘."),
-            config=self.config,
-        )
-        result = await self.graph.ainvoke(
-            _make_input("내가 어떤 문서를 선호한다고 했지?"),
-            config=self.config,
-        )
-        assert len(result["messages"][-1].content) > 10
 
     @pytest.mark.asyncio
     async def test_multi_turn_conversation(self):
@@ -261,7 +223,6 @@ class TestAnthropicIntegration:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        clear_memory_store()
         self.graph = create_chat_graph(_get_anthropic_model())
         self.config = {"configurable": {"thread_id": "test-anthropic-1"}}
 
