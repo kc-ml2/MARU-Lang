@@ -91,6 +91,9 @@ class MaruConfig:
     # System prompt
     system_prompt: str = ""
 
+    # RAG evaluate
+    evaluate_method: str = "rule"  # "rule" or "llm"
+
     # Reranker
     reranker_enabled: bool = False
     reranker_type: str = "cross_encoder"  # "cross_encoder" or "llm"
@@ -160,6 +163,7 @@ class MaruConfig:
             embedding_device=data.get("embedding_device"),
             retriever_top_k=data.get("retriever_top_k", cls.retriever_top_k),
             retriever_search_method=data.get("retriever_search_method", cls.retriever_search_method),
+            evaluate_method=data.get("evaluate_method", cls.evaluate_method),
             system_prompt=data.get("system_prompt", cls.system_prompt),
             reranker_enabled=data.get("reranker_enabled", cls.reranker_enabled),
             reranker_type=data.get("reranker_type", cls.reranker_type),

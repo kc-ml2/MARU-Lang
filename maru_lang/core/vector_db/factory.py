@@ -8,8 +8,8 @@ URL format: {scheme}://{path}/{collection_or_table}
 from pathlib import Path
 
 from maru_lang.configs import get_config
-from maru_lang.graph.vector_db.base import VectorDB
-from maru_lang.graph.vector_db.chroma import ChromaVectorDB
+from maru_lang.core.vector_db.base import VectorDB
+from maru_lang.core.vector_db.chroma import ChromaVectorDB
 
 
 def get_vector_db(url: str | None = None) -> VectorDB:

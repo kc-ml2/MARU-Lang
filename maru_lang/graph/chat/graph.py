@@ -13,13 +13,13 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
 from maru_lang.configs import get_config
-from maru_lang.graph.llm import get_model_with_fallbacks
+from maru_lang.core.llm import get_model_with_fallbacks
 from maru_lang.graph.chat.state import ChatState
 from maru_lang.graph.chat.nodes import make_agent_node
 from maru_lang.configs.models import MaruConfig
-from maru_lang.graph.llm.client import create_chat_model
-from maru_lang.graph.chat.retriever import VectorRetriever, CompressedRetriever
-from maru_lang.graph.chat.reranker import CrossEncoderCompressor, LLMReranker
+from maru_lang.core.llm.client import create_chat_model
+from maru_lang.graph.rag.retriever import VectorRetriever
+from maru_lang.graph.rag.reranker import CrossEncoderCompressor, LLMReranker
 from maru_lang.graph.chat.tools import create_knowledge_search_tool
 
 
@@ -31,14 +31,13 @@ def _should_continue(state: ChatState) -> str:
     return END
 
 
-def _build_retriever(cfg: MaruConfig) -> BaseRetriever:
-    """Build a retriever (optionally with reranking) from config.
+def _build_retriever_and_compressor(cfg: MaruConfig):
+    """Build retriever and optional compressor from config.
 
-    Supports two reranker types:
-    - "cross_encoder": Uses a CrossEncoder model (e.g. BAAI/bge-reranker-v2-m3).
-    - "llm": Uses an LLM from the llms config to score relevance.
+    Returns:
+        (retriever, compressor) tuple. compressor is None if reranking disabled.
     """
-    base_retriever = VectorRetriever(
+    retriever = VectorRetriever(
         top_k=cfg.retriever_top_k,
         search_method=cfg.retriever_search_method,
         embedding_model=cfg.embedding_model,
@@ -46,7 +45,7 @@ def _build_retriever(cfg: MaruConfig) -> BaseRetriever:
     )
 
     if not cfg.reranker_enabled:
-        return base_retriever
+        return retriever, None
 
     if cfg.reranker_type == "llm":
         llm_config = None
@@ -59,20 +58,15 @@ def _build_retriever(cfg: MaruConfig) -> BaseRetriever:
         if llm_config is None:
             raise RuntimeError("LLM reranker requires at least one LLM in config.")
 
-        llm = create_chat_model(llm_config)
-        compressor = LLMReranker(llm=llm, top_k=cfg.reranker_top_k or 3)
+        compressor = LLMReranker(llm=create_chat_model(llm_config), top_k=cfg.reranker_top_k or 3)
     else:
-        # Default: cross_encoder
         compressor = CrossEncoderCompressor(
             model_name=cfg.reranker_model,
             top_k=cfg.reranker_top_k,
             device=cfg.reranker_device or cfg.embedding_device,
         )
 
-    return CompressedRetriever(
-        base_retriever=base_retriever,
-        compressor=compressor,
-    )
+    return retriever, compressor
 
 
 def create_chat_graph(
@@ -103,8 +97,11 @@ def create_chat_graph(
     cfg = get_config()
 
     if tools is None:
-        retriever = _build_retriever(cfg)
-        knowledge_search = create_knowledge_search_tool(retriever, llm=model)
+        retriever, compressor = _build_retriever_and_compressor(cfg)
+        knowledge_search = create_knowledge_search_tool(
+            retriever, llm=model, compressor=compressor,
+            evaluate_method=cfg.evaluate_method,
+        )
         tools = [knowledge_search]
 
     if checkpointer is None:
