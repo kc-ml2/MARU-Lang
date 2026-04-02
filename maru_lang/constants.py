@@ -27,6 +27,28 @@ PUBLIC_TEAM_NAME = "public"
 
 # --- Chat ---
 
+INTENT_PROMPT = """\
+You are an expert at understanding user intent from conversation context.
+
+Analyze the conversation and rewrite the latest message as a clear, \
+specific search query. Remove filler words and emotional expressions. \
+Include keywords and concepts useful for document search.
+
+Return only the rewritten query. No explanation needed."""
+
+KEYWORD_PROMPT = """\
+Extract 3-7 search keywords from the following query.
+Focus on core nouns and key concepts. Remove all stopwords.
+Return keywords separated by spaces. No explanation needed.
+
+Example:
+- Query: "How do I apply for company vacation leave?"
+- Keywords: "company vacation leave application process"
+
+Query: {query}
+
+Keywords:"""
+
 SYSTEM_PROMPT = """You are MARU, an AI assistant for team document search and Q&A.
 
 ## Role
