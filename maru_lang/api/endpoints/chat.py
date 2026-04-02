@@ -1,32 +1,16 @@
-"""Chat WebSocket endpoint - LangGraph 기반"""
-import json
+"""Chat WebSocket endpoint."""
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from langchain_core.messages import HumanMessage, AIMessageChunk
 from starlette.websockets import WebSocketState
 
 from maru_lang.services.auth import verify_chat_token
 from maru_lang.dependencies.auth import User
-from maru_lang.dependencies.llm import get_model_with_fallbacks
-from maru_lang.graph import create_graph
+from maru_lang.graph import create_chat_graph, stream_chat
 from maru_lang.services.team import list_teams_by_user, Team
 
 router = APIRouter(
     prefix="/chat",
     tags=["Chat"],
 )
-
-# 그래프 인스턴스 (lazy init)
-_graph = None
-
-
-def _get_graph():
-    global _graph
-    if _graph is None:
-        model = get_model_with_fallbacks()
-        if model is None:
-            return None
-        _graph = create_graph(model)
-    return _graph
 
 
 @router.websocket("/connect")
@@ -45,13 +29,13 @@ async def chat_websocket(websocket: WebSocket):
     authenticated = False
     all_user_teams: list[Team] = []
     thread_id: str | None = None
+    graph = None
 
     try:
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type")
 
-            # ─── 인증 ─────────────────────────────────
             if not authenticated:
                 if msg_type != "auth":
                     await websocket.send_json({"type": "error", "content": "Authentication required"})
@@ -70,9 +54,15 @@ async def chat_websocket(websocket: WebSocket):
                 all_user_teams = await list_teams_by_user(user)
                 thread_id = f"user-{user.id}"
                 authenticated = True
+
+                # Create graph after auth (once per connection)
+                try:
+                    graph = create_chat_graph()
+                except RuntimeError as e:
+                    await websocket.send_json({"type": "error", "content": str(e)})
+                    break
                 continue
 
-            # ─── 메시지 처리 ───────────────────────────
             if msg_type == "message":
                 content = data.get("content")
                 if not content:
@@ -82,41 +72,27 @@ async def chat_websocket(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "content": "User does not belong to any team"})
                     break
 
-                graph = _get_graph()
-                if not graph:
-                    await websocket.send_json({"type": "error", "content": "LLM not available"})
-                    break
-
-                # LangGraph 입력 구성
-                graph_input = {
-                    "messages": [HumanMessage(content=content)],
-                    "team_ids": [t.id for t in all_user_teams],
-                    "team_names": [t.name for t in all_user_teams],
-                    "accessible_groups": [],  # TODO: 팀별 문서 그룹 조회
-                    "retrieved_documents": [],
-                }
                 config = {"configurable": {"thread_id": thread_id}}
 
-                # 스트리밍
                 await websocket.send_json({"type": "thinking"})
 
-                async for event, metadata in graph.astream(
-                    graph_input,
+                async for event_type, event_content in stream_chat(
+                    message=content,
+                    team_ids=[t.id for t in all_user_teams],
+                    team_names=[t.name for t in all_user_teams],
+                    accessible_groups=[],
+                    graph=graph,
                     config=config,
-                    stream_mode="messages",
                 ):
-                    # LLM 토큰 스트리밍
-                    if isinstance(event, AIMessageChunk) and event.content:
+                    if event_type == "token":
                         await websocket.send_json({
                             "type": "stream",
-                            "content": event.content,
+                            "content": event_content,
                         })
-
-                    # Tool 호출 결과 (검색 결과 등)
-                    if hasattr(event, "name") and event.name == "knowledge_search":
+                    elif event_type == "tool_result":
                         await websocket.send_json({
                             "type": "retrieve",
-                            "content": event.content if hasattr(event, "content") else "",
+                            "content": event_content,
                         })
 
                 await websocket.send_json({"type": "complete"})
