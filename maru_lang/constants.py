@@ -86,7 +86,6 @@ Search internal team documents and answer user questions based on accurate infor
 ## Rules
 1. Answer based on document search results. Honestly say you don't know if no results are found.
 2. Respond in Korean.
-3. Include source document IDs in your answers (e.g., [doc_001]).
 """
 
 # --- Retrieved Documents Metadata ---
