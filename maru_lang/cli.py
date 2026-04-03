@@ -1,9 +1,8 @@
 from maru_lang.commands.status import show_status
-from maru_lang.commands.chat import chat_session
 from maru_lang.commands.install import install_configs
-from maru_lang.commands.remove import remove_function
-from maru_lang.commands.ingest import ingest_function
+from maru_lang.commands.run import run_session
 from maru_lang.core.relation_db.connection import run_with_orm_context
+import asyncio
 import sys
 import os
 import typer
@@ -150,71 +149,32 @@ def serve(
 
 
 @app.command()
-def ingest(
-    path: Path = typer.Argument(...,
-                                help="File or directory path to ingest"),
-    team: str = typer.Option(None, "--team", "-t",
-                             help="Team name (prompted if not provided)"),
-    re_embed: bool = typer.Option(
-        False, "--re-embed", "-r", help="Delete existing embeddings and re-embed all documents from scratch"),
-):
-    """Parse documents and store in the database. Accepts a file or directory."""
-    if not path.exists():
-        typer.echo(f"Path does not exist: {path}")
-        raise typer.Exit(1)
-
-    if not team:
-        team = typer.prompt("Team name")
-
-    typer.echo(f"Ingesting {path} for team '{team}'")
-
-    run_with_orm_context(
-        ingest_function,
-        path,
-        team,
-        re_embed,
-    )
-
-
-@app.command()
-def remove(
-    group: str = typer.Argument(..., help="DocumentGroup name to delete"),
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Delete without confirmation"
-    ),
-):
-    """Delete a DocumentGroup and all associated data (documents, embeddings, VDB)."""
-    typer.echo(f"🗑️  Removing document group: {group}")
-
-    run_with_orm_context(remove_function, group, force)
-
-
-@app.command()
-def chat(
+def run(
     teams: str = typer.Option(None, "--team", "-t",
                               help="Team names (comma-separated, e.g. 'team1,team2')"),
+    host: str = typer.Option(None, help="Server host"),
+    port: int = typer.Option(None, help="Server port"),
     skip_migrations: bool = typer.Option(
         False, "--skip-migrations", help="Skip automatic database migrations"),
 ):
-    """Start an interactive chat session with teams' documents."""
+    """Start server + interactive chat in one command."""
     if not teams:
         teams = typer.prompt("Team name(s)")
 
-    # Check if installation is complete
     _check_maru_app_installation()
 
-    # Run migrations before starting chat
-    if not skip_migrations:
-        typer.echo("Checking for pending database migrations...")
-        from maru_lang.core.relation_db.migration_utils import run_migrations_sync
-        success = run_migrations_sync()
-        if not success:
-            typer.echo(
-                "Migration check failed, but continuing to start chat...")
-        typer.echo("")
+    config = get_config()
+    host = host or config.server.host
+    port = port or config.server.port
 
-    # Run with ORM context (required for document search)
-    run_with_orm_context(chat_session, teams)
+    team_list = [t.strip() for t in teams.split(",") if t.strip()]
+
+    asyncio.run(run_session(
+        team_names=team_list,
+        host=host,
+        port=port,
+        skip_migrations=skip_migrations,
+    ))
 
 
 @app.command("install")
