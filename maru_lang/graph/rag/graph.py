@@ -101,6 +101,9 @@ async def run_rag(
             "document_id": doc.metadata.get("document_id", "unknown"),
             "document_name": doc.metadata.get("document_name", ""),
             "score": doc.metadata.get("score", 0),
+            "content": doc.page_content,
+            "file_path": doc.metadata.get("file_path", ""),
+            "group_id": doc.metadata.get("group_id"),
         }
         for doc in state.get("documents", [])
     ]
