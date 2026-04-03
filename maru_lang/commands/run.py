@@ -41,6 +41,11 @@ async def run_session(
         # 2. Wait for server ready
         if not await _wait_for_health(base_url, timeout=30):
             console.print("[red]Server failed to start within 30 seconds.[/red]")
+            # Show server stderr for debugging
+            if server_proc.stderr:
+                stderr = server_proc.stderr.read()
+                if stderr:
+                    console.print(f"[red]Server log:[/red]\n{stderr.decode(errors='replace')}")
             return
 
         console.print("[green]Server ready.[/green]\n")
