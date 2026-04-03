@@ -179,8 +179,6 @@ def _make_input(question: str) -> dict:
         "messages": [HumanMessage(content=question)],
         "team_ids": [1],
         "team_names": ["test-team"],
-        "accessible_groups": ["general", "technical"],
-        "retrieved_documents": [],
     }
 
 
