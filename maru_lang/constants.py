@@ -1,4 +1,5 @@
 """Project-wide constants."""
+import re
 
 # --- Ingest ---
 
@@ -19,11 +20,16 @@ SUPPORTED_EXTENSIONS = {
 
 CHROMA_MAX_BATCH_SIZE = 5000
 
+# --- Network ---
+
+LOCALHOST_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
 # --- Admin ---
 
 ADMIN_EMAIL = "admin@maru.local"
 ADMIN_NAME = "Admin"
 PUBLIC_TEAM_NAME = "public"
+CLI_DEVICE_ID = "maru-cli"
 
 # --- Chat ---
 
@@ -82,3 +88,8 @@ Search internal team documents and answer user questions based on accurate infor
 2. Respond in Korean.
 3. Include source document IDs in your answers (e.g., [doc_001]).
 """
+
+# --- Retrieved Documents Metadata ---
+
+RETRIEVED_DOCS_TAG = "retrieved_documents"
+RETRIEVED_DOCS_PATTERN = re.compile(rf"<!-- {RETRIEVED_DOCS_TAG}:(.*?) -->")

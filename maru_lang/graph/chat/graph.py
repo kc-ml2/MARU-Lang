@@ -7,15 +7,13 @@ from typing import AsyncIterator
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, AIMessageChunk
-from langchain_core.retrievers import BaseRetriever
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
 
 from maru_lang.configs import get_config
 from maru_lang.core.llm import get_model_with_fallbacks
 from maru_lang.graph.chat.state import ChatState
-from maru_lang.graph.chat.nodes import make_agent_node
+from maru_lang.graph.chat.nodes import make_agent_node, make_tools_node
 from maru_lang.configs.models import MaruConfig
 from maru_lang.core.llm.client import create_chat_model
 from maru_lang.graph.rag.retriever import VectorRetriever
@@ -111,7 +109,7 @@ def create_chat_graph(
 
     graph = StateGraph(ChatState)
     graph.add_node("agent", make_agent_node(model_with_tools, system_prompt=cfg.system_prompt))
-    graph.add_node("tools", ToolNode(tools))
+    graph.add_node("tools", make_tools_node(tools))
 
     graph.set_entry_point("agent")
     graph.add_conditional_edges("agent", _should_continue, {"tools": "tools", END: END})
@@ -124,15 +122,12 @@ def _build_chat_input(
     message: str,
     team_ids: list[int],
     team_names: list[str],
-    accessible_groups: list[str],
-) -> dict:
+) -> ChatState:
     """Build the initial state dict for the chat graph."""
     return {
         "messages": [HumanMessage(content=message)],
         "team_ids": team_ids,
         "team_names": team_names,
-        "accessible_groups": accessible_groups,
-        "retrieved_documents": [],
     }
 
 
@@ -140,13 +135,12 @@ async def run_chat(
     message: str,
     team_ids: list[int],
     team_names: list[str],
-    accessible_groups: list[str],
     *,
     graph,
     config: dict | None = None,
 ) -> str:
     """Run the chat graph and return a single response."""
-    input_state = _build_chat_input(message, team_ids, team_names, accessible_groups)
+    input_state = _build_chat_input(message, team_ids, team_names)
     result = await graph.ainvoke(input_state, config=config)
     return result["messages"][-1].content
 
@@ -155,26 +149,33 @@ async def stream_chat(
     message: str,
     team_ids: list[int],
     team_names: list[str],
-    accessible_groups: list[str],
     *,
     graph,
     config: dict | None = None,
-) -> AsyncIterator[tuple[str, str]]:
+) -> AsyncIterator[tuple[str, str | list]]:
     """Stream the chat graph execution.
 
     Yields:
         (event_type, content) tuples:
         - ("token", str): LLM token chunk.
-        - ("tool_result", str): Tool call result.
+        - ("tool_result", str): Tool call result text.
+        - ("retrieve", list[dict]): Retrieved document metadata.
     """
-    input_state = _build_chat_input(message, team_ids, team_names, accessible_groups)
+    input_state = _build_chat_input(message, team_ids, team_names)
 
-    async for event, metadata in graph.astream(
+    async for mode, event in graph.astream(
         input_state,
         config=config,
-        stream_mode="messages",
+        stream_mode=["messages", "updates"],
     ):
-        if isinstance(event, AIMessageChunk) and event.content:
-            yield "token", event.content
-        elif hasattr(event, "name") and event.name == "knowledge_search":
-            yield "tool_result", event.content if hasattr(event, "content") else ""
+        if mode == "messages":
+            msg, metadata = event
+            if isinstance(msg, AIMessageChunk) and msg.content:
+                yield "token", msg.content
+            elif hasattr(msg, "name") and msg.name == "knowledge_search":
+                yield "tool_result", msg.content if hasattr(msg, "content") else ""
+        elif mode == "updates":
+            for node_name, state_update in event.items():
+                docs = state_update.get("retrieved_documents")
+                if docs:
+                    yield "retrieve", docs

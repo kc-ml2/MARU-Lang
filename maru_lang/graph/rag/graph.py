@@ -75,11 +75,17 @@ async def run_rag(
     llm: BaseChatModel,
     compressor: Optional[BaseDocumentCompressor] = None,
     evaluate_method: str = "rule",
-) -> str:
-    """Run the RAG pipeline and return formatted results."""
+) -> dict:
+    """Run the RAG pipeline and return formatted results with documents.
+
+    Returns:
+        dict with keys:
+            result: Formatted text for LLM consumption.
+            documents: List of document metadata dicts.
+    """
     rag_graph = create_rag_graph(retriever, llm, compressor, evaluate_method)
 
-    result = await rag_graph.ainvoke({
+    state = await rag_graph.ainvoke({
         "query": query,
         "rewritten_query": "",
         "keywords": [],
@@ -90,4 +96,13 @@ async def run_rag(
         "messages": [],
     })
 
-    return result["result"]
+    documents = [
+        {
+            "document_id": doc.metadata.get("document_id", "unknown"),
+            "document_name": doc.metadata.get("document_name", ""),
+            "score": doc.metadata.get("score", 0),
+        }
+        for doc in state.get("documents", [])
+    ]
+
+    return {"result": state["result"], "documents": documents}

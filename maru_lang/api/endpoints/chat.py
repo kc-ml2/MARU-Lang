@@ -78,9 +78,8 @@ async def chat_websocket(websocket: WebSocket):
 
                 async for event_type, event_content in stream_chat(
                     message=content,
-                    team_ids=[t.id for t in all_user_teams],
-                    team_names=[t.name for t in all_user_teams],
-                    accessible_groups=[],
+                    team_ids=[t["id"] for t in all_user_teams],
+                    team_names=[t["name"] for t in all_user_teams],
                     graph=graph,
                     config=config,
                 ):
@@ -89,10 +88,10 @@ async def chat_websocket(websocket: WebSocket):
                             "type": "stream",
                             "content": event_content,
                         })
-                    elif event_type == "tool_result":
+                    elif event_type == "retrieve":
                         await websocket.send_json({
                             "type": "retrieve",
-                            "content": event_content,
+                            "documents": event_content,
                         })
 
                 await websocket.send_json({"type": "complete"})
