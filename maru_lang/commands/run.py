@@ -68,15 +68,16 @@ def _start_server(host: str, port: int, skip_migrations: bool) -> subprocess.Pop
     python_path = env.get("PYTHONPATH", "")
     maru_app_path = os.path.join(cwd, "maru_app")
     paths = [cwd]
-    if os.path.exists(maru_app_path):
-        paths.append(maru_app_path)
     if python_path:
         paths.append(python_path)
     env["PYTHONPATH"] = os.pathsep.join(paths)
 
+    # Use package-style import so relative imports in maru_app/ work
+    app_module = "maru_app.main:app" if os.path.exists(maru_app_path) else "main:app"
+
     cmd = [
         sys.executable, "-m", "uvicorn",
-        "main:app",
+        app_module,
         "--host", host,
         "--port", str(port),
         "--log-level", "warning",
