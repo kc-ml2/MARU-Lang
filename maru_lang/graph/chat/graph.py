@@ -7,7 +7,6 @@ from typing import AsyncIterator
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, AIMessageChunk
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, END
 
 from maru_lang.configs import get_config
@@ -102,9 +101,6 @@ def create_chat_graph(
         )
         tools = [knowledge_search]
 
-    if checkpointer is None:
-        checkpointer = MemorySaver()
-
     model_with_tools = model.bind_tools(tools)
 
     graph = StateGraph(ChatState)
@@ -115,7 +111,11 @@ def create_chat_graph(
     graph.add_conditional_edges("agent", _should_continue, {"tools": "tools", END: END})
     graph.add_edge("tools", "agent")
 
-    return graph.compile(checkpointer=checkpointer)
+    compile_kwargs = {}
+    if checkpointer is not None:
+        compile_kwargs["checkpointer"] = checkpointer
+
+    return graph.compile(**compile_kwargs)
 
 
 def _build_chat_input(
