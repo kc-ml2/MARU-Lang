@@ -1,4 +1,4 @@
-"""Document status enum."""
+"""Document-related enums."""
 from enum import IntEnum
 
 
@@ -8,3 +8,11 @@ class DocumentStatus(IntEnum):
     ACTIVE     = 3   # Embedding complete, searchable
     ERROR      = 4   # Processing failed
     INACTIVE   = 5   # Disabled (not searchable)
+
+
+class AuditAction(IntEnum):
+    UPLOAD         = 1
+    RE_UPLOAD      = 2
+    DELETE         = 3
+    INGEST_SUCCESS = 4
+    INGEST_ERROR   = 5

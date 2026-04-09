@@ -19,9 +19,17 @@ class UploadResponse(BaseModel):
     document_id: str
     name: str
     status: str  # "uploading"
+    is_reupload: bool = False
 
 
 # --- Status ---
+
+class AuditLogEntry(BaseModel):
+    action: str
+    user_name: Optional[str] = None
+    detail: dict = {}
+    created_at: datetime
+
 
 class DocumentStatusItem(BaseModel):
     id: str
@@ -31,6 +39,7 @@ class DocumentStatusItem(BaseModel):
     created_at: datetime
     updated_at: datetime
     error: Optional[str] = None
+    audit_logs: list[AuditLogEntry] = []
 
 
 class StatusResponse(BaseModel):
@@ -56,3 +65,10 @@ class CheckRequest(BaseModel):
 class CheckResponse(BaseModel):
     indices_to_upload: list[int]
     total: int
+
+
+# --- Delete ---
+
+class DeleteResponse(BaseModel):
+    document_id: str
+    deleted: bool
