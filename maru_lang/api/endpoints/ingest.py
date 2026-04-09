@@ -21,6 +21,7 @@ from maru_lang.services.ingest import (
     delete_document_by_id,
     get_audit_logs_for_documents,
 )
+from maru_lang.services.team import _check_admin
 
 router = APIRouter(
     prefix="/ingest",
@@ -129,7 +130,12 @@ async def delete_document(
     team_id: int = Query(...),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
-    """Delete a document and its embeddings."""
+    """Delete a document and its embeddings. Requires team admin role."""
+    try:
+        await _check_admin(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     try:
         await delete_document_by_id(
             document_id=document_id,

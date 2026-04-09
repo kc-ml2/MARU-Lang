@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from maru_lang.core.relation_db.models.auth import User, Team, TeamMember, UserRole
 from maru_lang.core.relation_db.models.documents import Document, DocumentGroup, DocumentAuditLog
 from maru_lang.enums.documents import DocumentStatus, AuditAction
-from tests.conftest import auth_header
+from tests.conftest import auth_header, user_bob
 
 
 @pytest.fixture()
@@ -366,6 +366,33 @@ class TestDelete:
         """Delete without auth returns 401."""
         resp = await client.delete("/ingest/doc-001?team_id=1")
         assert resp.status_code == 401
+
+    @patch("maru_lang.services.ingest.get_vector_db")
+    async def test_delete_non_admin_returns_403(
+        self, mock_get_vdb, client: AsyncClient, team_setup, user_bob: User,
+    ):
+        """Non-admin team member cannot delete documents."""
+        team, admin_user = team_setup
+
+        # bob을 editor role로 설정하고 팀에 member로 추가
+        role = await UserRole.get(name="editor")
+        user_bob.role_id = role.id
+        await user_bob.save()
+        await TeamMember.create(user=user_bob, team=team, role="member")
+
+        group = await DocumentGroup.create(name="uploads", team=team)
+        await Document.create(
+            id="doc-no-perm",
+            name="protected",
+            group=group,
+            status=DocumentStatus.ACTIVE,
+        )
+
+        resp = await client.delete(
+            f"/ingest/doc-no-perm?team_id={team.id}",
+            headers=auth_header(user_bob.id),
+        )
+        assert resp.status_code == 403
 
 
 # ──────────────────────────────────────────────
