@@ -68,50 +68,6 @@ class TestUpload:
         assert "document_id" in data
         assert data["name"] == "test"
 
-    @patch("maru_lang.services.ingest.process_document", new_callable=AsyncMock)
-    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
-    async def test_upload_with_ingest_sets_active_status(
-        self, mock_save, mock_process, client: AsyncClient, team_setup
-    ):
-        """After successful ingest, status becomes active."""
-        team, user = team_setup
-        mock_save.return_value = "/tmp/fake/storage/path.md"
-        mock_process.return_value = {"total_chunks": 3, "messages": ["ok"]}
-
-        resp = await client.post(
-            "/ingest/upload",
-            headers=auth_header(user.id),
-            data={"team_id": str(team.id), "mtime": "1712000000.0"},
-            files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
-        )
-
-        assert resp.status_code == 200
-        data = resp.json()
-        # process_document was called but didn't actually update DB status,
-        # so doc remains in uploading. Real process_document updates to active.
-        assert data["status"] == "uploading"
-        mock_process.assert_called_once()
-
-    @patch("maru_lang.services.ingest.process_document", new_callable=AsyncMock)
-    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
-    async def test_upload_ingest_error_returns_500(
-        self, mock_save, mock_process, client: AsyncClient, team_setup
-    ):
-        """When ingest fails, upload returns 500."""
-        team, user = team_setup
-        mock_save.return_value = "/tmp/fake/storage/path.md"
-        mock_process.return_value = {"error": "Embedding model not found", "messages": ["fail"]}
-
-        resp = await client.post(
-            "/ingest/upload",
-            headers=auth_header(user.id),
-            data={"team_id": str(team.id), "mtime": "1712000000.0"},
-            files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
-        )
-
-        assert resp.status_code == 500
-        assert "Ingest failed" in resp.json()["detail"]
-
     async def test_upload_requires_filename(
         self, client: AsyncClient, team_setup
     ):

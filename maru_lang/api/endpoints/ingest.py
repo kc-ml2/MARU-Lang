@@ -2,7 +2,7 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form, Query
 
 from maru_lang.enums.auth import UserRoleCode
 from maru_lang.enums.documents import DocumentStatus, AuditAction
@@ -36,13 +36,14 @@ router = APIRouter(
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     team_id: int = Form(...),
     folder_path: str = Form(""),
     mtime: float = Form(..., description="Original file modification time (unix timestamp)"),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
-    """Upload a file and run ingest synchronously."""
+    """Upload a file and start background ingest."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
@@ -56,21 +57,12 @@ async def upload_file(
         user_id=user.id,
     )
 
-    try:
-        await run_ingest_for_document(doc, team_id)
-    except Exception as e:
-        logger.error(f"Ingest failed for {doc.id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Ingest failed: {e}",
-        )
-
-    await doc.refresh_from_db()
+    background_tasks.add_task(run_ingest_for_document, doc, team_id)
 
     return UploadResponse(
         document_id=doc.id,
         name=doc.name,
-        status=DocumentStatus(doc.status).name.lower(),
+        status="uploading",
         is_reupload=is_reupload,
     )
 
