@@ -10,6 +10,7 @@ from fastapi_pagination import add_pagination
 
 from maru_lang.core.relation_db import get_register_orm
 from maru_lang.configs import get_config
+from maru_lang.graph.ingest.embedder import get_embeddings
 from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.chat import router as chat_router
 from maru_lang.api.endpoints.ingest import router as ingest_router
@@ -107,6 +108,11 @@ class MaruLangApp(FastAPI):
         print("Initializing databases...")
         register_orm = get_register_orm()
         async with register_orm(self):
+
+            # 3. Pre-load embedding model
+            print(f"Loading embedding model: {cfg.embedding_model}...")
+            await asyncio.to_thread(get_embeddings, cfg.embedding_model)
+            print(f"✓ Embedding model loaded: {cfg.embedding_model}")
 
             print("=" * 60)
             print("✨ Application startup complete!")

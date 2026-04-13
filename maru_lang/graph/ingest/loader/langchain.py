@@ -14,8 +14,8 @@ def load_file(file_path: Path) -> list[Document]:
     suffix = file_path.suffix.lower()
 
     if suffix == ".pdf":
-        from langchain_community.document_loaders import PyPDFLoader
-        return PyPDFLoader(str(file_path)).load()
+        from langchain_community.document_loaders import UnstructuredPDFLoader
+        return UnstructuredPDFLoader(str(file_path)).load()
 
     elif suffix in (".docx", ".doc"):
         from langchain_community.document_loaders import Docx2txtLoader
