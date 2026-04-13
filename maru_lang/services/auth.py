@@ -33,24 +33,40 @@ async def create_or_get_user(email: str) -> User:
     except Exception as e:
         name = None
 
+    editor_role, _ = await UserRole.get_or_create(
+        name=UserRoleCode.EDITOR.value,
+        defaults={"description": "일반 사용자"},
+    )
     new_user = await User.create(
         email=email,
         name=name,
+        role=editor_role,
     )
     return new_user
 
 
 async def _activate_anonymous_user(user: User) -> None:
-    """익명 유저가 최초 로그인하면 anonymous 롤 제거 + pending 멤버십을 member로 변경"""
+    """익명 유저가 최초 로그인하면 anonymous → editor 롤 변경 + pending 멤버십을 member로 변경"""
     if not user.role_id:
+        # role이 없는 기존 유저에게 editor 롤 부여
+        editor_role, _ = await UserRole.get_or_create(
+            name=UserRoleCode.EDITOR.value,
+            defaults={"description": "일반 사용자"},
+        )
+        user.role = editor_role
+        await user.save()
         return
 
     role = await UserRole.get_or_none(id=user.role_id)
     if not role or role.name != UserRoleCode.ANONYMOUS.value:
         return
 
-    # anonymous 롤 제거
-    user.role = None
+    # anonymous → editor 롤 변경
+    editor_role, _ = await UserRole.get_or_create(
+        name=UserRoleCode.EDITOR.value,
+        defaults={"description": "일반 사용자"},
+    )
+    user.role = editor_role
     await user.save()
 
     # pending 멤버십을 member로 변경

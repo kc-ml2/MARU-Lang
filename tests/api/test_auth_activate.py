@@ -15,8 +15,8 @@ from maru_lang.services.auth import create_or_get_user
 class TestActivateAnonymousUser:
     """익명 유저가 최초 로그인(create_or_get_user) 시 활성화되는 흐름"""
 
-    async def test_anonymous_role_removed_on_login(self):
-        """로그인 시 anonymous 롤이 제거된다"""
+    async def test_anonymous_role_upgraded_on_login(self):
+        """로그인 시 anonymous 롤이 editor로 변경된다"""
         role = await UserRole.create(
             name=UserRoleCode.ANONYMOUS.value,
             description="초대로 생성된 미가입 유저",
@@ -29,7 +29,9 @@ class TestActivateAnonymousUser:
         await returned_user.refresh_from_db()
 
         assert returned_user.id == user.id
-        assert returned_user.role_id is None
+        assert returned_user.role_id is not None
+        editor_role = await UserRole.get(id=returned_user.role_id)
+        assert editor_role.name == UserRoleCode.EDITOR.value
 
     async def test_pending_memberships_become_member_on_login(self):
         """로그인 시 pending 멤버십이 member로 변경된다"""
@@ -61,11 +63,13 @@ class TestActivateAnonymousUser:
 
         assert returned_user.role_id == editor_role.id
 
-    async def test_user_without_role_unchanged(self):
-        """롤이 없는 일반 유저는 로그인해도 변경되지 않는다"""
+    async def test_user_without_role_gets_editor_on_login(self):
+        """롤이 없는 유저는 로그인 시 editor 롤이 부여된다"""
         user = await User.create(email="normal@example.com", name="Normal")
 
         returned_user = await create_or_get_user("normal@example.com")
         await returned_user.refresh_from_db()
 
-        assert returned_user.role_id is None
+        assert returned_user.role_id is not None
+        editor_role = await UserRole.get(id=returned_user.role_id)
+        assert editor_role.name == UserRoleCode.EDITOR.value
