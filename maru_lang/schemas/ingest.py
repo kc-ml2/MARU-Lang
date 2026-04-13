@@ -35,6 +35,7 @@ class DocumentStatusItem(BaseModel):
     id: str
     name: str
     status: str
+    folder_path: Optional[str] = None
     file_size: Optional[int] = None
     created_at: datetime
     updated_at: datetime

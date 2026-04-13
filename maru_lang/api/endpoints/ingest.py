@@ -1,8 +1,13 @@
 """Ingest API endpoints - upload, status, check, delete."""
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form, Query
+import logging
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 
 from maru_lang.enums.auth import UserRoleCode
 from maru_lang.enums.documents import DocumentStatus, AuditAction
+
+logger = logging.getLogger(__name__)
 from maru_lang.dependencies.auth import get_user_with_role, User
 from maru_lang.schemas.ingest import (
     UploadResponse,
@@ -31,14 +36,13 @@ router = APIRouter(
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_file(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     team_id: int = Form(...),
     folder_path: str = Form(""),
     mtime: float = Form(..., description="Original file modification time (unix timestamp)"),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
-    """Upload a file and start background ingest."""
+    """Upload a file and run ingest synchronously."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
@@ -52,12 +56,21 @@ async def upload_file(
         user_id=user.id,
     )
 
-    background_tasks.add_task(run_ingest_for_document, doc, team_id)
+    try:
+        await run_ingest_for_document(doc, team_id)
+    except Exception as e:
+        logger.error(f"Ingest failed for {doc.id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ingest failed: {e}",
+        )
+
+    await doc.refresh_from_db()
 
     return UploadResponse(
         document_id=doc.id,
         name=doc.name,
-        status="uploading",
+        status=DocumentStatus(doc.status).name.lower(),
         is_reupload=is_reupload,
     )
 
@@ -86,11 +99,13 @@ async def get_status(
             )
             for log in logs
         ]
+        folder_path = str(Path(doc.file_path).parent) if doc.file_path else None
         items.append(
             DocumentStatusItem(
                 id=doc.id,
                 name=doc.name,
                 status=DocumentStatus(doc.status).name.lower(),
+                folder_path=folder_path,
                 file_size=doc.file_size,
                 created_at=doc.created_at,
                 updated_at=doc.updated_at,

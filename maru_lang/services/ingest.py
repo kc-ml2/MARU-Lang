@@ -9,11 +9,11 @@ from maru_lang.core.relation_db.models.documents import (
     DocumentAuditLog,
 )
 from maru_lang.enums.documents import DocumentStatus, AuditAction
-from maru_lang.schemas.ingest import FileInfo
 from maru_lang.services.document import get_or_create_document_group
 from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
 from maru_lang.utils.file_storage import save_upload
-from maru_lang.graph.ingest import run_ingest
+from maru_lang.configs import get_config
+from maru_lang.graph.ingest.nodes import process_document
 from maru_lang.core.vector_db import get_vector_db
 
 logger = logging.getLogger(__name__)
@@ -47,8 +47,8 @@ async def upload_and_ingest(
     # Save to permanent storage
     storage_path = await save_upload(file_obj, filename, team_id, doc_id)
 
-    # Get or create root group for team
-    group = await _get_or_create_upload_group(team_id)
+    # Get or create group named after the uploaded folder
+    group = await _get_or_create_upload_group(team_id, folder_path)
 
     # Fingerprint uses client-provided mtime so check() can match
     abs_path = str(Path(folder_path) / filename) if folder_path else filename
@@ -98,20 +98,37 @@ async def upload_and_ingest(
 
 
 async def run_ingest_for_document(doc: Document, team_id: int) -> None:
-    """Run ingest pipeline for a document. Updates status on completion/error.
+    """Run process_document directly for an API-uploaded document.
 
-    Intended for use in BackgroundTasks.
+    Skips sync_document because upload_and_ingest already created the
+    Document record and group. Only the embedding pipeline is needed.
     """
-    try:
-        file_info = FileInfo(
-            fileName=doc.metadata.get("original_filename", doc.name),
-            createdAt=doc.created_at,
-            absolutePath=doc.file_path or "",
-            size=doc.file_size or 0,
-            tempFilePath=doc.storage_path,
-        )
+    cfg = get_config()
 
-        await run_ingest(file=file_info, team_id=team_id)
+    state = {
+        "file": None,
+        "team_id": team_id,
+        "re_embed": False,
+        "embedder_model": cfg.embedding_model,
+        "document": {
+            "id": doc.id,
+            "name": doc.name,
+            "file_path": doc.file_path,
+            "storage_path": doc.storage_path,
+            "group_id": doc.group_id,
+            "metadata": doc.metadata,
+        },
+        "needs_processing": True,
+        "total_chunks": 0,
+        "error": None,
+        "messages": [],
+    }
+
+    try:
+        result = await process_document(state)
+
+        if result.get("error"):
+            raise RuntimeError(result["error"])
 
         await _record_audit(
             document_id=doc.id,
@@ -133,6 +150,7 @@ async def run_ingest_for_document(doc: Document, team_id: int) -> None:
             action=AuditAction.INGEST_ERROR,
             detail={"error": str(e)},
         )
+        raise
 
 
 async def get_team_documents(team_id: int) -> list[Document]:
@@ -236,9 +254,21 @@ async def _record_audit(
     )
 
 
-async def _get_or_create_upload_group(team_id: int) -> DocumentGroup:
-    """Get or create a root 'uploads' group for the team."""
+async def _get_or_create_upload_group(
+    team_id: int,
+    folder_path: str = "",
+) -> DocumentGroup:
+    """Get or create a group named after the upload folder.
+
+    Uses the last component of folder_path as the group name.
+    Falls back to 'uploads' when folder_path is empty.
+    """
+    if folder_path:
+        group_name = Path(folder_path).name
+    else:
+        group_name = "uploads"
+
     group, _ = await get_or_create_document_group(
-        team_id=team_id, name="uploads", parent=None,
+        team_id=team_id, name=group_name, parent=None,
     )
     return group

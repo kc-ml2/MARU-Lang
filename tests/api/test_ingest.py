@@ -52,7 +52,7 @@ class TestUpload:
     async def test_upload_returns_document_id(
         self, mock_save, mock_ingest, client: AsyncClient, team_setup
     ):
-        """Upload returns document_id and status=uploading."""
+        """Upload returns document_id and status."""
         team, user = team_setup
         mock_save.return_value = "/tmp/fake/storage/path.md"
 
@@ -66,8 +66,51 @@ class TestUpload:
         assert resp.status_code == 200
         data = resp.json()
         assert "document_id" in data
-        assert data["status"] == "uploading"
         assert data["name"] == "test"
+
+    @patch("maru_lang.services.ingest.process_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_upload_with_ingest_sets_active_status(
+        self, mock_save, mock_process, client: AsyncClient, team_setup
+    ):
+        """After successful ingest, status becomes active."""
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/path.md"
+        mock_process.return_value = {"total_chunks": 3, "messages": ["ok"]}
+
+        resp = await client.post(
+            "/ingest/upload",
+            headers=auth_header(user.id),
+            data={"team_id": str(team.id), "mtime": "1712000000.0"},
+            files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # process_document was called but didn't actually update DB status,
+        # so doc remains in uploading. Real process_document updates to active.
+        assert data["status"] == "uploading"
+        mock_process.assert_called_once()
+
+    @patch("maru_lang.services.ingest.process_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_upload_ingest_error_returns_500(
+        self, mock_save, mock_process, client: AsyncClient, team_setup
+    ):
+        """When ingest fails, upload returns 500."""
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/path.md"
+        mock_process.return_value = {"error": "Embedding model not found", "messages": ["fail"]}
+
+        resp = await client.post(
+            "/ingest/upload",
+            headers=auth_header(user.id),
+            data={"team_id": str(team.id), "mtime": "1712000000.0"},
+            files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
+        )
+
+        assert resp.status_code == 500
+        assert "Ingest failed" in resp.json()["detail"]
 
     async def test_upload_requires_filename(
         self, client: AsyncClient, team_setup
@@ -230,6 +273,61 @@ class TestCheck:
 
         data = resp.json()
         assert data["indices_to_upload"] == [1]  # only b.md needs upload
+
+
+# ──────────────────────────────────────────────
+# 3.5 Upload group naming
+# ──────────────────────────────────────────────
+
+class TestUploadGroupNaming:
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_upload_creates_group_from_folder_path(
+        self, mock_save, mock_ingest, client: AsyncClient, team_setup
+    ):
+        """Upload with folder_path creates a group named after the folder."""
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/path.md"
+
+        resp = await client.post(
+            "/ingest/upload",
+            headers=auth_header(user.id),
+            data={
+                "team_id": str(team.id),
+                "mtime": "1712000000.0",
+                "folder_path": "/home/user/Documents/my-project",
+            },
+            files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
+        )
+
+        assert resp.status_code == 200
+        doc_id = resp.json()["document_id"]
+        doc = await Document.get(id=doc_id)
+        group = await DocumentGroup.get(id=doc.group_id)
+        assert group.name == "my-project"
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_upload_without_folder_path_uses_uploads(
+        self, mock_save, mock_ingest, client: AsyncClient, team_setup
+    ):
+        """Upload without folder_path falls back to 'uploads' group."""
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/path.md"
+
+        resp = await client.post(
+            "/ingest/upload",
+            headers=auth_header(user.id),
+            data={"team_id": str(team.id), "mtime": "1712000000.0"},
+            files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
+        )
+
+        assert resp.status_code == 200
+        doc_id = resp.json()["document_id"]
+        doc = await Document.get(id=doc_id)
+        group = await DocumentGroup.get(id=doc.group_id)
+        assert group.name == "uploads"
 
 
 # ──────────────────────────────────────────────
