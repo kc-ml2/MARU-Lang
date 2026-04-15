@@ -7,6 +7,8 @@ Endpoints:
   DELETE /ingest/{document_id}   — Delete a document
 """
 import io
+import os
+import time
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
@@ -486,3 +488,285 @@ class TestStatusWithAudit:
         assert len(doc["audit_logs"]) >= 1
         assert doc["audit_logs"][0]["action"] == "upload"
         assert doc["audit_logs"][0]["user_name"] == "Alice"
+
+
+# ──────────────────────────────────────────────
+# 7. Check → Upload → Check 전체 플로우 (실제 파일 기반)
+# ──────────────────────────────────────────────
+
+class TestCheckUploadFlow:
+    """클라이언트의 실제 사용 패턴을 시뮬레이션하는 테스트.
+
+    클라이언트 플로우: check → upload → check (재확인)
+    실제 파일을 생성하여 size/mtime 값이 현실적인 조건에서 동작을 검증.
+    """
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_check_upload_check_skips_uploaded_file(
+        self, mock_save, mock_ingest, client: AsyncClient, team_setup, tmp_path,
+    ):
+        """check → upload → check: 업로드한 파일은 두 번째 check에서 스킵되어야 한다."""
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/test.md"
+
+        # 실제 파일 생성
+        test_file = tmp_path / "test.md"
+        test_file.write_text("# 테스트 문서\n\n이것은 테스트입니다.")
+        stat = test_file.stat()
+        abs_path = str(test_file)
+        file_size = stat.st_size
+        file_mtime = stat.st_mtime
+
+        # 1단계: check — 새 파일이므로 업로드 필요
+        check_resp = await client.post(
+            "/ingest/check",
+            headers=auth_header(user.id),
+            json={
+                "team_id": team.id,
+                "files": [
+                    {"fileName": "test.md", "absolutePath": abs_path,
+                     "size": file_size, "mtime": file_mtime},
+                ],
+            },
+        )
+        assert check_resp.status_code == 200
+        assert check_resp.json()["indices_to_upload"] == [0]
+
+        # 2단계: upload — check에서 사용한 것과 동일한 경로 정보로 업로드
+        folder_path = str(tmp_path)
+        with open(test_file, "rb") as f:
+            content = f.read()
+
+        resp = await client.post(
+            "/ingest/upload",
+            headers=auth_header(user.id),
+            data={
+                "team_id": str(team.id),
+                "mtime": str(file_mtime),
+                "folder_path": folder_path,
+            },
+            files={"file": ("test.md", io.BytesIO(content), "text/markdown")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["is_reupload"] is False
+
+        # 3단계: check 재호출 — 이미 업로드했으므로 스킵되어야 함
+        check_resp2 = await client.post(
+            "/ingest/check",
+            headers=auth_header(user.id),
+            json={
+                "team_id": team.id,
+                "files": [
+                    {"fileName": "test.md", "absolutePath": abs_path,
+                     "size": file_size, "mtime": file_mtime},
+                ],
+            },
+        )
+        assert check_resp2.status_code == 200
+        assert check_resp2.json()["indices_to_upload"] == [], \
+            "업로드된 파일은 check에서 스킵되어야 하지만, 다시 업로드 대상으로 반환됨"
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_check_detects_modified_file_after_upload(
+        self, mock_save, mock_ingest, client: AsyncClient, team_setup, tmp_path,
+    ):
+        """업로드 후 파일을 수정하면 check에서 다시 업로드 대상으로 반환해야 한다."""
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/doc.txt"
+
+        # 파일 생성 및 업로드
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("원본 내용")
+        stat = test_file.stat()
+        abs_path = str(test_file)
+        folder_path = str(tmp_path)
+
+        resp = await client.post(
+            "/ingest/upload",
+            headers=auth_header(user.id),
+            data={
+                "team_id": str(team.id),
+                "mtime": str(stat.st_mtime),
+                "folder_path": folder_path,
+            },
+            files={"file": ("doc.txt", io.BytesIO(test_file.read_bytes()), "text/plain")},
+        )
+        assert resp.status_code == 200
+
+        # 파일 수정 (내용/크기/mtime 변경)
+        time.sleep(0.05)  # mtime 차이 보장
+        test_file.write_text("수정된 내용 — 더 긴 텍스트를 추가합니다.")
+        new_stat = test_file.stat()
+
+        # check — 수정된 파일은 다시 업로드 대상
+        check_resp = await client.post(
+            "/ingest/check",
+            headers=auth_header(user.id),
+            json={
+                "team_id": team.id,
+                "files": [
+                    {"fileName": "doc.txt", "absolutePath": abs_path,
+                     "size": new_stat.st_size, "mtime": new_stat.st_mtime},
+                ],
+            },
+        )
+        assert check_resp.status_code == 200
+        assert check_resp.json()["indices_to_upload"] == [0], \
+            "수정된 파일은 check에서 업로드 대상으로 반환되어야 함"
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_fingerprint_mismatch_when_paths_differ(
+        self, mock_save, mock_ingest, client: AsyncClient, team_setup, tmp_path,
+    ):
+        """check의 absolutePath와 upload의 folder_path/filename이 다르면 fingerprint 불일치.
+
+        이 테스트는 클라이언트가 check과 upload에서 다른 경로를 보내는 경우를 재현한다.
+        예: check에서는 절대경로를, upload에서는 상대 folder_path를 보내는 경우.
+        """
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/report.md"
+
+        test_file = tmp_path / "report.md"
+        test_file.write_text("# 보고서\n\n내용입니다.")
+        stat = test_file.stat()
+        abs_path = str(test_file)  # e.g. /tmp/pytest-xxx/report.md
+
+        # upload: 상대 folder_path 사용 (클라이언트가 다른 값을 보낸 경우)
+        relative_folder = "my-project"
+        resp = await client.post(
+            "/ingest/upload",
+            headers=auth_header(user.id),
+            data={
+                "team_id": str(team.id),
+                "mtime": str(stat.st_mtime),
+                "folder_path": relative_folder,
+            },
+            files={"file": ("report.md", io.BytesIO(test_file.read_bytes()), "text/markdown")},
+        )
+        assert resp.status_code == 200
+
+        # check: 절대경로 사용 (원래 파일 위치)
+        check_resp = await client.post(
+            "/ingest/check",
+            headers=auth_header(user.id),
+            json={
+                "team_id": team.id,
+                "files": [
+                    {"fileName": "report.md", "absolutePath": abs_path,
+                     "size": stat.st_size, "mtime": stat.st_mtime},
+                ],
+            },
+        )
+        data = check_resp.json()
+        # fingerprint 불일치 → check은 "업로드 필요"로 판단 (스킵되지 않음)
+        assert data["indices_to_upload"] == [0], \
+            "경로가 다르면 fingerprint가 불일치하여 스킵되지 않아야 함 — 이것이 '항상 스킵 안 됨' 버그의 원인"
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_multiple_files_partial_skip(
+        self, mock_save, mock_ingest, client: AsyncClient, team_setup, tmp_path,
+    ):
+        """여러 파일 중 일부만 업로드된 경우, check은 미업로드 파일만 반환해야 한다."""
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/file.md"
+
+        # 파일 3개 생성
+        files_info = []
+        for name in ["a.md", "b.md", "c.md"]:
+            f = tmp_path / name
+            f.write_text(f"# {name}\n\n내용")
+            stat = f.stat()
+            files_info.append({
+                "path": str(f),
+                "name": name,
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "content": f.read_bytes(),
+            })
+
+        folder_path = str(tmp_path)
+
+        # a.md만 업로드
+        resp = await client.post(
+            "/ingest/upload",
+            headers=auth_header(user.id),
+            data={
+                "team_id": str(team.id),
+                "mtime": str(files_info[0]["mtime"]),
+                "folder_path": folder_path,
+            },
+            files={"file": ("a.md", io.BytesIO(files_info[0]["content"]), "text/markdown")},
+        )
+        assert resp.status_code == 200
+
+        # check 3개 파일 — a.md는 스킵, b.md/c.md는 업로드 필요
+        check_resp = await client.post(
+            "/ingest/check",
+            headers=auth_header(user.id),
+            json={
+                "team_id": team.id,
+                "files": [
+                    {"fileName": fi["name"], "absolutePath": fi["path"],
+                     "size": fi["size"], "mtime": fi["mtime"]}
+                    for fi in files_info
+                ],
+            },
+        )
+        data = check_resp.json()
+        assert data["indices_to_upload"] == [1, 2], \
+            "a.md는 스킵되고 b.md, c.md만 업로드 대상이어야 함"
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_reupload_then_check_still_skips(
+        self, mock_save, mock_ingest, client: AsyncClient, team_setup, tmp_path,
+    ):
+        """같은 파일을 두 번 upload(re-upload)한 후에도 check은 스킵해야 한다."""
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/memo.md"
+
+        test_file = tmp_path / "memo.md"
+        test_file.write_text("메모 내용")
+        stat = test_file.stat()
+        abs_path = str(test_file)
+        folder_path = str(tmp_path)
+        content = test_file.read_bytes()
+
+        upload_data = {
+            "team_id": str(team.id),
+            "mtime": str(stat.st_mtime),
+            "folder_path": folder_path,
+        }
+
+        # 첫 업로드
+        await client.post(
+            "/ingest/upload", headers=auth_header(user.id),
+            data=upload_data,
+            files={"file": ("memo.md", io.BytesIO(content), "text/markdown")},
+        )
+        # 재업로드
+        resp2 = await client.post(
+            "/ingest/upload", headers=auth_header(user.id),
+            data=upload_data,
+            files={"file": ("memo.md", io.BytesIO(content), "text/markdown")},
+        )
+        assert resp2.json()["is_reupload"] is True
+
+        # check — 여전히 스킵
+        check_resp = await client.post(
+            "/ingest/check",
+            headers=auth_header(user.id),
+            json={
+                "team_id": team.id,
+                "files": [
+                    {"fileName": "memo.md", "absolutePath": abs_path,
+                     "size": stat.st_size, "mtime": stat.st_mtime},
+                ],
+            },
+        )
+        assert check_resp.json()["indices_to_upload"] == [], \
+            "재업로드 후에도 check은 스킵해야 함"
