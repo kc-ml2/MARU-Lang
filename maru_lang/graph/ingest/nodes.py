@@ -78,8 +78,11 @@ async def process_document(state: IngestState) -> dict:
     if not doc or not state["needs_processing"]:
         return {"messages": ["Skipped (no processing needed)"]}
 
-    # Update status to PROCESSING
-    db_doc = await Document.get(id=doc["id"])
+    # Document가 삭제되었는지 확인 후 상태 전환
+    db_doc = await Document.get_or_none(id=doc["id"])
+    if not db_doc:
+        return {"messages": [f"Skipped (document deleted): {doc['name']}"]}
+
     await update_document_status(db_doc, DocumentStatus.PROCESSING)
 
     vdb = get_vector_db()
@@ -133,6 +136,15 @@ async def process_document(state: IngestState) -> dict:
         if orphan_ids:
             await asyncio.to_thread(vdb.delete_chunks_by_ids, list(orphan_ids))
 
+        # embedding 완료 후 삭제 여부 재확인 — 삭제된 문서를 ACTIVE로 되살리지 않음
+        if not await Document.exists(id=doc["id"]):
+            # 처리 중 삭제됨 → VectorDB에 넣은 청크도 정리
+            try:
+                await asyncio.to_thread(vdb.delete_all_chunks_by_document_id, doc["id"])
+            except Exception:
+                pass
+            return {"messages": [f"Aborted (document deleted during processing): {doc['name']}"]}
+
         await update_document_status(db_doc, DocumentStatus.ACTIVE)
 
         return {
@@ -141,7 +153,9 @@ async def process_document(state: IngestState) -> dict:
         }
 
     except Exception as e:
-        await _set_error(db_doc, str(e))
+        # 에러 기록 전 문서 존재 여부 확인 — 삭제된 문서에 에러 상태를 쓰지 않음
+        if await Document.exists(id=doc["id"]):
+            await _set_error(db_doc, str(e))
         return {
             "error": str(e),
             "messages": [f"{doc['name']}: ERROR - {e}"],

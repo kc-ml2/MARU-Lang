@@ -139,9 +139,12 @@ async def run_ingest_for_document(doc: Document, team_id: int) -> None:
 
     except Exception as e:
         logger.error(f"Ingest failed for {doc.id}: {e}")
-        doc.status = DocumentStatus.ERROR
-        doc.error_message = str(e)
-        await doc.save()
+
+        # 삭제된 문서에 에러 상태를 쓰면 레코드가 되살아날 수 있으므로 존재 확인
+        if await Document.exists(id=doc.id):
+            doc.status = DocumentStatus.ERROR
+            doc.error_message = str(e)
+            await doc.save()
 
         await _record_audit(
             document_id=doc.id,
