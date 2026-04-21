@@ -1,8 +1,11 @@
 """Configuration data models - single unified config."""
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # --- LLM ---
@@ -37,13 +40,19 @@ class ServerConfig:
 
 @dataclass
 class AuthConfig:
-    secret_key: str = "your-secret-key-change-in-production"
-    salt: str = "some-salt"
+    secret_key: Optional[str] = None  # Required for production
+    salt: Optional[str] = None  # Required for production
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_minutes: int = 43200
     default_validation_code: str = "456123"
     allowed_domains: list = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.secret_key is None:
+            self.secret_key = os.getenv("SECRET_KEY", "")
+        if self.salt is None:
+            self.salt = os.getenv("SALT", "")
 
     def is_domain_allowed(self, email: str) -> bool:
         if not self.allowed_domains:
@@ -101,6 +110,15 @@ class MaruConfig:
     reranker_llm: Optional[str] = None  # llm name (from llms list) for llm reranker
     reranker_top_k: Optional[int] = 5
     reranker_device: Optional[str] = None
+
+    _DEFAULT_SECRET_KEY: str = field(default="your-secret-key-change-in-production", init=False, repr=False)
+
+    def __post_init__(self):
+        if self.production and self.auth.secret_key == self._DEFAULT_SECRET_KEY:
+            logger.warning(
+                "SECURITY: production=True but auth.secret_key is the default value. "
+                "Set a strong secret_key in maru_config.yaml before deploying."
+            )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MaruConfig":

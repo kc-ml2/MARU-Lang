@@ -71,20 +71,65 @@ def get_config() -> MaruConfig:
     config_path = Path.cwd() / "maru_app" / "maru_config.yaml"
 
     if config_path.exists():
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-            data = _substitute_env_vars(data)
-            _config = MaruConfig.from_dict(data)
-            logger.info(f"Loaded config from {config_path}")
-        except Exception as e:
-            logger.error(f"Failed to load config: {e}, using defaults")
-            _config = MaruConfig()
+        # Fail closed: if the file exists but we cannot read/parse it, propagate
+        # the error instead of silently falling back to insecure defaults. The
+        # "file missing" path below is the only sanctioned fallback.
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        data = _substitute_env_vars(data)
+        candidate = MaruConfig.from_dict(data)
+        logger.info(f"Loaded config from {config_path}")
+
+        # Security validation — runs BEFORE caching so a failure never leaves
+        # an insecure config in `_config` for subsequent callers to pick up.
+        if candidate.production:
+            _validate_auth_security(candidate)
+
+        _config = candidate
     else:
         logger.info("No maru_config.yaml found, using defaults")
         _config = MaruConfig()
 
     return _config
+
+
+_KNOWN_INSECURE_SECRETS = frozenset({
+    "",
+    "your-secret-key-change-in-production",
+    "change-me",
+    "secret",
+})
+_KNOWN_INSECURE_SALTS = frozenset({"", "some-salt", "salt"})
+_MIN_SECRET_KEY_LENGTH = 32
+_MIN_SALT_LENGTH = 16
+
+
+def _validate_auth_security(config: MaruConfig) -> None:
+    """Hard-fail when production auth credentials are missing, default, or too short."""
+    if not config.production:
+        return
+
+    secret_key = (config.auth.secret_key or "").strip()
+    if secret_key in _KNOWN_INSECURE_SECRETS:
+        raise ValueError(
+            "SECURITY: production=True but auth.secret_key is empty or a known default. "
+            "Set SECRET_KEY env var to a strong random value."
+        )
+    if len(secret_key) < _MIN_SECRET_KEY_LENGTH:
+        raise ValueError(
+            f"SECURITY: production=True requires auth.secret_key >= {_MIN_SECRET_KEY_LENGTH} chars (got {len(secret_key)})."
+        )
+
+    salt = (config.auth.salt or "").strip()
+    if salt in _KNOWN_INSECURE_SALTS:
+        raise ValueError(
+            "SECURITY: production=True but auth.salt is empty or a known default. "
+            "Set SALT env var to a unique random value."
+        )
+    if len(salt) < _MIN_SALT_LENGTH:
+        raise ValueError(
+            f"SECURITY: production=True requires auth.salt >= {_MIN_SALT_LENGTH} chars (got {len(salt)})."
+        )
 
 
 def reload_config() -> MaruConfig:
