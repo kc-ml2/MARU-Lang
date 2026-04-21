@@ -3,6 +3,7 @@ from maru_lang.commands.install import install_configs
 from maru_lang.commands.run import run_session
 from maru_lang.core.relation_db.connection import run_with_orm_context
 import asyncio
+import logging
 import sys
 import os
 import typer
@@ -13,6 +14,15 @@ from typing import Optional
 from maru_lang.configs import get_config
 
 app = typer.Typer()
+
+
+def _enable_verbose_logging() -> None:
+    """Turn on DEBUG logs for maru_lang.* (quiet by default)."""
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    logging.getLogger("maru_lang").setLevel(logging.DEBUG)
 
 
 @app.callback()
@@ -38,8 +48,13 @@ def serve(
     workers: int = typer.Option(1, help="Number of server workers"),
     skip_migrations: bool = typer.Option(
         False, "--skip-migrations", help="Skip automatic database migrations"),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Enable DEBUG logs for maru_lang (default: quiet)"),
 ):
     """Start the chatbot FastAPI server (default: maru_app/main.py)"""
+
+    if verbose:
+        _enable_verbose_logging()
 
     config = get_config()
 
@@ -156,8 +171,13 @@ def run(
     port: int = typer.Option(None, help="Server port"),
     skip_migrations: bool = typer.Option(
         False, "--skip-migrations", help="Skip automatic database migrations"),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Enable DEBUG logs for maru_lang (default: quiet)"),
 ):
     """Start server + interactive chat in one command."""
+    if verbose:
+        _enable_verbose_logging()
+
     if not teams:
         teams = typer.prompt("Team name(s)")
 
