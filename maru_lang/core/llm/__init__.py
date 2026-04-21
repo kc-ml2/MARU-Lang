@@ -1,4 +1,5 @@
 """LLM management - client, manager, and convenience accessors."""
+import threading
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -9,13 +10,17 @@ from .server_manager import LLMManager
 __all__ = ["LLMClient", "LLMManager", "get_model_with_fallbacks"]
 
 _llm_manager: LLMManager | None = None
+_llm_manager_lock = threading.Lock()
 
 
 def _get_llm_manager() -> LLMManager:
     global _llm_manager
     if _llm_manager is None:
-        _llm_manager = LLMManager()
-        _llm_manager.initialize()
+        with _llm_manager_lock:
+            if _llm_manager is None:
+                manager = LLMManager()
+                manager.initialize()
+                _llm_manager = manager
     return _llm_manager
 
 
