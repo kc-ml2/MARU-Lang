@@ -3,6 +3,8 @@
 Replaces langchain's ContextualCompressionRetriever with a simple
 implementation that has no external dependency.
 """
+import asyncio
+
 from langchain_core.callbacks import CallbackManagerForRetrieverRun, AsyncCallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.documents.compressor import BaseDocumentCompressor
@@ -32,4 +34,6 @@ class CompressedRetriever(BaseRetriever):
         run_manager: AsyncCallbackManagerForRetrieverRun,
     ) -> list[Document]:
         docs = await self.base_retriever.ainvoke(query)
-        return list(self.compressor.compress_documents(docs, query))
+        return list(await asyncio.to_thread(
+            self.compressor.compress_documents, docs, query
+        ))
