@@ -1,0 +1,31 @@
+# vLLM 서버 단독 설정
+# 테스트: vLLM 커스텀 서버 URL + 모델, OpenAI 호환 API
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: info
+
+database_url: "sqlite://:memory:"
+
+llms:
+  - name: vllm
+    provider: vllm
+    model_name: gpt-oss:20b
+    base_url: http://localhost:8080/v1
+    api_key: dummy-key
+    config:
+      temperature: 0.8
+      max_tokens: 1024
+    timeout: 30.0
+
+system_prompt: |
+  You are MARU, an AI assistant for document Q&A.
+  Respond in Korean.
+
+embedding_model: BAAI/bge-m3
+retriever_top_k: 5
+retriever_search_method: vector
+
+evaluate_method: rule
+reranker_enabled: false

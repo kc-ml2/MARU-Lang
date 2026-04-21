@@ -1,0 +1,8 @@
+# 최소 설정 (거의 모든 기본값 사용)
+# 테스트: 필수 필드만 지정, 나머지는 기본값으로 부트스트랩
+
+llms:
+  - name: ollama
+    provider: ollama
+    model_name: gpt-oss:20b
+    base_url: http://localhost:11434

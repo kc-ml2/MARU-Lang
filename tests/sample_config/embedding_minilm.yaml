@@ -1,0 +1,27 @@
+# 경량 임베딩 모델 설정
+# 테스트: all-MiniLM-L6-v2 (384차원, 영어 특화, 빠른 추론)
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: info
+
+database_url: "sqlite://:memory:"
+
+llms:
+  - name: ollama
+    provider: ollama
+    model_name: gpt-oss:20b
+    base_url: http://localhost:11434
+
+system_prompt: |
+  You are MARU, an AI assistant. Respond in Korean.
+
+embedding_model: sentence-transformers/all-MiniLM-L6-v2
+embedding_device: cpu
+
+retriever_top_k: 5
+retriever_search_method: vector
+
+evaluate_method: rule
+reranker_enabled: false

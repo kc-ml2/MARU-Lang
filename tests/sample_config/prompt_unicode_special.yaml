@@ -1,0 +1,43 @@
+# 유니코드 및 특수문자 시스템 프롬프트
+# 테스트: CJK 문자, 이모지, YAML 특수문자(: # { } [ ]), 멀티라인
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: info
+
+database_url: "sqlite://:memory:"
+
+llms:
+  - name: ollama
+    provider: ollama
+    model_name: gpt-oss:20b
+    base_url: http://localhost:11434
+
+system_prompt: |
+  당신은 MARU 입니다. 기업용 문서 검색 및 질의응답 AI 어시스턴트입니다.
+
+  ## 역할 설명
+  팀 내부 문서를 검색하고, 사용자의 질문에 정확한 정보를 기반으로 답변합니다.
+
+  ## 사용 가능한 도구
+  - knowledge_search: 팀 문서에서 관련 정보를 검색합니다.
+
+  ## 규칙
+  1. 문서 검색 결과를 기반으로 답변하세요.
+  2. 검색 결과가 없으면 "해당 정보를 찾을 수 없습니다"라고 솔직하게 말하세요.
+  3. 한국어로 답변하세요.
+  4. 日本語の質問には日本語で回答してください。
+  5. 中文问题请用中文回答。
+
+  ## 특수 지시사항
+  - 답변 형식: {질문요약} -> {검색결과} -> {최종답변}
+  - 신뢰도 표시: [높음/중간/낮음]
+  - 출처 표기: 문서명#페이지 형식
+
+embedding_model: BAAI/bge-m3
+retriever_top_k: 5
+retriever_search_method: vector
+
+evaluate_method: rule
+reranker_enabled: false

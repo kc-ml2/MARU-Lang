@@ -1,0 +1,39 @@
+# LLM 기반 reranker 설정
+# 테스트: reranker_type=llm, reranker_llm이 llms 목록의 LLM을 참조
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: info
+
+database_url: "sqlite://:memory:"
+
+llms:
+  - name: openai-main
+    provider: openai
+    model_name: gpt-4o
+    api_key: ${ENV:OPENAI_API_KEY:sk-test-placeholder}
+    config:
+      temperature: 0.3
+
+  - name: openai-reranker
+    provider: openai
+    model_name: gpt-4o-mini
+    api_key: ${ENV:OPENAI_API_KEY:sk-test-placeholder}
+    config:
+      temperature: 0.0
+
+system_prompt: |
+  You are MARU. Answer in Korean.
+
+embedding_model: BAAI/bge-m3
+
+retriever_top_k: 10
+retriever_search_method: vector
+
+evaluate_method: rule
+
+reranker_enabled: true
+reranker_type: llm
+reranker_llm: openai-reranker
+reranker_top_k: 5

@@ -1,0 +1,27 @@
+# Ollama 로컬 모델 단독 설정
+# 테스트: api_key 없이 base_url만으로 동작, 로컬 LLM
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: debug
+
+database_url: "sqlite://:memory:"
+
+llms:
+  - name: ollama
+    provider: ollama
+    model_name: gpt-oss:20b
+    base_url: http://localhost:11434
+
+system_prompt: |
+  You are MARU, an AI assistant.
+  Answer questions based on provided documents.
+  Respond in Korean.
+
+embedding_model: BAAI/bge-m3
+retriever_top_k: 5
+retriever_search_method: vector
+
+evaluate_method: rule
+reranker_enabled: false

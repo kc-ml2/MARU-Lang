@@ -1,0 +1,71 @@
+# 전 기능 활성화 설정
+# 테스트: 모든 기능 동시 활성화 (multi LLM + hybrid + reranker + llm evaluate)
+
+server:
+  host: 0.0.0.0
+  port: 9000
+  reload: false
+  log_level: debug
+
+database_url: "sqlite://:memory:"
+
+auth:
+  secret_key: test-secret-key-for-full-featured
+  salt: test-salt-for-full-featured
+  algorithm: HS256
+  access_token_expire_minutes: 30
+  refresh_token_expire_minutes: 43200
+  allowed_domains:
+    - example.com
+    - test.org
+
+vector_db_url: chroma://data/chroma/maru_test
+
+llms:
+  - name: openai-primary
+    provider: openai
+    model_name: gpt-4o
+    api_key: ${ENV:OPENAI_API_KEY:sk-test-placeholder}
+    config:
+      temperature: 0.7
+      max_tokens: 4096
+      top_p: 0.9
+    timeout: 30.0
+
+  - name: anthropic-secondary
+    provider: anthropic
+    model_name: claude-sonnet-4-20250514
+    api_key: ${ENV:ANTHROPIC_API_KEY:sk-ant-test}
+    config:
+      temperature: 0.5
+      max_tokens: 4096
+
+  - name: ollama-fallback
+    provider: ollama
+    model_name: gpt-oss:20b
+    base_url: http://localhost:11434
+
+  - name: openai-reranker
+    provider: openai
+    model_name: gpt-4o-mini
+    api_key: ${ENV:OPENAI_API_KEY:sk-test-placeholder}
+    config:
+      temperature: 0.0
+
+system_prompt: |
+  당신은 MARU입니다. 기업 내부 문서 검색 및 Q&A AI 어시스턴트입니다.
+  문서 검색 결과를 기반으로 정확하게 답변하세요.
+  한국어로 응답하세요.
+
+embedding_model: BAAI/bge-m3
+embedding_device: cpu
+
+retriever_top_k: 15
+retriever_search_method: vector
+
+evaluate_method: llm
+
+reranker_enabled: true
+reranker_type: llm
+reranker_llm: openai-reranker
+reranker_top_k: 5

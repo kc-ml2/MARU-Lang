@@ -1,0 +1,29 @@
+# LLM 평가 방식 설정
+# 테스트: evaluate_method=llm (LLM이 검색 결과 충분성을 판단)
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: info
+
+database_url: "sqlite://:memory:"
+
+llms:
+  - name: openai
+    provider: openai
+    model_name: gpt-4o
+    api_key: ${ENV:OPENAI_API_KEY:sk-test-placeholder}
+    config:
+      temperature: 0.3
+
+system_prompt: |
+  You are MARU, an AI assistant. Respond in Korean.
+
+embedding_model: BAAI/bge-m3
+
+retriever_top_k: 5
+retriever_search_method: vector
+
+evaluate_method: llm
+
+reranker_enabled: false

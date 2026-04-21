@@ -1,0 +1,41 @@
+# 극단값 테스트
+# 테스트: 경계값 (top_k=1, timeout=1초, token_expire=1분, 짧은 max_tokens)
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: warning
+
+database_url: "sqlite://:memory:"
+
+auth:
+  secret_key: min-key
+  salt: min-salt
+  access_token_expire_minutes: 1
+  refresh_token_expire_minutes: 1
+
+llms:
+  - name: openai
+    provider: openai
+    model_name: gpt-4o-mini
+    api_key: ${ENV:OPENAI_API_KEY:sk-test}
+    config:
+      temperature: 0.0
+      max_tokens: 50
+      top_p: 0.1
+    timeout: 1.0
+
+system_prompt: "Answer briefly."
+
+embedding_model: BAAI/bge-m3
+
+retriever_top_k: 1
+retriever_search_method: vector
+
+evaluate_method: rule
+
+reranker_enabled: true
+reranker_type: cross_encoder
+reranker_model: BAAI/bge-reranker-v2-m3
+reranker_top_k: 1
+reranker_device: cpu
