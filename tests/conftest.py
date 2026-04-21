@@ -9,6 +9,26 @@ import sys
 import types
 from pathlib import Path
 
+# 필수 패키지 설치 여부 체크 (pip install -e . 누락 감지)
+import importlib.util as _ilu
+
+_REQUIRED = {
+    "langchain_huggingface": "langchain-huggingface",
+    "langchain_openai": "langchain-openai",
+    "langchain_anthropic": "langchain-anthropic",
+    "tortoise": "tortoise-orm",
+    "chromadb": "chromadb",
+}
+_missing = {pip: mod for mod, pip in _REQUIRED.items() if _ilu.find_spec(mod) is None}
+if _missing:
+    raise RuntimeError(
+        f"필수 패키지 누락: {', '.join(_missing.keys())}\n"
+        f"현재 Python: {sys.executable}\n"
+        f"pip install 필요: pip install {' '.join(_missing.keys())}\n"
+        f"또는: conda activate maru && pip install -e '.[dev]'"
+    )
+
+
 # Bypass maru_lang.__init__.py (avoid heavy app dependencies)
 _pkg = types.ModuleType("maru_lang")
 _pkg.__path__ = [str(Path(__file__).resolve().parent.parent / "maru_lang")]
@@ -94,3 +114,5 @@ async def team_with_admin(user_alice: User) -> Team:
     team = await Team.create(name="TestTeam", manager=user_alice, is_private=True)
     await TeamMember.create(user=user_alice, team=team, role="admin")
     return team
+
+

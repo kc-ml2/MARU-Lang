@@ -89,12 +89,16 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+# Default: skip integration tests (require API keys / real models / local services).
+# CI runs them explicitly via separate `pytest -m integration` job (.github/workflows/test.yml).
+# Opt-in locally with: `pytest -m integration` or `pytest -m ""`.
+addopts = "-m 'not integration'"
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::UserWarning",
 ]
 markers = [
-    "integration: integration tests (require API keys)",
+    "integration: integration tests (require API keys and real models)",
 ]
 
 [tool.coverage.run]
