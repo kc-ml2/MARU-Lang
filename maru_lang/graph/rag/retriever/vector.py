@@ -27,6 +27,7 @@ class VectorRetriever(BaseRetriever):
     """
 
     team_ids: list[int] = Field(default_factory=list)
+    exclude_ids: list[str] = Field(default_factory=list)
     top_k: int = 5
     search_method: str = "vector"
 
@@ -64,11 +65,13 @@ class VectorRetriever(BaseRetriever):
         try:
             if self.search_method == "hybrid":
                 return self._vdb.hybrid_search(
-                    query, query_embedding, self.top_k, self.team_ids
+                    query, query_embedding, self.top_k, self.team_ids,
+                    exclude_ids=self.exclude_ids,
                 )
             else:
                 return self._vdb.similarity_search(
-                    query_embedding, self.top_k, self.team_ids
+                    query_embedding, self.top_k, self.team_ids,
+                    exclude_ids=self.exclude_ids,
                 )
         except Exception as e:
             logger.error(f"VDB search error: {e}")
@@ -84,18 +87,22 @@ class VectorRetriever(BaseRetriever):
             logger.warning("No team_ids provided - refusing to search all documents")
             return []
 
-        query_embedding = self._embeddings.embed_query(query)
+        query_embedding = await asyncio.to_thread(
+            self._embeddings.embed_query, query
+        )
 
         try:
             if self.search_method == "hybrid":
                 return await asyncio.to_thread(
                     self._vdb.hybrid_search,
                     query, query_embedding, self.top_k, self.team_ids,
+                    exclude_ids=self.exclude_ids,
                 )
             else:
                 return await asyncio.to_thread(
                     self._vdb.similarity_search,
                     query_embedding, self.top_k, self.team_ids,
+                    exclude_ids=self.exclude_ids,
                 )
         except Exception as e:
             logger.error(f"VDB search error: {e}")

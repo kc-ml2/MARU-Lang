@@ -7,10 +7,13 @@ def make_retrieve_node(retriever: VectorRetriever):
     """Create a retrieve node bound to the given VectorRetriever."""
 
     async def retrieve_node(state: RagState) -> dict:
-        retriever.team_ids = state["team_ids"]
+        scoped_retriever = retriever.model_copy(update={
+            "team_ids": state["team_ids"],
+            "exclude_ids": state.get("excluded_doc_ids", []),
+        })
 
         search_query = " ".join(state["keywords"]) if state["keywords"] else state["query"]
-        docs = await retriever.ainvoke(search_query)
+        docs = await scoped_retriever.ainvoke(search_query)
 
         return {
             "documents": docs,

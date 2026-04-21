@@ -93,6 +93,8 @@ async def run_rag(
         "result": "",
         "team_ids": team_ids,
         "retry_count": 0,
+        "evaluation": "",
+        "excluded_doc_ids": [],
         "messages": [],
     })
 

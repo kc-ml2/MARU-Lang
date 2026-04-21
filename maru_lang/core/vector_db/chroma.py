@@ -1,5 +1,8 @@
+import logging
 import chromadb
 from typing import Any
+
+logger = logging.getLogger(__name__)
 from chromadb.api.models.Collection import Collection
 from langchain_core.documents import Document
 from maru_lang.constants import CHROMA_MAX_BATCH_SIZE
@@ -15,8 +18,18 @@ class ChromaVectorDB(VectorDB):
         self.persist_dir: str = persist_dir
         self.client = chromadb.PersistentClient(path=persist_dir)
         self.collection: Collection = self.client.get_or_create_collection(
-            name=collection_name
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"},
         )
+
+        # 기존 collection이 L2로 생성된 경우 경고
+        space = (self.collection.metadata or {}).get("hnsw:space", "l2")
+        if space != "cosine":
+            logger.warning(
+                f"Collection '{collection_name}' uses '{space}' distance (not cosine). "
+                f"Scores may be inaccurate. Re-ingest documents to fix: "
+                f"drop the collection and re-upload."
+            )
 
     def drop_collection(self) -> None:
         """
@@ -122,7 +135,7 @@ class ChromaVectorDB(VectorDB):
             return len(chunk_ids)
 
         except Exception as e:
-            print(f"Failed to delete document chunks from VectorDB: {e}")
+            logger.error(f"Failed to delete document chunks from VectorDB: {e}")
             return 0
 
     def upsert_documents(
@@ -248,11 +261,13 @@ class ChromaVectorDB(VectorDB):
         if not team_ids:
             return []
 
+        exclude_ids = set(kwargs.get("exclude_ids", []))
         filter_where = {"team_id": {"$in": team_ids}}
+        fetch_k = k + len(exclude_ids) if exclude_ids else k
 
         results = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=k,
+            n_results=fetch_k,
             where=filter_where
         )
 
@@ -268,7 +283,8 @@ class ChromaVectorDB(VectorDB):
                 metadata={**metadata, "score": 1 - distance}
             )
             for doc_id, doc, metadata, distance in zip(ids, docs, metadatas, distances)
-        ]
+            if doc_id not in exclude_ids
+        ][:k]
 
     def hybrid_search(
         self,

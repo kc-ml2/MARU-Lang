@@ -13,4 +13,6 @@ class RagState(TypedDict):
     result: str                                         # Formatted output string
     team_ids: list[int]                                 # Access control
     retry_count: int                                    # Retry count (max 2)
+    evaluation: str                                     # "pass", "fail", or "max_retry"
+    excluded_doc_ids: Annotated[list[str], operator.add]  # IDs to exclude on retry
     messages: Annotated[list[str], operator.add]        # Progress log
