@@ -72,8 +72,7 @@ def get_config() -> MaruConfig:
 
     if config_path.exists():
         # Fail closed: if the file exists but we cannot read/parse it, propagate
-        # the error instead of silently falling back to insecure defaults. The
-        # "file missing" path below is the only sanctioned fallback.
+        # the error instead of silently falling back to insecure defaults.
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         data = _substitute_env_vars(data)
@@ -87,6 +86,16 @@ def get_config() -> MaruConfig:
 
         _config = candidate
     else:
+        # Fail closed in production context: a missing config file must not
+        # silently bootstrap an insecure default (production=False) — that
+        # would bypass `_validate_auth_security` and run with empty secrets.
+        # Opt-in via `MARU_PRODUCTION=1` (set by the deployment/runtime env).
+        if os.getenv("MARU_PRODUCTION") == "1":
+            raise FileNotFoundError(
+                f"MARU_PRODUCTION=1 but maru_config.yaml not found at {config_path}. "
+                "Refusing to start with insecure defaults. "
+                "Run `maru install` or mount the config before startup."
+            )
         logger.info("No maru_config.yaml found, using defaults")
         _config = MaruConfig()
 
