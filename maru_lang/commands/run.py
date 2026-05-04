@@ -245,6 +245,23 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                     await _api_llms(base_url)
                     continue
 
+                elif cmd == "/function":
+                    func_value = args.strip() or None
+                    if func_value in ("off", "none"):
+                        func_value = None
+                    await ws.send(json.dumps({"type": "configure", "function": func_value}))
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                        msg = json.loads(raw)
+                        if msg.get("type") == "configured":
+                            status = f"[green]{func_value} 활성화[/green]" if func_value else "[green]비활성화[/green]"
+                            console.print(f"Function {status}")
+                        else:
+                            console.print(f"[red]Configure failed: {msg}[/red]")
+                    except asyncio.TimeoutError:
+                        console.print("[red]Configure timeout[/red]")
+                    continue
+
                 else:
                     console.print(f"[red]Unknown command: {cmd}[/red]")
                     console.print("[dim]Type /help for available commands[/dim]")
@@ -266,42 +283,63 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                     break
                 await ws.send(json.dumps({"type": "message", "content": stripped}))
 
-            # Receive streamed response
-            console.print("\n[bold green]Assistant:[/bold green]")
-            answer = ""
+            # Receive streamed response (re-enters on interrupt)
             got_error = False
+            while True:
+                console.print("\n[bold green]Assistant:[/bold green]")
+                answer = ""
+                interrupted = False
+                interrupt_content = None
 
-            with Live(console=console, refresh_per_second=10) as live:
-                while True:
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=120)
-                        msg = json.loads(raw)
-                    except asyncio.TimeoutError:
-                        console.print("[red]Response timeout.[/red]")
-                        got_error = True
-                        break
-                    except Exception:
-                        break
+                with Live(console=console, refresh_per_second=10) as live:
+                    while True:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=120)
+                            msg = json.loads(raw)
+                        except asyncio.TimeoutError:
+                            console.print("[red]Response timeout.[/red]")
+                            got_error = True
+                            break
+                        except Exception:
+                            break
 
-                    msg_type = msg.get("type")
+                        msg_type = msg.get("type")
 
-                    if msg_type == "stream":
-                        answer += msg.get("content", "")
-                        live.update(Markdown(answer))
-                    elif msg_type == "thinking":
-                        live.update("[dim]Thinking...[/dim]")
-                    elif msg_type == "retrieve":
-                        docs = msg.get("documents", [])
-                        if docs:
-                            names = [f"[dim]{d.get('document_name', '?')}[/dim]" for d in docs]
-                            live.update(f"[cyan]Retrieved {len(docs)} docs:[/cyan] {', '.join(names)}")
-                    elif msg_type == "complete":
-                        break
-                    elif msg_type == "error":
-                        live.update("")
-                        console.print(f"[red]Error: {msg.get('content', 'Unknown')}[/red]")
-                        got_error = True
-                        break
+                        if msg_type == "stream":
+                            answer += msg.get("content", "")
+                            live.update(Markdown(answer))
+                        elif msg_type == "thinking":
+                            live.update("[dim]Thinking...[/dim]")
+                        elif msg_type == "retrieve":
+                            docs = msg.get("documents", [])
+                            if docs:
+                                names = [f"[dim]{d.get('document_name', '?')}[/dim]" for d in docs]
+                                live.update(f"[cyan]Retrieved {len(docs)} docs:[/cyan] {', '.join(names)}")
+                        elif msg_type == "complete":
+                            break
+                        elif msg_type == "interrupt":
+                            interrupted = True
+                            interrupt_content = msg.get("content")
+                            break
+                        elif msg_type == "error":
+                            live.update("")
+                            console.print(f"[red]Error: {msg.get('content', 'Unknown')}[/red]")
+                            got_error = True
+                            break
+
+                if got_error or not interrupted:
+                    break
+
+                interrupt_type = interrupt_content.get("type", "") if isinstance(interrupt_content, dict) else ""
+                in_feedback = interrupt_type in ("feedback_score", "feedback_reason")
+                if interrupt_type == "feedback_score":
+                    console.print()
+                    feedback = Prompt.ask("[bold cyan]방금 답변에 점수를 매겨주세요 (1-5점)[/bold cyan]")
+                elif interrupt_type == "feedback_reason":
+                    feedback = Prompt.ask("[bold yellow]이유를 알려주세요[/bold yellow]")
+                else:
+                    feedback = Prompt.ask("[bold]입력해주세요[/bold]")
+                await ws.send(json.dumps({"type": "resume", "content": feedback}))
 
             if not answer and not got_error:
                 console.print("[dim]No response received.[/dim]")
@@ -323,6 +361,7 @@ def _print_help():
         "  [yellow]/ingest[/yellow] <path>      — Ingest files via API (uses current team)\n"
         "  [yellow]/status[/yellow]             — Show document status via API\n"
         "  [yellow]/llms[/yellow]               — Show available LLM models\n"
+        "  [yellow]/function[/yellow] <name>|off  — Enable/disable feedback collection mode\n"
         "  [yellow]/help[/yellow]               — Show this help\n"
         "  [yellow]/quit[/yellow]               — Exit and stop server"
     )

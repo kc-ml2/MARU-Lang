@@ -7,12 +7,13 @@ from typing import AsyncIterator
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, AIMessageChunk
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, END
-
+from langgraph.types import Command
 from maru_lang.configs import get_config
 from maru_lang.core.llm import get_model_with_fallbacks
 from maru_lang.graph.chat.state import ChatState
-from maru_lang.graph.chat.nodes import make_agent_node, make_tools_node
+from maru_lang.graph.chat.nodes import make_agent_node, make_tools_node, score_node, score_route, make_reason_node
 from maru_lang.configs.models import MaruConfig
 from maru_lang.core.llm.client import create_chat_model
 from maru_lang.graph.rag.retriever import VectorRetriever
@@ -21,10 +22,12 @@ from maru_lang.graph.chat.tools import create_knowledge_search_tool
 
 
 def _should_continue(state: ChatState) -> str:
-    """Route to tools node if tool_calls exist, otherwise END."""
+    """Route to tools, feedback score, or END based on state."""
     last_message = state["messages"][-1]
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
+    if state.get("function") == "feedback":
+        return "score"
     return END
 
 
@@ -106,28 +109,39 @@ def create_chat_graph(
     graph = StateGraph(ChatState)
     graph.add_node("agent", make_agent_node(model_with_tools, system_prompt=cfg.system_prompt))
     graph.add_node("tools", make_tools_node(tools))
+    graph.add_node("score", score_node)
+    graph.add_node("reason", make_reason_node(model))
 
     graph.set_entry_point("agent")
-    graph.add_conditional_edges("agent", _should_continue, {"tools": "tools", END: END})
+    graph.add_conditional_edges(
+        "agent", _should_continue,
+        {"tools": "tools", "score": "score", END: END},
+    )
     graph.add_edge("tools", "agent")
+    graph.add_conditional_edges(
+        "score", score_route,
+        {"reason": "reason", END: END},
+    )
+    graph.add_edge("reason", END)
 
-    compile_kwargs = {}
-    if checkpointer is not None:
-        compile_kwargs["checkpointer"] = checkpointer
+    if checkpointer is None:
+        checkpointer = MemorySaver()
 
-    return graph.compile(**compile_kwargs)
+    return graph.compile(checkpointer=checkpointer)
 
 
 def _build_chat_input(
     message: str,
     team_ids: list[int],
     team_names: list[str],
+    function: str | None = None,
 ) -> ChatState:
     """Build the initial state dict for the chat graph."""
     return {
         "messages": [HumanMessage(content=message)],
         "team_ids": team_ids,
         "team_names": team_names,
+        "function": function,
     }
 
 
@@ -138,20 +152,22 @@ async def run_chat(
     *,
     graph,
     config: dict | None = None,
+    function: str | None = None,
 ) -> str:
     """Run the chat graph and return a single response."""
-    input_state = _build_chat_input(message, team_ids, team_names)
+    input_state = _build_chat_input(message, team_ids, team_names, function=function)
     result = await graph.ainvoke(input_state, config=config)
     return result["messages"][-1].content
 
 
 async def stream_chat(
-    message: str,
+    message,
     team_ids: list[int],
     team_names: list[str],
     *,
     graph,
     config: dict | None = None,
+    function: str | None = None,
 ) -> AsyncIterator[tuple[str, str | list]]:
     """Stream the chat graph execution.
 
@@ -160,8 +176,16 @@ async def stream_chat(
         - ("token", str): LLM token chunk.
         - ("tool_result", str): Tool call result text.
         - ("retrieve", list[dict]): Retrieved document metadata.
+        - ("interrupt", value): Graph interrupted, awaiting resume.
+
+    Args:
+        message: User message string, or Command(resume=value) to resume.
     """
-    input_state = _build_chat_input(message, team_ids, team_names)
+
+    if isinstance(message, Command):
+        input_state = message
+    else:
+        input_state = _build_chat_input(message, team_ids, team_names, function=function)
 
     async for mode, event in graph.astream(
         input_state,
@@ -176,6 +200,15 @@ async def stream_chat(
                 yield "tool_result", msg.content if hasattr(msg, "content") else ""
         elif mode == "updates":
             for node_name, state_update in event.items():
+                if not isinstance(state_update, dict):
+                    continue
                 docs = state_update.get("retrieved_documents")
                 if docs:
                     yield "retrieve", docs
+
+    # 스트리밍 종료 후 interrupt 여부 확인
+    snapshot = await graph.aget_state(config)
+    for task in snapshot.tasks:
+        if task.interrupts:
+            yield "interrupt", task.interrupts[0].value
+            break
