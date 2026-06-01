@@ -18,7 +18,6 @@ from maru_lang.schemas.auth import (
 from maru_lang.dependencies.email import get_email_service_dependency, EmailService
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Response, Request, Query
-from maru_lang.enums.auth import UserRoleCode
 from maru_lang.configs import get_config
 from maru_lang.dependencies.auth import get_user
 

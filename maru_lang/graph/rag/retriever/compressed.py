@@ -9,7 +9,6 @@ from langchain_core.callbacks import CallbackManagerForRetrieverRun, AsyncCallba
 from langchain_core.documents import Document
 from langchain_core.documents.compressor import BaseDocumentCompressor
 from langchain_core.retrievers import BaseRetriever
-from pydantic import Field
 
 
 class CompressedRetriever(BaseRetriever):

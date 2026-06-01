@@ -24,7 +24,7 @@ class Team(Model):
     manager = fields.ForeignKeyField(
         "models.User",
         related_name="managed_teams",
-        on_delete=fields.RESTRICT  # Prevents User deletion if managing UserGroups
+        on_delete=fields.RESTRICT  # Prevents User deletion if managing Teams
     )
     is_private = fields.BooleanField(default=False)
     created_at = fields.DatetimeField(auto_now_add=True)

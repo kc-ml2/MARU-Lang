@@ -1,7 +1,7 @@
 """Ingest API schemas."""
 from typing import Optional
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class FileInfo(BaseModel):

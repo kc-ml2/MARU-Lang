@@ -2,7 +2,6 @@
 Remove 명령어: DocumentGroup 및 관련 데이터 삭제
 """
 import typer
-from typing import List
 
 from maru_lang.core.relation_db.models.documents import (
     DocumentGroup,

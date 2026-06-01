@@ -1,7 +1,7 @@
 """Status command - show DB and VectorDB state."""
 import typer
 
-from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
+from maru_lang.core.relation_db.models.documents import Document
 from maru_lang.core.relation_db.models.auth import Team
 from maru_lang.enums.documents import DocumentStatus
 

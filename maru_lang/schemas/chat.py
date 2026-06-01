@@ -1,7 +1,6 @@
-from typing import Any
-from typing import List, Optional
+from typing import Optional
 from datetime import datetime
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 class DocumentReference(BaseModel):
@@ -33,6 +32,9 @@ class ConversationResponse(BaseModel):
     question: str
     answer: str
     created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 # ============ WebSocket Messages (Client -> Server) ============

@@ -1,7 +1,7 @@
 """LLM Client - LangChain BaseChatModel 팩토리 및 관리"""
 from __future__ import annotations
 
-from typing import Any, Optional, Union
+from typing import Any, Union
 
 from langchain_core.language_models import BaseChatModel
 

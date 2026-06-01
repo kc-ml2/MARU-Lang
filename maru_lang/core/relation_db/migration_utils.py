@@ -3,7 +3,6 @@ Migration utilities for automatic database migrations.
 """
 import asyncio
 from pathlib import Path
-from typing import Optional
 from aerich import Command
 from maru_lang.configs import get_config
 

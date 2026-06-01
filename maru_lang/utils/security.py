@@ -43,5 +43,5 @@ def decode_token(token: str) -> dict | None:
             config.auth.secret_key,
             algorithms=[config.auth.algorithm])
         return payload
-    except Exception as e:
+    except Exception:
         return None

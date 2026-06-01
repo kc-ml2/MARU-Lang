@@ -1,7 +1,6 @@
 """Installation command - initialize project with config and main.py."""
 from pathlib import Path
 from typing import Optional
-import typer
 from rich.console import Console
 
 console = Console()

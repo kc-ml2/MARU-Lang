@@ -1,6 +1,5 @@
 import random
 import secrets
-from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 from maru_lang.configs import get_config
 from maru_lang.dependencies.email import EmailService
@@ -30,7 +29,7 @@ async def create_or_get_user(email: str) -> User:
         return user
     try:
         name = email.split('@')[0]
-    except Exception as e:
+    except Exception:
         name = None
 
     editor_role, _ = await UserRole.get_or_create(
