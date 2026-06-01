@@ -32,7 +32,7 @@ def make_evaluate_node(method: str = "rule", llm: Optional[BaseChatModel] = None
             logger.debug(msg)
             return {
                 "evaluation": "max_retry",
-                "messages": [msg],
+                "rag_log": state.get("rag_log", []) + [msg],
             }
 
         if not docs:
@@ -41,8 +41,8 @@ def make_evaluate_node(method: str = "rule", llm: Optional[BaseChatModel] = None
             return {
                 "evaluation": "fail",
                 "retry_count": retry + 1,
-                "excluded_doc_ids": [],
-                "messages": [msg],
+                "excluded_doc_ids": state.get("excluded_doc_ids", []),
+                "rag_log": state.get("rag_log", []) + [msg],
             }
 
         if method == "llm" and llm is not None:
@@ -57,8 +57,8 @@ def make_evaluate_node(method: str = "rule", llm: Optional[BaseChatModel] = None
             return {
                 "evaluation": "fail",
                 "retry_count": retry + 1,
-                "excluded_doc_ids": current_doc_ids,
-                "messages": [msg],
+                "excluded_doc_ids": state.get("excluded_doc_ids", []) + current_doc_ids,
+                "rag_log": state.get("rag_log", []) + [msg],
             }
 
         # pass
@@ -69,7 +69,7 @@ def make_evaluate_node(method: str = "rule", llm: Optional[BaseChatModel] = None
         logger.debug("Doc scores: %s", [round(d.metadata.get("score", 0), 3) for d in docs])
         return {
             "evaluation": "pass",
-            "messages": [msg],
+            "rag_log": state.get("rag_log", []) + [msg],
         }
 
     return evaluate_node

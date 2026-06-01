@@ -26,13 +26,13 @@ def make_keyword_node(llm: BaseChatModel):
 
             return {
                 "keywords": keywords,
-                "messages": [f"Keywords: {' '.join(keywords)}"],
+                "rag_log": state.get("rag_log", []) + [f"Keywords: {' '.join(keywords)}"],
             }
         except Exception:
             # Fallback: split the query
             return {
                 "keywords": query.split()[:5],
-                "messages": ["Keyword extraction fallback"],
+                "rag_log": state.get("rag_log", []) + ["Keyword extraction fallback"],
             }
 
     return keyword_node

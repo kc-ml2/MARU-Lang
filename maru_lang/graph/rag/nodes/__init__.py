@@ -4,6 +4,9 @@ from maru_lang.graph.rag.nodes.retrieve import make_retrieve_node
 from maru_lang.graph.rag.nodes.evaluate import make_evaluate_node, evaluate_route
 from maru_lang.graph.rag.nodes.rerank import make_rerank_node
 from maru_lang.graph.rag.nodes.format import format_node
+from maru_lang.graph.rag.nodes.agent import make_agent_node
+from maru_lang.graph.rag.nodes.feedback import score_node, score_route, make_reason_node
+from maru_lang.graph.rag.nodes.search import make_search_entry_node, make_search_result_node
 
 __all__ = [
     "make_intent_node",
@@ -13,4 +16,10 @@ __all__ = [
     "evaluate_route",
     "make_rerank_node",
     "format_node",
+    "make_agent_node",
+    "score_node",
+    "score_route",
+    "make_reason_node",
+    "make_search_entry_node",
+    "make_search_result_node",
 ]

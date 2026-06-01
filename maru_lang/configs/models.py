@@ -85,6 +85,9 @@ class MaruConfig:
     smtp: SMTPConfig = field(default_factory=SMTPConfig)
     vector_db_url: str = "chroma://data/chroma/maru"
     storage_dir: str = "data/storage"
+    # LangGraph checkpointer. If None, derived from database_url
+    # (sqlite -> sibling "<db>.checkpoints" file; postgres -> same DB, separate tables).
+    checkpoint_db_url: Optional[str] = None
 
     # LLMs
     llms: list[LLMConfig] = field(default_factory=list)
@@ -176,6 +179,7 @@ class MaruConfig:
             smtp=smtp,
             vector_db_url=data.get("vector_db_url", cls.vector_db_url),
             storage_dir=data.get("storage_dir", cls.storage_dir),
+            checkpoint_db_url=data.get("checkpoint_db_url"),
             llms=llms,
             embedding_model=data.get("embedding_model", cls.embedding_model),
             embedding_device=data.get("embedding_device"),
@@ -199,6 +203,47 @@ class MaruConfig:
             db_path = Path.cwd() / self.database_url[10:]
             return f"sqlite:///{db_path.absolute()}"
         return self.database_url
+
+    def resolve_checkpoint_target(self) -> tuple[str, str]:
+        """Resolve the LangGraph checkpointer target.
+
+        Returns:
+            (scheme, target) where scheme is "sqlite" or "postgres".
+            - sqlite: target is an absolute filesystem path (no URL scheme).
+            - postgres: target is a libpq/psycopg connection URI.
+
+        Resolution order:
+            1. Explicit `checkpoint_db_url` if set.
+            2. Otherwise derived from `database_url`:
+               - sqlite -> a sibling "<db>.checkpoints" file (separate file to
+                 avoid single-writer lock contention with the relational DB).
+               - postgres -> the same database URL (separate checkpoint tables).
+        """
+        source = self.checkpoint_db_url or self.database_url
+        source_abs = source
+        if source.startswith("sqlite:///"):
+            # Reuse absolute-path resolution logic for relative sqlite paths.
+            raw = source[10:]
+            if not Path(raw).is_absolute():
+                raw = str((Path.cwd() / raw).absolute())
+            source_abs = f"sqlite:///{raw}"
+
+        if source_abs.startswith("sqlite"):
+            # Strip scheme -> filesystem path. AsyncSqliteSaver wants a path.
+            path = source_abs[len("sqlite:///"):] if source_abs.startswith("sqlite:///") else source_abs.split("://", 1)[-1]
+            if path in (":memory:", ""):
+                return "sqlite", ":memory:"
+            if self.checkpoint_db_url is None:
+                # Derive a sibling file so the saver never shares the relational DB file.
+                p = Path(path)
+                path = str(p.with_suffix(p.suffix + ".checkpoints") if p.suffix else p.with_name(p.name + ".checkpoints"))
+            return "sqlite", path
+
+        # postgres / postgresql -> normalize scheme for psycopg.
+        uri = source_abs
+        if uri.startswith("postgres://"):
+            uri = "postgresql://" + uri[len("postgres://"):]
+        return "postgres", uri
 
     def parse_vector_db_url(self) -> tuple[str, str, str]:
         """Parse vector_db_url into (scheme, path, name).

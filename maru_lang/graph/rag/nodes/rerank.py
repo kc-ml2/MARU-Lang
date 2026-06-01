@@ -18,9 +18,9 @@ def make_rerank_node(compressor: Optional[BaseDocumentCompressor]):
             ))
             return {
                 "documents": docs,
-                "messages": [f"Reranked: {len(docs)} documents"],
+                "rag_log": state.get("rag_log", []) + [f"Reranked: {len(docs)} documents"],
             }
 
-        return {"messages": ["Rerank skipped (no compressor)"]}
+        return {"rag_log": state.get("rag_log", []) + ["Rerank skipped (no compressor)"]}
 
     return rerank_node

@@ -1,4 +1,4 @@
-"""LangGraph ReAct chat graph tests
+"""Unified RAG + ReAct agent graph tests.
 
 Run:
   # Unit tests (no API key needed)
@@ -23,8 +23,8 @@ if "maru_lang" not in sys.modules:
 
 
 from maru_lang.configs.models import MaruConfig, LLMConfig
-from maru_lang.graph.chat.state import ChatState
-from maru_lang.graph.chat.graph import create_chat_graph, _build_retriever_and_compressor
+from maru_lang.graph.rag.state import RagState
+from maru_lang.graph.rag.graph import create_rag_graph, _build_retriever_and_compressor
 from maru_lang.graph.rag.retriever import VectorRetriever
 
 # ─── Unit Tests (no API key needed) ─────────────────────────
@@ -32,45 +32,54 @@ from maru_lang.graph.rag.retriever import VectorRetriever
 
 class TestState:
     def test_state_has_required_keys(self):
-        keys = list(ChatState.__annotations__.keys())
+        keys = list(RagState.__annotations__.keys())
         assert "messages" in keys
         assert "team_ids" in keys
         assert "retrieved_documents" in keys
+        # rag pipeline fields merged in
+        assert "documents" in keys
+        assert "rag_log" in keys  # renamed from the old rag `messages` progress log
 
     def test_state_messages_has_reducer(self):
         from typing import get_type_hints
-        hints = get_type_hints(ChatState, include_extras=True)
+        hints = get_type_hints(RagState, include_extras=True)
         assert hasattr(hints["messages"], "__metadata__")
 
 
 class TestGraphCompilation:
     @staticmethod
     def _make_graph():
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
         from langchain_core.language_models import BaseChatModel
-        from langchain_core.tools import tool
 
         mock_model = MagicMock(spec=BaseChatModel)
         mock_model.bind_tools = MagicMock(return_value=mock_model)
 
-        @tool
-        def dummy_tool(query: str) -> str:
-            """Dummy tool for testing."""
-            return "ok"
-
-        return create_chat_graph(mock_model, tools=[dummy_tool])
+        # Avoid loading real embeddings/reranker when compiling.
+        with patch(
+            "maru_lang.graph.rag.graph._build_retriever_and_compressor",
+            return_value=(MagicMock(), None),
+        ):
+            return create_rag_graph(mock_model)
 
     def test_graph_compiles_with_mock_model(self):
         compiled = self._make_graph()
         nodes = list(compiled.get_graph().nodes.keys())
+        # agent + search plumbing + rag pipeline nodes all in one graph
         assert "agent" in nodes
-        assert "tools" in nodes
+        assert "search_entry" in nodes
+        assert "search_result" in nodes
+        assert "intent" in nodes
+        assert "evaluate" in nodes
+        # no separate ToolNode anymore
+        assert "tools" not in nodes
 
     def test_graph_has_correct_edges(self):
         compiled = self._make_graph()
         edge_strs = str(compiled.get_graph().edges)
         assert "agent" in edge_strs
-        assert "tools" in edge_strs
+        assert "search_entry" in edge_strs
+        assert "search_result" in edge_strs
 
 
 class TestBuildRetriever:
@@ -111,7 +120,7 @@ class TestBuildRetriever:
         from langchain_core.language_models import BaseChatModel
 
         mock_llm = MagicMock(spec=BaseChatModel)
-        with patch("maru_lang.graph.chat.graph.create_chat_model", return_value=mock_llm):
+        with patch("maru_lang.graph.rag.graph.create_chat_model", return_value=mock_llm):
             cfg = MaruConfig(
                 reranker_enabled=True,
                 reranker_type="llm",
@@ -134,7 +143,7 @@ class TestBuildRetriever:
         from langchain_core.language_models import BaseChatModel
 
         mock_llm = MagicMock(spec=BaseChatModel)
-        with patch("maru_lang.graph.chat.graph.create_chat_model", return_value=mock_llm):
+        with patch("maru_lang.graph.rag.graph.create_chat_model", return_value=mock_llm):
             cfg = MaruConfig(
                 reranker_enabled=True,
                 reranker_type="llm",
@@ -157,18 +166,14 @@ class TestBuildRetriever:
             _build_retriever_and_compressor(cfg)
 
     def test_retriever_inherits_config_values(self):
-        from unittest.mock import patch, MagicMock
-
-        mock_embeddings = MagicMock()
-        with patch("maru_lang.graph.rag.retriever.vector.get_embeddings", return_value=mock_embeddings):
-            cfg = MaruConfig(
-                retriever_top_k=10,
-                embedding_model="custom/model",
-                reranker_enabled=False,
-            )
-            retriever, compressor = _build_retriever_and_compressor(cfg)
-            assert isinstance(retriever, VectorRetriever)
-            assert retriever.top_k == 10
+        cfg = MaruConfig(
+            retriever_top_k=10,
+            embedding_model="custom/model",
+            reranker_enabled=False,
+        )
+        retriever, compressor = _build_retriever_and_compressor(cfg)
+        assert isinstance(retriever, VectorRetriever)
+        assert retriever.top_k == 10
 
 
 # ─── Integration Tests (API key required) ───────────────────
@@ -199,7 +204,7 @@ class TestOpenAIIntegration:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.graph = create_chat_graph(_get_openai_model())
+        self.graph = create_rag_graph(_get_openai_model())
         self.config = {"configurable": {"thread_id": "test-openai-1"}}
 
     @pytest.mark.asyncio
@@ -232,7 +237,7 @@ class TestAnthropicIntegration:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.graph = create_chat_graph(_get_anthropic_model())
+        self.graph = create_rag_graph(_get_anthropic_model())
         self.config = {"configurable": {"thread_id": "test-anthropic-1"}}
 
     @pytest.mark.asyncio
@@ -249,32 +254,30 @@ class TestAnthropicIntegration:
 
 
 class TestShouldContinue:
-    def test_returns_tools_when_tool_calls_exist(self):
+    def test_returns_search_entry_when_tool_calls_exist(self):
         from langchain_core.messages import AIMessage
-        from langgraph.graph import END
-        from maru_lang.graph.chat.graph import _should_continue
+        from maru_lang.graph.rag.graph import _should_continue
 
-        msg = AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "1"}])
+        msg = AIMessage(content="", tool_calls=[{"name": "knowledge_search", "args": {"query": "q"}, "id": "1"}])
         state = {"messages": [msg], "team_ids": [], "team_names": []}
-        assert _should_continue(state) == "tools"
+        assert _should_continue(state) == "search_entry"
 
     def test_returns_end_when_no_tool_calls(self):
         from langchain_core.messages import AIMessage
         from langgraph.graph import END
-        from maru_lang.graph.chat.graph import _should_continue
+        from maru_lang.graph.rag.graph import _should_continue
 
         msg = AIMessage(content="answer")
         state = {"messages": [msg], "team_ids": [], "team_names": []}
         assert _should_continue(state) == END
 
-    def test_returns_end_when_tool_calls_empty_list(self):
+    def test_returns_score_when_feedback_mode(self):
         from langchain_core.messages import AIMessage
-        from langgraph.graph import END
-        from maru_lang.graph.chat.graph import _should_continue
+        from maru_lang.graph.rag.graph import _should_continue
 
-        msg = AIMessage(content="answer", tool_calls=[])
-        state = {"messages": [msg], "team_ids": [], "team_names": []}
-        assert _should_continue(state) == END
+        msg = AIMessage(content="answer")
+        state = {"messages": [msg], "team_ids": [], "function": "feedback"}
+        assert _should_continue(state) == "score"
 
 
 class TestMakeAgentNode:
@@ -283,7 +286,7 @@ class TestMakeAgentNode:
         from unittest.mock import AsyncMock, MagicMock
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
         from langchain_core.language_models import BaseChatModel
-        from maru_lang.graph.chat.nodes import make_agent_node
+        from maru_lang.graph.rag.nodes.agent import make_agent_node
         from maru_lang.constants import SYSTEM_PROMPT
 
         mock_model = MagicMock(spec=BaseChatModel)
@@ -306,7 +309,7 @@ class TestMakeAgentNode:
         from unittest.mock import AsyncMock, MagicMock
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
         from langchain_core.language_models import BaseChatModel
-        from maru_lang.graph.chat.nodes import make_agent_node
+        from maru_lang.graph.rag.nodes.agent import make_agent_node
 
         mock_model = MagicMock(spec=BaseChatModel)
         mock_model.ainvoke = AsyncMock(return_value=AIMessage(content="response"))
@@ -327,87 +330,56 @@ class TestMakeAgentNode:
         assert len(system_messages) == 1
         assert system_messages[0].content == "existing system"
 
-class TestMakeToolsNode:
+
+class TestSearchEntryNode:
     @pytest.mark.asyncio
-    async def test_extracts_retrieved_documents_from_tool_message(self):
-        from unittest.mock import AsyncMock, patch, MagicMock
-        from langchain_core.messages import ToolMessage, AIMessage
-        from maru_lang.graph.chat.nodes import make_tools_node
+    async def test_extracts_query_and_id_and_resets(self):
+        from langchain_core.messages import AIMessage
+        from maru_lang.graph.rag.nodes.search import make_search_entry_node
 
-        doc_json = '[{"doc_id": "1", "title": "test"}]'
-        tool_content = f"some result <!-- retrieved_documents:{doc_json} -->"
-        tool_msg = ToolMessage(content=tool_content, tool_call_id="call_1")
+        node = make_search_entry_node()
+        msg = AIMessage(
+            content="",
+            tool_calls=[{"name": "knowledge_search", "args": {"query": "물어볼것"}, "id": "call_9"}],
+        )
+        # Carry stale rag fields to confirm reset
+        state = {"messages": [msg], "team_ids": [1], "retry_count": 2,
+                 "excluded_doc_ids": ["x"], "rag_log": ["old"]}
+        result = await node(state)
 
-        mock_tool_node = MagicMock()
-        mock_tool_node.ainvoke = AsyncMock(return_value={"messages": [tool_msg]})
+        assert result["query"] == "물어볼것"
+        assert result["tool_call_id"] == "call_9"
+        assert result["retry_count"] == 0
+        assert result["excluded_doc_ids"] == []
+        assert result["rag_log"] == []
+        assert result["documents"] == []
 
-        with patch("maru_lang.graph.chat.nodes.ToolNode", return_value=mock_tool_node):
-            node = make_tools_node([])
-            state = {
-                "messages": [AIMessage(content="", tool_calls=[{"name": "knowledge_search", "args": {}, "id": "call_1"}])],
-                "team_ids": [],
-                "team_names": [],
-            }
-            result = await node(state)
 
-        assert "retrieved_documents" in result
-        assert result["retrieved_documents"][0]["doc_id"] == "1"
-
+class TestSearchResultNode:
     @pytest.mark.asyncio
-    async def test_strips_metadata_trailer_from_content(self):
-        from unittest.mock import AsyncMock, patch, MagicMock
-        from langchain_core.messages import ToolMessage, AIMessage
-        from maru_lang.graph.chat.nodes import make_tools_node
+    async def test_builds_tool_message_and_sets_documents(self):
+        from langchain_core.documents import Document
+        from langchain_core.messages import ToolMessage
+        from maru_lang.graph.rag.nodes.search import make_search_result_node
 
-        doc_json = '[{"doc_id": "2"}]'
-        tool_content = f"visible result <!-- retrieved_documents:{doc_json} -->"
-        tool_msg = ToolMessage(content=tool_content, tool_call_id="call_2")
+        node = make_search_result_node()
+        doc = Document(page_content="본문", metadata={"document_id": "d1", "score": 0.5})
+        state = {"result": "formatted", "tool_call_id": "call_7", "documents": [doc]}
+        result = await node(state)
 
-        mock_tool_node = MagicMock()
-        mock_tool_node.ainvoke = AsyncMock(return_value={"messages": [tool_msg]})
+        msg = result["messages"][0]
+        assert isinstance(msg, ToolMessage)
+        assert msg.tool_call_id == "call_7"
+        assert msg.content == "formatted"
+        assert result["retrieved_documents"][0]["document_id"] == "d1"
+        assert result["retrieved_documents"][0]["score"] == 0.5
 
-        with patch("maru_lang.graph.chat.nodes.ToolNode", return_value=mock_tool_node):
-            node = make_tools_node([])
-            state = {
-                "messages": [AIMessage(content="", tool_calls=[{"name": "knowledge_search", "args": {}, "id": "call_2"}])],
-                "team_ids": [],
-                "team_names": [],
-            }
-            result = await node(state)
 
-        returned_msg = result["messages"][0]
-        assert "<!-- retrieved_documents:" not in returned_msg.content
-        assert "visible result" in returned_msg.content
-
-    @pytest.mark.asyncio
-    async def test_graceful_on_invalid_json(self):
-        from unittest.mock import AsyncMock, patch, MagicMock
-        from langchain_core.messages import ToolMessage, AIMessage
-        from maru_lang.graph.chat.nodes import make_tools_node
-
-        tool_content = "result <!-- retrieved_documents:not_json -->"
-        tool_msg = ToolMessage(content=tool_content, tool_call_id="call_3")
-
-        mock_tool_node = MagicMock()
-        mock_tool_node.ainvoke = AsyncMock(return_value={"messages": [tool_msg]})
-
-        with patch("maru_lang.graph.chat.nodes.ToolNode", return_value=mock_tool_node):
-            node = make_tools_node([])
-            state = {
-                "messages": [AIMessage(content="", tool_calls=[{"name": "knowledge_search", "args": {}, "id": "call_3"}])],
-                "team_ids": [],
-                "team_names": [],
-            }
-            # Should not raise
-            result = await node(state)
-
-        assert "retrieved_documents" not in result
-
-class TestCreateChatGraphAutoModel:
+class TestCreateRagGraphAutoModel:
     def test_raises_when_no_model_available(self):
         from unittest.mock import patch
-        from maru_lang.graph.chat.graph import create_chat_graph
+        from maru_lang.graph.rag.graph import create_rag_graph
 
-        with patch("maru_lang.graph.chat.graph.get_model_with_fallbacks", return_value=None):
+        with patch("maru_lang.graph.rag.graph.get_model_with_fallbacks", return_value=None):
             with pytest.raises(RuntimeError, match="No LLM model available"):
-                create_chat_graph()
+                create_rag_graph()

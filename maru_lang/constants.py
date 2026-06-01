@@ -1,5 +1,4 @@
 """Project-wide constants."""
-import re
 
 # --- Ingest ---
 
@@ -88,8 +87,3 @@ Search internal team documents and answer user questions based on accurate infor
 2. Answer based on document search results. Honestly say you don't know if no results are found.
 3. Respond in Korean.
 """
-
-# --- Retrieved Documents Metadata ---
-
-RETRIEVED_DOCS_TAG = "retrieved_documents"
-RETRIEVED_DOCS_PATTERN = re.compile(rf"<!-- {RETRIEVED_DOCS_TAG}:(.*?) -->")

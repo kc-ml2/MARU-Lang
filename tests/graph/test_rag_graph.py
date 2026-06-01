@@ -25,39 +25,82 @@ def _make_mock_retriever(ainvoke_return=None):
     return retriever
 
 
+def _make_rag_chain_graph(retriever, llm, method="rule", compressor=None):
+    """Build a standalone RAG-pipeline graph from the node factories.
+
+    Mirrors the retrieval portion of the merged graph (intent → keywords →
+    retrieve → evaluate → rerank → format with the retry loop), without the
+    agent, so the retry behaviour can be tested in isolation.
+    """
+    from langgraph.graph import StateGraph, END
+    from maru_lang.graph.rag.state import RagState
+    from maru_lang.graph.rag.nodes import (
+        make_intent_node, make_keyword_node, make_retrieve_node,
+        make_evaluate_node, evaluate_route, make_rerank_node, format_node,
+    )
+
+    g = StateGraph(RagState)
+    g.add_node("intent", make_intent_node(llm))
+    g.add_node("keywords", make_keyword_node(llm))
+    g.add_node("retrieve", make_retrieve_node(retriever))
+    g.add_node("evaluate", make_evaluate_node(method=method, llm=llm if method == "llm" else None))
+    g.add_node("rerank", make_rerank_node(compressor))
+    g.add_node("format", format_node)
+    g.set_entry_point("intent")
+    g.add_edge("intent", "keywords")
+    g.add_edge("keywords", "retrieve")
+    g.add_edge("retrieve", "evaluate")
+    g.add_conditional_edges("evaluate", evaluate_route, {"rerank": "rerank", "retry": "keywords"})
+    g.add_edge("rerank", "format")
+    g.add_edge("format", END)
+    return g.compile()
+
+
+def _rag_seed(query="test", team_ids=(1,)):
+    return {
+        "query": query,
+        "rewritten_query": "",
+        "keywords": [],
+        "documents": [],
+        "result": "",
+        "team_ids": list(team_ids),
+        "retry_count": 0,
+        "evaluation": "",
+        "excluded_doc_ids": [],
+        "rag_log": [],
+    }
+
+
 # ─── Graph Structure ─────────────────────────────────────────
 
 
 class TestRagGraphStructure:
-    def test_graph_compiles_with_all_nodes(self):
+    @staticmethod
+    def _build():
+        from unittest.mock import patch
+        from langchain_core.language_models import BaseChatModel
         from maru_lang.graph.rag.graph import create_rag_graph
 
-        mock_retriever = _make_mock_retriever()
-        mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="test"))
+        mock_model = MagicMock(spec=BaseChatModel)
+        mock_model.bind_tools = MagicMock(return_value=mock_model)
+        with patch(
+            "maru_lang.graph.rag.graph._build_retriever_and_compressor",
+            return_value=(_make_mock_retriever(), None),
+        ):
+            return create_rag_graph(mock_model)
 
-        graph = create_rag_graph(mock_retriever, mock_llm)
-        node_names = list(graph.get_graph().nodes.keys())
-
-        for expected in ["intent", "keywords", "retrieve", "evaluate", "rerank", "format"]:
+    def test_graph_compiles_with_all_nodes(self):
+        node_names = list(self._build().get_graph().nodes.keys())
+        # rag pipeline nodes + agent + search plumbing all present in one graph
+        for expected in ["intent", "keywords", "retrieve", "evaluate", "rerank", "format",
+                         "agent", "search_entry", "search_result"]:
             assert expected in node_names, f"Missing node: {expected}"
 
     def test_graph_has_correct_edges(self):
-        from maru_lang.graph.rag.graph import create_rag_graph
-
-        mock_retriever = _make_mock_retriever()
-        mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="test"))
-
-        graph = create_rag_graph(mock_retriever, mock_llm)
-        edges_str = str(graph.get_graph().edges)
-
-        assert "intent" in edges_str
-        assert "keywords" in edges_str
-        assert "retrieve" in edges_str
-        assert "evaluate" in edges_str
-        assert "rerank" in edges_str
-        assert "format" in edges_str
+        edges_str = str(self._build().get_graph().edges)
+        for expected in ["intent", "keywords", "retrieve", "evaluate", "rerank", "format",
+                         "agent", "search_entry", "search_result"]:
+            assert expected in edges_str
 
 
 # ─── Graph Execution ─────────────────────────────────────────
@@ -82,8 +125,6 @@ class TestRagGraphExecution:
 
     @pytest.mark.asyncio
     async def test_retry_path_then_succeed(self, mock_llm):
-        from maru_lang.graph.rag.graph import create_rag_graph
-
         good_docs = [
             Document(page_content=f"content {i}", metadata={
                 "document_id": f"d{i}", "document_name": f"doc{i}.pdf",
@@ -103,20 +144,10 @@ class TestRagGraphExecution:
         mock_retriever = _make_mock_retriever()
         mock_retriever.ainvoke = AsyncMock(side_effect=retriever_side_effect)
 
-        graph = create_rag_graph(mock_retriever, mock_llm)
+        graph = _make_rag_chain_graph(mock_retriever, mock_llm)
 
         result = await asyncio.wait_for(
-            graph.ainvoke({
-                "query": "test",
-                "rewritten_query": "",
-                "keywords": [],
-                "documents": [],
-                "result": "",
-                "team_ids": [1],
-                "retry_count": 0,
-                "evaluation": "",
-                "messages": [],
-            }),
+            graph.ainvoke(_rag_seed()),
             timeout=5.0,
         )
 
@@ -125,32 +156,20 @@ class TestRagGraphExecution:
 
     @pytest.mark.asyncio
     async def test_max_retry_forces_rerank(self, mock_llm):
-        from maru_lang.graph.rag.graph import create_rag_graph
-
         mock_retriever = _make_mock_retriever()
         mock_retriever.ainvoke = AsyncMock(return_value=[
             Document(page_content="single", metadata={"score": 0.1}),
         ])
 
-        graph = create_rag_graph(mock_retriever, mock_llm)
+        graph = _make_rag_chain_graph(mock_retriever, mock_llm)
 
         result = await asyncio.wait_for(
-            graph.ainvoke({
-                "query": "test",
-                "rewritten_query": "",
-                "keywords": [],
-                "documents": [],
-                "result": "",
-                "team_ids": [1],
-                "retry_count": 0,
-                "evaluation": "",
-                "messages": [],
-            }),
+            graph.ainvoke(_rag_seed()),
             timeout=10.0,
         )
 
         assert result["result"]
-        assert any("FAIL" in m and f"{RAG_EVALUATE_MAX_RETRIES}/{RAG_EVALUATE_MAX_RETRIES}" in m for m in result["messages"])
+        assert any("FAIL" in m and f"{RAG_EVALUATE_MAX_RETRIES}/{RAG_EVALUATE_MAX_RETRIES}" in m for m in result["rag_log"])
 
 
 # ─── evaluate_node + evaluate_route Consistency ──────────────

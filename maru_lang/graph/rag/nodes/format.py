@@ -9,7 +9,7 @@ async def format_node(state: RagState) -> dict:
     if not docs:
         return {
             "result": f"No documents found for '{state['query']}'.",
-            "messages": ["No results to format"],
+            "rag_log": state.get("rag_log", []) + ["No results to format"],
         }
 
     formatted = []
@@ -24,5 +24,5 @@ async def format_node(state: RagState) -> dict:
 
     return {
         "result": "\n\n---\n\n".join(formatted),
-        "messages": [f"Formatted: {len(docs)} documents"],
+        "rag_log": state.get("rag_log", []) + [f"Formatted: {len(docs)} documents"],
     }

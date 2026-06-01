@@ -1,9 +1,9 @@
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List, Callable
+from typing import Optional, List, Callable
 
 logger = logging.getLogger(__name__)
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_pagination import add_pagination
@@ -11,12 +11,14 @@ from fastapi_pagination import add_pagination
 from maru_lang.core.relation_db import get_register_orm
 from maru_lang.configs import get_config
 from maru_lang.graph.ingest.embedder import get_embeddings
+from maru_lang.graph.checkpoint import build_checkpointer
 from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.chat import router as chat_router
 from maru_lang.api.endpoints.config import router as config_router
 from maru_lang.api.endpoints.ingest import router as ingest_router
 from maru_lang.api.endpoints.internal import router as internal_router
 from maru_lang.api.endpoints.teams import router as teams_router
+from maru_lang.api.endpoints.session import router as session_router
 
 
 class MaruLangApp(FastAPI):
@@ -115,6 +117,16 @@ class MaruLangApp(FastAPI):
             await asyncio.to_thread(get_embeddings, cfg.embedding_model)
             print(f"✓ Embedding model loaded: {cfg.embedding_model}")
 
+            # 4. Initialize the LangGraph checkpointer (app-scoped, persistent).
+            #    Kept alive for the whole app lifetime via an AsyncExitStack on
+            #    app.state; closed in _default_shutdown.
+            self.state.exit_stack = AsyncExitStack()
+            self.state.checkpointer = await self.state.exit_stack.enter_async_context(
+                build_checkpointer()
+            )
+            scheme, _ = cfg.resolve_checkpoint_target()
+            print(f"✓ Checkpointer initialized ({scheme})")
+
             print("=" * 60)
             print("✨ Application startup complete!")
             print("=" * 60)
@@ -123,6 +135,12 @@ class MaruLangApp(FastAPI):
         """Default shutdown routine."""
         # Clean up resources such as database connections
         print("🔄 Shutting down application...")
+
+        # Close the LangGraph checkpointer (and its DB connection).
+        exit_stack = getattr(self.state, "exit_stack", None)
+        if exit_stack is not None:
+            await exit_stack.aclose()
+            print("✓ Checkpointer closed")
 
         # Close Tortoise ORM connections
         from tortoise import Tortoise
@@ -172,6 +190,7 @@ class MaruLangApp(FastAPI):
             self.include_router(ingest_router)
             self.include_router(internal_router)
             self.include_router(teams_router)
+            self.include_router(session_router)
 
         # Run custom router hooks
         for hook in self._router_hooks:

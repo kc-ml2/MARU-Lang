@@ -165,11 +165,33 @@ async def test_config_full_pipeline(yaml_path, tmp_path, monkeypatch):
                 device=cfg.reranker_device or cfg.embedding_device,
             )
 
-    # 7) RAG Graph 실행
-    rag_graph = create_rag_graph(retriever, llm, compressor, cfg.evaluate_method)
+    # 7) RAG 파이프라인 검증 — 노드 팩토리로 retrieval 체인 구성(주입한 실제 retriever 사용)
+    from langgraph.graph import StateGraph, END
+    from maru_lang.graph.rag.state import RagState
+    from maru_lang.graph.rag.nodes import (
+        make_intent_node, make_keyword_node, make_retrieve_node,
+        make_evaluate_node, evaluate_route, make_rerank_node, format_node,
+    )
+
+    rag_chain = StateGraph(RagState)
+    rag_chain.add_node("intent", make_intent_node(llm))
+    rag_chain.add_node("keywords", make_keyword_node(llm))
+    rag_chain.add_node("retrieve", make_retrieve_node(retriever))
+    rag_chain.add_node("evaluate", make_evaluate_node(
+        method=cfg.evaluate_method, llm=llm if cfg.evaluate_method == "llm" else None))
+    rag_chain.add_node("rerank", make_rerank_node(compressor))
+    rag_chain.add_node("format", format_node)
+    rag_chain.set_entry_point("intent")
+    rag_chain.add_edge("intent", "keywords")
+    rag_chain.add_edge("keywords", "retrieve")
+    rag_chain.add_edge("retrieve", "evaluate")
+    rag_chain.add_conditional_edges("evaluate", evaluate_route, {"rerank": "rerank", "retry": "keywords"})
+    rag_chain.add_edge("rerank", "format")
+    rag_chain.add_edge("format", END)
+    rag_chain = rag_chain.compile()
 
     result = await asyncio.wait_for(
-        rag_graph.ainvoke({
+        rag_chain.ainvoke({
             "query": "강남 스시 맛집 추천해줘",
             "rewritten_query": "",
             "keywords": [],
@@ -178,7 +200,8 @@ async def test_config_full_pipeline(yaml_path, tmp_path, monkeypatch):
             "team_ids": [1],
             "retry_count": 0,
             "evaluation": "",
-            "messages": [],
+            "excluded_doc_ids": [],
+            "rag_log": [],
         }),
         timeout=60.0,
     )
@@ -188,25 +211,25 @@ async def test_config_full_pipeline(yaml_path, tmp_path, monkeypatch):
     assert result["result"], "RAG 결과가 생성되어야 함"
     assert result["evaluation"] in ("pass", "max_retry")
 
-    # 9) Chat Graph 컴파일 + 실행
-    from maru_lang.graph.chat.graph import create_chat_graph
-    from maru_lang.graph.chat.tools import create_knowledge_search_tool
+    # 9) 병합 그래프(ReAct + RAG) 컴파일 + 실행 — 테스트 retriever/compressor 주입
+    from unittest.mock import patch
     from langchain_core.messages import HumanMessage
 
-    knowledge_search = create_knowledge_search_tool(
-        retriever, llm=llm, compressor=compressor,
-        evaluate_method=cfg.evaluate_method,
-    )
-    chat_graph = create_chat_graph(model=llm, tools=[knowledge_search])
+    with patch(
+        "maru_lang.graph.rag.graph._build_retriever_and_compressor",
+        return_value=(retriever, compressor),
+    ):
+        graph = create_rag_graph(model=llm)
 
-    # Chat graph 구조 검증
-    nodes = set(chat_graph.get_graph().nodes)
-    assert "agent" in nodes, "Chat graph에 agent 노드가 있어야 함"
-    assert "tools" in nodes, "Chat graph에 tools 노드가 있어야 함"
+    # 구조 검증: 단일 그래프에 agent + 검색 진입/RAG 노드가 모두 존재
+    nodes = set(graph.get_graph().nodes)
+    assert "agent" in nodes
+    assert "search_entry" in nodes
+    assert "format" in nodes
 
-    # Chat graph 실행 (실제 LLM이 tool call → RAG → 응답)
+    # 실행 (실제 LLM이 tool call → RAG 노드 → 응답)
     chat_result = await asyncio.wait_for(
-        chat_graph.ainvoke({
+        graph.ainvoke({
             "messages": [HumanMessage(content="강남 스시 맛집 추천해줘")],
             "team_ids": [1],
             "team_names": ["test-team"],
@@ -214,4 +237,4 @@ async def test_config_full_pipeline(yaml_path, tmp_path, monkeypatch):
         timeout=60.0,
     )
 
-    assert len(chat_result["messages"]) >= 2, "Chat은 최소 HumanMessage + AIMessage가 있어야 함"
+    assert len(chat_result["messages"]) >= 2, "최소 HumanMessage + AIMessage가 있어야 함"

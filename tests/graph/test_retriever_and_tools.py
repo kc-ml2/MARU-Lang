@@ -91,61 +91,26 @@ class TestVectorRetriever:
         assert result == []
 
 
-# ─── knowledge_search Tool ───────────────────────────────────
+# ─── knowledge_search Tool (schema-only, bound for ReAct) ────
 
 
 class TestKnowledgeSearchTool:
-    @pytest.fixture
-    def mock_retriever(self):
-        r = MagicMock()
-        r.ainvoke = AsyncMock(return_value=[])
-        return r
+    """The tool is now a binding-only schema; the graph executes the search."""
 
-    @pytest.fixture
-    def mock_llm(self):
-        from langchain_core.messages import AIMessage
-        llm = MagicMock()
-        llm.ainvoke = AsyncMock(return_value=AIMessage(content="response"))
-        llm.bind_tools = MagicMock(return_value=llm)
-        return llm
+    def test_tool_has_correct_name_and_schema(self):
+        from maru_lang.graph.rag.tools import knowledge_search
 
-    def test_tool_has_correct_name(self, mock_retriever, mock_llm):
-        from maru_lang.graph.chat.tools import create_knowledge_search_tool
+        assert knowledge_search.name == "knowledge_search"
+        assert "search" in knowledge_search.description.lower()
+        # exposes a single `query` argument for the agent to fill
+        assert "query" in knowledge_search.args
 
-        tool = create_knowledge_search_tool(mock_retriever, llm=mock_llm)
-        assert tool.name == "knowledge_search"
-        assert "Search" in tool.description or "search" in tool.description.lower()
+    def test_tool_is_bindable(self):
+        from langchain_core.language_models import BaseChatModel
+        from maru_lang.graph.rag.tools import knowledge_search
 
-    @pytest.mark.asyncio
-    @patch("maru_lang.graph.chat.tools.knowledge_search.run_rag")
-    async def test_runs_rag_and_returns_result_with_metadata(self, mock_run_rag, mock_retriever, mock_llm):
-        from maru_lang.graph.chat.tools import create_knowledge_search_tool
-
-        mock_run_rag.return_value = {
-            "result": "Found documents about MARU",
-            "documents": [{"document_id": "d1", "document_name": "test.pdf", "score": 0.8}],
-        }
-
-        tool = create_knowledge_search_tool(mock_retriever, llm=mock_llm)
-        result = await tool.ainvoke(
-            {"query": "what is MARU"},
-            config={"configurable": {"state": {"team_ids": [1]}}},
-        )
-
-        assert "MARU" in result
-        assert "retrieved_documents" in result
-
-    @pytest.mark.asyncio
-    @patch("maru_lang.graph.chat.tools.knowledge_search.run_rag")
-    async def test_returns_error_message_on_exception(self, mock_run_rag, mock_retriever, mock_llm):
-        from maru_lang.graph.chat.tools import create_knowledge_search_tool
-
-        mock_run_rag.side_effect = Exception("RAG failed")
-
-        tool = create_knowledge_search_tool(mock_retriever, llm=mock_llm)
-        result = await tool.ainvoke(
-            {"query": "test"},
-            config={"configurable": {"state": {"team_ids": [1]}}},
-        )
-
-        assert "error" in result.lower() or "Error" in result
+        model = MagicMock(spec=BaseChatModel)
+        model.bind_tools = MagicMock(return_value=model)
+        bound = model.bind_tools([knowledge_search])
+        model.bind_tools.assert_called_once()
+        assert bound is model

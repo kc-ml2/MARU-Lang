@@ -17,7 +17,7 @@ def make_retrieve_node(retriever: VectorRetriever):
 
         return {
             "documents": docs,
-            "messages": [f"Retrieved: {len(docs)} documents"],
+            "rag_log": state.get("rag_log", []) + [f"Retrieved: {len(docs)} documents"],
         }
 
     return retrieve_node

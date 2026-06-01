@@ -16,12 +16,12 @@ def make_intent_node(llm: BaseChatModel):
             rewritten = response.content.strip()
             return {
                 "rewritten_query": rewritten if rewritten else query,
-                "messages": [f"Intent: {query} → {rewritten}"],
+                "rag_log": state.get("rag_log", []) + [f"Intent: {query} → {rewritten}"],
             }
         except Exception:
             return {
                 "rewritten_query": query,
-                "messages": ["Intent extraction skipped"],
+                "rag_log": state.get("rag_log", []) + ["Intent extraction skipped"],
             }
 
     return intent_node
