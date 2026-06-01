@@ -135,11 +135,30 @@ async def _get_cli_token(base_url: str, team_names: list[str]) -> dict | None:
     return None
 
 
-async def _connect_ws(ws_url: str, chat_token: str):
+async def _get_or_create_session(base_url: str, access_token: str) -> str | None:
+    """Fetch the user's most recent session (creating one if none). Returns its id."""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(
+                f"{base_url}/sessions/last",
+                headers=_auth_headers(access_token),
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                return resp.json()["id"]
+            console.print(f"[red]Session error: {resp.text}[/red]")
+        except Exception as e:
+            console.print(f"[red]Session request failed: {e}[/red]")
+    return None
+
+
+async def _connect_ws(ws_url: str, chat_token: str, session_id: str):
     """Connect WebSocket and authenticate. Returns (ws, error_msg)."""
     ws = await websockets.connect(ws_url)
 
-    await ws.send(json.dumps({"type": "auth", "chat_token": chat_token}))
+    await ws.send(json.dumps({
+        "type": "auth", "chat_token": chat_token, "session_id": session_id,
+    }))
 
     # Check for immediate error (e.g. graph creation failure)
     try:
@@ -172,7 +191,12 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
     access_token = token_data["access_token"]
     team_map = {t["name"]: t["id"] for t in token_data["teams"]}
 
-    ws, err = await _connect_ws(ws_url, token_data["chat_token"])
+    session_id = await _get_or_create_session(base_url, access_token)
+    if not session_id:
+        console.print("[red]Failed to get a chat session.[/red]")
+        return
+
+    ws, err = await _connect_ws(ws_url, token_data["chat_token"], session_id)
     if err:
         console.print(f"[red]Connection failed: {err}[/red]")
         return
@@ -222,7 +246,7 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                         console.print("[red]Failed to switch team.[/red]")
                         continue
                     await ws.close()
-                    ws, err = await _connect_ws(ws_url, new_token["chat_token"])
+                    ws, err = await _connect_ws(ws_url, new_token["chat_token"], session_id)
                     if err:
                         console.print(f"[red]Switch failed: {err}[/red]")
                         continue
@@ -277,7 +301,7 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                     console.print("[red]Reconnection failed.[/red]")
                     break
                 access_token = token_data["access_token"]
-                ws, err = await _connect_ws(ws_url, token_data["chat_token"])
+                ws, err = await _connect_ws(ws_url, token_data["chat_token"], session_id)
                 if err:
                     console.print(f"[red]Reconnection failed: {err}[/red]")
                     break
@@ -331,7 +355,6 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                     break
 
                 interrupt_type = interrupt_content.get("type", "") if isinstance(interrupt_content, dict) else ""
-                in_feedback = interrupt_type in ("feedback_score", "feedback_reason")
                 if interrupt_type == "feedback_score":
                     console.print()
                     feedback = Prompt.ask("[bold cyan]방금 답변에 점수를 매겨주세요 (1-5점)[/bold cyan]")
