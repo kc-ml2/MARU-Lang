@@ -101,6 +101,7 @@ filterwarnings = [
 ]
 markers = [
     "integration: integration tests (require API keys and real models)",
+    "llm_smoke: real-LLM smoke tests run via `maru test` (gated by MARU_TEST_CONFIG_DIR)",
 ]
 
 [tool.coverage.run]

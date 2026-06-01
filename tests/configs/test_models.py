@@ -1,10 +1,34 @@
 """Config models unit tests."""
 import os
+from pathlib import Path
 
 import pytest
+import yaml
 
-from maru_lang.configs.manager import _validate_auth_security
+from maru_lang.configs.manager import _validate_auth_security, _substitute_env_vars
 from maru_lang.configs.models import LLMConfig, MaruConfig, AuthConfig, ServerConfig
+from maru_lang.constants import PROVIDER_GATE_ENV
+
+_SAMPLE_DIR = Path(__file__).resolve().parent.parent / "sample_config"
+_SAMPLES = sorted(_SAMPLE_DIR.glob("*.yaml"))
+
+
+@pytest.mark.parametrize("yaml_path", _SAMPLES, ids=[p.stem for p in _SAMPLES])
+def test_sample_config_is_valid(yaml_path):
+    """모든 sample_config/*.yaml가 키 없이 파싱·구성되는지 검증 (config rot 방지).
+
+    실제 LLM 호출은 하지 않는다 — 실LLM 동작 검증은 `maru test`(TestLLMSmoke) 담당.
+    """
+    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    data = _substitute_env_vars(raw)
+    cfg = MaruConfig.from_dict(data)  # 파싱 자체가 에러 없이 되어야 함
+
+    assert cfg.llms, f"{yaml_path.name}: llms가 비어 있음"
+    for llm in cfg.llms:
+        assert llm.provider in PROVIDER_GATE_ENV, \
+            f"{yaml_path.name}: 알 수 없는 provider '{llm.provider}'"
+        assert llm.model_name, f"{yaml_path.name}: model_name 누락 ({llm.name})"
+    assert cfg.embedding_model, f"{yaml_path.name}: embedding_model 누락"
 
 
 class TestLLMConfig:

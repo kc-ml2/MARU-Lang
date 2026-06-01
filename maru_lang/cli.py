@@ -1,6 +1,7 @@
 from maru_lang.commands.status import show_status
 from maru_lang.commands.install import install_configs
 from maru_lang.commands.run import run_session
+from maru_lang.commands.test import run_test_command
 from maru_lang.core.relation_db.connection import run_with_orm_context
 import asyncio
 import logging
@@ -28,8 +29,9 @@ def _enable_verbose_logging() -> None:
 @app.callback()
 def common_init(ctx: typer.Context):
     """Common initialization before all commands"""
-    # Skip for install command (no config needed yet)
-    if ctx.invoked_subcommand == "install":
+    # Skip for commands that don't need the project config loaded.
+    # (install: not set up yet; test: uses its own temp config)
+    if ctx.invoked_subcommand in ("install", "test"):
         return
 
     # Load config (DB, auth, LLM, RAG, Agent, etc.)
@@ -248,6 +250,12 @@ def status(
 ):
     """Display the current status of the relational DB and vector DB."""
     run_with_orm_context(show_status, verbose)
+
+
+@app.command("test")
+def test_command():
+    """Run an interactive integration smoke test (pick provider, key/url, model)."""
+    run_test_command()
 
 
 

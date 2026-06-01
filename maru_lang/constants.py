@@ -87,3 +87,17 @@ Search internal team documents and answer user questions based on accurate infor
 2. Answer based on document search results. Honestly say you don't know if no results are found.
 3. Respond in Korean.
 """
+
+
+# --- Integration test provider gates ---
+# Maps an LLM provider to the env var that must be present to run its
+# integration tests. Hosted APIs need an API key; self-hosted servers need a
+# base URL (explicit opt-in so `pytest -m integration` won't hang on a missing
+# local server). Shared by the e2e tests and the `maru test` CLI.
+PROVIDER_GATE_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "ollama": "OLLAMA_BASE_URL",
+    "vllm": "VLLM_BASE_URL",
+}

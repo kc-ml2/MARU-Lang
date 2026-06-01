@@ -1,16 +1,10 @@
-"""Unified RAG + ReAct agent graph tests.
+"""Unified RAG + ReAct agent graph tests (unit, no API key needed).
 
-Run:
-  # Unit tests (no API key needed)
   venv/bin/python -m pytest tests/test_chat.py -v
 
-  # Integration (OpenAI)
-  OPENAI_API_KEY=sk-... venv/bin/python -m pytest tests/test_chat.py -v -k integration
-
-  # Integration (Anthropic)
-  ANTHROPIC_API_KEY=sk-... venv/bin/python -m pytest tests/test_chat.py -v -k anthropic
+실제 LLM 호출이 필요한 시나리오는 `maru test`(tests/configs/test_sample_config_e2e.py
+의 TestLLMSmoke)로 이전됨.
 """
-import os
 import sys
 import types
 import pytest
@@ -176,78 +170,9 @@ class TestBuildRetriever:
         assert retriever.top_k == 10
 
 
-# ─── Integration Tests (API key required) ───────────────────
-
-
-def _get_openai_model():
-    from langchain_openai import ChatOpenAI
-    return ChatOpenAI(model="gpt-4o-mini", temperature=0)
-
-
-def _get_anthropic_model():
-    from langchain_anthropic import ChatAnthropic
-    return ChatAnthropic(model="claude-sonnet-4-20250514", temperature=0)
-
-
-def _make_input(question: str) -> dict:
-    from langchain_core.messages import HumanMessage
-    return {
-        "messages": [HumanMessage(content=question)],
-        "team_ids": [1],
-        "team_names": ["test-team"],
-    }
-
-
-@pytest.mark.integration
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-class TestOpenAIIntegration:
-
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.graph = create_rag_graph(_get_openai_model())
-        self.config = {"configurable": {"thread_id": "test-openai-1"}}
-
-    @pytest.mark.asyncio
-    async def test_simple_search_query(self):
-        result = await self.graph.ainvoke(
-            _make_input("MARU 프로젝트가 뭐야?"),
-            config=self.config,
-        )
-        last_msg = result["messages"][-1].content
-        assert len(last_msg) > 10
-
-    @pytest.mark.asyncio
-    async def test_multi_turn_conversation(self):
-        config = {"configurable": {"thread_id": "test-openai-multi"}}
-
-        await self.graph.ainvoke(
-            _make_input("RAG 파이프라인 구조를 알려줘"),
-            config=config,
-        )
-        r2 = await self.graph.ainvoke(
-            _make_input("더 자세히 설명해줘"),
-            config=config,
-        )
-        assert len(r2["messages"][-1].content) > 10
-
-
-@pytest.mark.integration
-@pytest.mark.skipif(not os.getenv("ANTHROPIC_API_KEY"), reason="ANTHROPIC_API_KEY not set")
-class TestAnthropicIntegration:
-
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.graph = create_rag_graph(_get_anthropic_model())
-        self.config = {"configurable": {"thread_id": "test-anthropic-1"}}
-
-    @pytest.mark.asyncio
-    async def test_simple_search_query(self):
-        result = await self.graph.ainvoke(
-            _make_input("MARU 프로젝트가 뭐야?"),
-            config=self.config,
-        )
-        last_msg = result["messages"][-1].content
-        assert len(last_msg) > 10
+# NOTE: 실제 LLM 호출이 필요한 chat integration 시나리오(simple query, multi-turn,
+# feedback, direct answer)는 `maru test`로 실행되는 tests/configs/test_sample_config_e2e.py
+# 의 TestLLMSmoke(llm_smoke 마커)로 이전됨.
 
 
 # ─── New Unit Tests ──────────────────────────────────────────
