@@ -111,10 +111,8 @@ def _compile_merged_graph(llm, retriever, compressor):
     from unittest.mock import patch
     from maru_lang.graph.rag.graph import create_rag_graph
 
-    with patch(
-        "maru_lang.graph.rag.graph._build_retriever_and_compressor",
-        return_value=(retriever, compressor),
-    ):
+    with patch("maru_lang.graph.rag.graph.build_retriever", return_value=retriever), \
+         patch("maru_lang.graph.rag.graph.build_compressor", return_value=compressor):
         return create_rag_graph(model=llm)
 
 
@@ -167,7 +165,7 @@ async def _run_full_pipeline(cfg, tmp_path):
     # 2) 병합 그래프(ReAct + RAG) 실행 — checkpointer 사용이므로 thread_id 필수
     graph = _compile_merged_graph(llm, retriever, compressor)
     nodes = set(graph.get_graph().nodes)
-    assert "agent" in nodes and "search_entry" in nodes and "format" in nodes
+    assert {"context_builder", "route", "generate", "search_entry", "summarize", "memory_extractor"}.issubset(nodes)
 
     chat_result = await asyncio.wait_for(
         graph.ainvoke(
@@ -265,3 +263,29 @@ class TestLLMSmoke:
         snap = await graph.aget_state(conf)
         assert snap.values.get("feedback_score") == 2
         assert snap.values.get("feedback_reason")
+
+    async def test_user_memory_recall(self, tmp_path, monkeypatch):
+        """사용자가 말한 사실을 추출·저장하고, 다음 턴(다른 thread)에서 회상한다."""
+        from langchain_core.messages import HumanMessage
+        from maru_lang.core.relation_db.models.auth import User
+        from maru_lang.services.session import create_session
+
+        cfg = _load_user_cfg(monkeypatch)
+        graph = _compile_merged_graph(*_build_stack(cfg, tmp_path))
+
+        user = await User.create(name="t", email="mem@example.com")
+        session = await create_session(user)
+        base = {"team_ids": [1], "team_names": ["test-team"],
+                "session_id": session.id, "user_id": user.id}
+
+        # Turn 1: state a durable fact → memory_extractor should persist it.
+        await asyncio.wait_for(graph.ainvoke(
+            {**base, "messages": [HumanMessage(content="내 이름은 김지훈이야. 기억해줘.")]},
+            config={"configurable": {"thread_id": f"{session.id}:t1"}}), timeout=90.0)
+
+        # Turn 2: fresh thread → recall comes only from DB via context_builder.
+        res = await asyncio.wait_for(graph.ainvoke(
+            {**base, "messages": [HumanMessage(content="내 이름이 뭐야?")]},
+            config={"configurable": {"thread_id": f"{session.id}:t2"}}), timeout=90.0)
+
+        assert "김지훈" in res["messages"][-1].content

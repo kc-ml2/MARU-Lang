@@ -1,6 +1,6 @@
-"""VectorRetriever and knowledge_search tool unit tests."""
+"""VectorRetriever unit tests."""
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock
 from langchain_core.documents import Document
 
 
@@ -89,28 +89,3 @@ class TestVectorRetriever:
         run_manager = MagicMock()
         result = retriever._get_relevant_documents("query", run_manager=run_manager)
         assert result == []
-
-
-# ─── knowledge_search Tool (schema-only, bound for ReAct) ────
-
-
-class TestKnowledgeSearchTool:
-    """The tool is now a binding-only schema; the graph executes the search."""
-
-    def test_tool_has_correct_name_and_schema(self):
-        from maru_lang.graph.rag.tools import knowledge_search
-
-        assert knowledge_search.name == "knowledge_search"
-        assert "search" in knowledge_search.description.lower()
-        # exposes a single `query` argument for the agent to fill
-        assert "query" in knowledge_search.args
-
-    def test_tool_is_bindable(self):
-        from langchain_core.language_models import BaseChatModel
-        from maru_lang.graph.rag.tools import knowledge_search
-
-        model = MagicMock(spec=BaseChatModel)
-        model.bind_tools = MagicMock(return_value=model)
-        bound = model.bind_tools([knowledge_search])
-        model.bind_tools.assert_called_once()
-        assert bound is model

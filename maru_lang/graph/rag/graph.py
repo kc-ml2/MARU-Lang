@@ -1,30 +1,56 @@
-"""Unified RAG + ReAct agent graph.
+"""Chat graph: memory-aware RAG with an explicit search/no-search router.
 
-A single compiled graph: the agent (ReAct) decides whether to search; if so,
-control flows through the RAG pipeline nodes (intent → keywords → retrieve →
-evaluate → rerank → format) and back to the agent as a ToolMessage. Optional
-feedback (score → reason) runs after the final answer.
+Instead of a ReAct tool-calling agent, a `route` node classifies whether the
+question needs document search. Memory (user facts/preferences + prior session
+turns) is loaded up front and written back at the end, so the graph is the
+single owner of conversational memory.
 
-Config and LLM are read internally; callers just call create_rag_graph().
+Topology
+--------
+    context_builder            # load memory (UserMemory + session) into state
+        │
+        ▼
+      route ──"direct"──────────────────────────────────┐
+        │ "search"                                       │
+        ▼                                                │
+    search_entry → intent → keywords → retrieve → evaluate
+                                          ▲          │
+                                          └──"retry"─┘ (regenerate keywords)
+                                                     │ "rerank"
+                                          rerank → format ──────────────► generate
+                                                                             │
+                          (function == "feedback") ──"score"── score ──"reason"── reason
+                                                       │ else                 │
+                                                       └──────────────────────┤
+                                                                              ▼
+                                              summarize → memory_extractor → END
+                                          (turn/session summary)  (persist user memory)
+
+Config and the LLM are read internally; callers just call create_rag_graph().
+Conversation/memory persistence happens inside the graph (summarize +
+memory_extractor), gated on session_id/user_id being present in the state.
 """
 from typing import AsyncIterator
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, AIMessageChunk
+from langchain_core.messages import AIMessageChunk
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, END
 from langgraph.types import Command
 
 from maru_lang.configs import get_config
-from maru_lang.configs.models import MaruConfig
 from maru_lang.core.llm import get_model_with_fallbacks
-from maru_lang.core.llm.client import create_chat_model
-from maru_lang.graph.rag.state import RagState
-from maru_lang.graph.rag.tools import knowledge_search
-from maru_lang.graph.rag.retriever import VectorRetriever
-from maru_lang.graph.rag.reranker import CrossEncoderCompressor, LLMReranker
+from maru_lang.graph.rag.state import RagState, build_input
+from maru_lang.graph.rag.retriever import build_retriever
+from maru_lang.graph.rag.reranker import build_compressor
 from maru_lang.graph.rag.nodes import (
-    make_agent_node,
+    # entry / memory
+    make_context_builder_node,
+    # routing
+    make_route_node,
+    route_decision,
+    # RAG pipeline
+    make_search_entry_node,
     make_intent_node,
     make_keyword_node,
     make_retrieve_node,
@@ -32,75 +58,35 @@ from maru_lang.graph.rag.nodes import (
     evaluate_route,
     make_rerank_node,
     format_node,
-    make_search_entry_node,
-    make_search_result_node,
+    # answer
+    make_generate_node,
+    # feedback
+    feedback_route,
     score_node,
     score_route,
     make_reason_node,
+    # terminal persistence (write-back)
+    make_summarize_node,
+    make_memory_extractor_node,
 )
 
 
-def _should_continue(state: RagState) -> str:
-    """Route from agent: into search (tool_call), feedback score, or END."""
-    last_message = state["messages"][-1]
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "search_entry"
-    if state.get("function") == "feedback":
-        return "score"
-    return END
-
-
-def _build_retriever_and_compressor(cfg: MaruConfig):
-    """Build retriever and optional compressor from config.
-
-    Returns:
-        (retriever, compressor) tuple. compressor is None if reranking disabled.
-    """
-    retriever = VectorRetriever(
-        top_k=cfg.retriever_top_k,
-        search_method=cfg.retriever_search_method,
-        embedding_model=cfg.embedding_model,
-        embedding_device=cfg.embedding_device,
-    )
-
-    if not cfg.reranker_enabled:
-        return retriever, None
-
-    if cfg.reranker_type == "llm":
-        llm_config = None
-        for llm in cfg.llms:
-            if cfg.reranker_llm and llm.name == cfg.reranker_llm:
-                llm_config = llm
-                break
-        if llm_config is None and cfg.llms:
-            llm_config = cfg.llms[0]
-        if llm_config is None:
-            raise RuntimeError("LLM reranker requires at least one LLM in config.")
-
-        compressor = LLMReranker(llm=create_chat_model(llm_config), top_k=cfg.reranker_top_k or 3)
-    else:
-        compressor = CrossEncoderCompressor(
-            model_name=cfg.reranker_model,
-            top_k=cfg.reranker_top_k,
-            device=cfg.reranker_device or cfg.embedding_device,
-        )
-
-    return retriever, compressor
+# The node that produces the user-facing answer. Only its LLM tokens are
+# streamed to the client (all other nodes call the LLM internally).
+_ANSWER_NODE = "generate"
 
 
 def create_rag_graph(
     model: BaseChatModel | None = None,
     checkpointer=None,
-    tools: list | None = None,
 ):
-    """Create the unified RAG + ReAct agent graph.
+    """Build and compile the chat graph.
 
-    Reads config and LLM internally. All settings have sensible defaults.
+    Reads config and the LLM internally; all settings have sensible defaults.
 
     Args:
         model: LangChain ChatModel. If None, auto-loads from config with fallbacks.
         checkpointer: Checkpointer instance (defaults to MemorySaver).
-        tools: Custom tool list for binding (overrides the default knowledge_search).
 
     Returns:
         Compiled StateGraph.
@@ -114,20 +100,18 @@ def create_rag_graph(
             raise RuntimeError("No LLM model available. Check llms config.")
 
     cfg = get_config()
-    retriever, compressor = _build_retriever_and_compressor(cfg)
-
-    if tools is None:
-        tools = [knowledge_search]
-    model_with_tools = model.bind_tools(tools)
+    retriever = build_retriever(cfg)
+    compressor = build_compressor(cfg)
 
     graph = StateGraph(RagState)
 
-    # Agent (ReAct) + feedback nodes
-    graph.add_node("agent", make_agent_node(model_with_tools, system_prompt=cfg.system_prompt))
-    graph.add_node("score", score_node)
-    graph.add_node("reason", make_reason_node(model))
+    # --- Nodes -----------------------------------------------------------
+    # Memory (read) + routing + answer
+    graph.add_node("context_builder", make_context_builder_node(cfg.memory_recent_turns))
+    graph.add_node("route", make_route_node(model))
+    graph.add_node("generate", make_generate_node(model, system_prompt=cfg.system_prompt))
 
-    # Search plumbing + RAG pipeline nodes
+    # RAG retrieval pipeline
     graph.add_node("search_entry", make_search_entry_node())
     graph.add_node("intent", make_intent_node(model))
     graph.add_node("keywords", make_keyword_node(model))
@@ -138,15 +122,25 @@ def create_rag_graph(
     ))
     graph.add_node("rerank", make_rerank_node(compressor))
     graph.add_node("format", format_node)
-    graph.add_node("search_result", make_search_result_node())
 
-    graph.set_entry_point("agent")
+    # Optional feedback collection (interrupt/resume)
+    graph.add_node("score", score_node)
+    graph.add_node("reason", make_reason_node(model))
+
+    # Terminal write-back: conversation summary + user persistent memory
+    graph.add_node("summarize", make_summarize_node(model))
+    graph.add_node("memory_extractor", make_memory_extractor_node(model))
+
+    # --- Edges (in flow order) ------------------------------------------
+    # Entry: load memory, then decide search vs. direct answer.
+    graph.set_entry_point("context_builder")
+    graph.add_edge("context_builder", "route")
     graph.add_conditional_edges(
-        "agent", _should_continue,
-        {"search_entry": "search_entry", "score": "score", END: END},
+        "route", route_decision,
+        {"search_entry": "search_entry", "generate": "generate"},
     )
 
-    # search_entry → RAG pipeline → search_result → back to agent (ReAct loop)
+    # Search path: retrieve → evaluate (retry loop) → rerank → format → answer.
     graph.add_edge("search_entry", "intent")
     graph.add_edge("intent", "keywords")
     graph.add_edge("keywords", "retrieve")
@@ -156,35 +150,28 @@ def create_rag_graph(
         {"rerank": "rerank", "retry": "keywords"},
     )
     graph.add_edge("rerank", "format")
-    graph.add_edge("format", "search_result")
-    graph.add_edge("search_result", "agent")
+    graph.add_edge("format", "generate")
 
-    # Feedback branch
+    # After the answer: optional feedback, then converge on the write-back tail.
+    graph.add_conditional_edges(
+        "generate", feedback_route,
+        {"score": "score", "summarize": "summarize"},
+    )
     graph.add_conditional_edges(
         "score", score_route,
-        {"reason": "reason", END: END},
+        {"reason": "reason", "summarize": "summarize"},
     )
-    graph.add_edge("reason", END)
+    graph.add_edge("reason", "summarize")
+
+    # Write-back tail (terminal): summarize the turn/session, then persist any
+    # durable user facts/preferences. Both no-op without session_id/user_id.
+    graph.add_edge("summarize", "memory_extractor")
+    graph.add_edge("memory_extractor", END)
 
     if checkpointer is None:
         checkpointer = MemorySaver()
 
     return graph.compile(checkpointer=checkpointer)
-
-
-def _build_input(
-    message: str,
-    team_ids: list[int],
-    team_names: list[str],
-    function: str | None = None,
-) -> RagState:
-    """Build the initial state dict for the graph."""
-    return {
-        "messages": [HumanMessage(content=message)],
-        "team_ids": team_ids,
-        "team_names": team_names,
-        "function": function,
-    }
 
 
 async def run_rag(
@@ -195,9 +182,14 @@ async def run_rag(
     graph,
     config: dict | None = None,
     function: str | None = None,
+    session_id: str | None = None,
+    user_id: int | None = None,
 ) -> str:
-    """Run the graph and return a single response."""
-    input_state = _build_input(message, team_ids, team_names, function=function)
+    """Run the graph once and return the final answer text."""
+    input_state = build_input(
+        message, team_ids, team_names,
+        function=function, session_id=session_id, user_id=user_id,
+    )
     result = await graph.ainvoke(input_state, config=config)
     return result["messages"][-1].content
 
@@ -210,22 +202,26 @@ async def stream_rag(
     graph,
     config: dict | None = None,
     function: str | None = None,
+    session_id: str | None = None,
+    user_id: int | None = None,
 ) -> AsyncIterator[tuple[str, str | list]]:
-    """Stream the graph execution.
+    """Stream the graph execution as (event_type, content) tuples.
 
-    Yields:
-        (event_type, content) tuples:
-        - ("token", str): agent LLM token chunk (RAG-internal LLM tokens filtered out).
-        - ("retrieve", list[dict]): Retrieved document metadata.
-        - ("interrupt", value): Graph interrupted, awaiting resume.
+    Events:
+        - ("token", str): a user-facing answer token (from the answer node only).
+        - ("retrieve", list[dict]): retrieved document metadata.
+        - ("interrupt", value): graph paused (feedback), awaiting a resume.
 
     Args:
-        message: User message string, or Command(resume=value) to resume.
+        message: a user message string, or Command(resume=value) to resume.
     """
     if isinstance(message, Command):
         input_state = message
     else:
-        input_state = _build_input(message, team_ids, team_names, function=function)
+        input_state = build_input(
+            message, team_ids, team_names,
+            function=function, session_id=session_id, user_id=user_id,
+        )
 
     async for mode, event in graph.astream(
         input_state,
@@ -234,22 +230,22 @@ async def stream_rag(
     ):
         if mode == "messages":
             msg, metadata = event
-            # Only stream the user-facing agent tokens. The RAG pipeline nodes
-            # (intent/keywords/evaluate/rerank) also call the LLM; their chunks
-            # must NOT leak into the user stream.
-            if metadata.get("langgraph_node") != "agent":
+            # Stream only the answer node's tokens. Other nodes (route, intent,
+            # keywords, evaluate, rerank, summary, memory) also call the LLM, but
+            # their output must not leak into the user-visible stream.
+            if metadata.get("langgraph_node") != _ANSWER_NODE:
                 continue
             if isinstance(msg, AIMessageChunk) and msg.content:
                 yield "token", msg.content
         elif mode == "updates":
-            for node_name, state_update in event.items():
+            for _node_name, state_update in event.items():
                 if not isinstance(state_update, dict):
                     continue
                 docs = state_update.get("retrieved_documents")
                 if docs:
                     yield "retrieve", docs
 
-    # 스트리밍 종료 후 interrupt 여부 확인
+    # After streaming, surface a pending interrupt (if the turn paused for feedback).
     snapshot = await graph.aget_state(config)
     for task in snapshot.tasks:
         if task.interrupts:

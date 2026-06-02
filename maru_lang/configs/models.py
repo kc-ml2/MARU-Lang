@@ -100,6 +100,9 @@ class MaruConfig:
     retriever_top_k: int = 5
     retriever_search_method: str = "vector"  # "vector" or "hybrid"
 
+    # Memory
+    memory_recent_turns: int = 3  # prior session turns loaded into context
+
     # System prompt
     system_prompt: str = ""
 
@@ -185,6 +188,7 @@ class MaruConfig:
             embedding_device=data.get("embedding_device"),
             retriever_top_k=data.get("retriever_top_k", cls.retriever_top_k),
             retriever_search_method=data.get("retriever_search_method", cls.retriever_search_method),
+            memory_recent_turns=data.get("memory_recent_turns", cls.memory_recent_turns),
             evaluate_method=data.get("evaluate_method", cls.evaluate_method),
             system_prompt=data.get("system_prompt", cls.system_prompt),
             reranker_enabled=data.get("reranker_enabled", cls.reranker_enabled),

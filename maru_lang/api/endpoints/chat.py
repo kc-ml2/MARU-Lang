@@ -7,10 +7,10 @@ from starlette.websockets import WebSocketState
 
 from maru_lang.services.auth import verify_chat_token
 from maru_lang.dependencies.auth import User
-from maru_lang.graph import create_rag_graph
-from maru_lang.services.team import list_teams_by_user
+from maru_lang.services.team import list_teams_by_user, resolve_user_graph_ids
 from maru_lang.services.session import get_session_for_user
 from maru_lang.core.relation_db.models.chat import Session
+from maru_lang.graph.router import select_graph
 from maru_lang.api.ws.chat import stream_and_send
 
 router = APIRouter(
@@ -31,12 +31,15 @@ async def chat_websocket(websocket: WebSocket):
     reused only across that turn's interrupt/resume. Completed turns are stored
     as Conversation rows grouped by the session.
 
+    On each message the graph_router selects which graph (among the user's teams'
+    accessible graphs) handles the request; resume reuses that turn's graph.
+
     Protocol:
         1. Client sends: {"type": "auth", "chat_token": "...", "session_id": "..."}
         2. Server authenticates + validates session ownership
         3. (Optional) Client sends: {"type": "configure", "function": "legal", ...}
         4. Client sends: {"type": "message", "content": "..."}
-        5. Server streams: {"type": "thinking"|"stream"|"retrieve"|"interrupt"|"complete"|"error", ...}
+        5. Server streams: {"type": "routed"|"thinking"|"stream"|"retrieve"|"interrupt"|"complete"|"error", ...}
         6. On interrupt, client sends: {"type": "resume", "content": ...}
     """
     await websocket.accept()
@@ -48,8 +51,8 @@ async def chat_websocket(websocket: WebSocket):
     all_user_team_names: list[int] = []
 
     active_session: Session | None = None
-    pending_question: str | None = None
-    graph = None
+    allowed_graph_ids: list[str] = []
+    active_graph_id: str | None = None  # graph chosen for the current turn
     config = {}
     session_function: str | None = None
 
@@ -86,6 +89,7 @@ async def chat_websocket(websocket: WebSocket):
                 all_user_teams = await list_teams_by_user(user)
                 all_user_team_ids = [t["id"] for t in all_user_teams]
                 all_user_team_names = [t["name"] for t in all_user_teams]
+                allowed_graph_ids = await resolve_user_graph_ids(user)
 
                 authenticated = True
                 await websocket.send_json({"type": "authenticated", "session_id": active_session.id})
@@ -106,19 +110,24 @@ async def chat_websocket(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "content": "User does not belong to any team"})
                     break
 
+                graphs = getattr(websocket.app.state, "graphs", {}) or {}
+                if not graphs or not allowed_graph_ids:
+                    await websocket.send_json({"type": "error", "content": "Chat is unavailable (no LLM configured)."})
+                    break
+
+                # L1 routing: pick which graph handles this request (team-scoped).
+                router_model = getattr(websocket.app.state, "router_model", None)
+                active_graph_id = await select_graph(content, allowed_graph_ids, router_model)
+                graph = graphs.get(active_graph_id)
                 if graph is None:
-                    try:
-                        checkpointer = getattr(websocket.app.state, "checkpointer", None)
-                        graph = create_rag_graph(checkpointer=checkpointer)
-                    except RuntimeError as e:
-                        await websocket.send_json({"type": "error", "content": str(e)})
-                        break
+                    await websocket.send_json({"type": "error", "content": "Selected graph is unavailable."})
+                    break
+                await websocket.send_json({"type": "routed", "graph_id": active_graph_id})
 
                 # One graph run = one thread; fresh thread_id per turn.
                 config["configurable"] = {"thread_id": f"{active_session.id}:{uuid.uuid4().hex}"}
-                pending_question = content
 
-                interrupted = await stream_and_send(
+                await stream_and_send(
                     websocket,
                     content,
                     all_user_team_ids,
@@ -127,19 +136,18 @@ async def chat_websocket(websocket: WebSocket):
                     config,
                     user=user,
                     session=active_session,
-                    question=content,
                     function=session_function,
                 )
-                if not interrupted:
-                    pending_question = None
 
             elif msg_type == "resume":
+                graphs = getattr(websocket.app.state, "graphs", {}) or {}
+                graph = graphs.get(active_graph_id) if active_graph_id else None
                 if graph is None or "configurable" not in config:
                     await websocket.send_json({"type": "error", "content": "No active turn to resume"})
                     break
 
                 # Reuse the current turn's thread_id (set when the message arrived).
-                interrupted = await stream_and_send(
+                await stream_and_send(
                     websocket,
                     Command(resume=data.get("content")),
                     all_user_team_ids,
@@ -148,11 +156,8 @@ async def chat_websocket(websocket: WebSocket):
                     config,
                     user=user,
                     session=active_session,
-                    question=pending_question,
                     show_thinking=False,
                 )
-                if not interrupted:
-                    pending_question = None
 
             else:
                 await websocket.send_json({"type": "error", "content": "Unknown message type"})

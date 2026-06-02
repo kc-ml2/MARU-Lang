@@ -18,8 +18,9 @@ if "maru_lang" not in sys.modules:
 
 from maru_lang.configs.models import MaruConfig, LLMConfig
 from maru_lang.graph.rag.state import RagState
-from maru_lang.graph.rag.graph import create_rag_graph, _build_retriever_and_compressor
-from maru_lang.graph.rag.retriever import VectorRetriever
+from maru_lang.graph.rag.graph import create_rag_graph
+from maru_lang.graph.rag.retriever import VectorRetriever, build_retriever
+from maru_lang.graph.rag.reranker import build_compressor
 
 # ─── Unit Tests (no API key needed) ─────────────────────────
 
@@ -50,30 +51,29 @@ class TestGraphCompilation:
         mock_model.bind_tools = MagicMock(return_value=mock_model)
 
         # Avoid loading real embeddings/reranker when compiling.
-        with patch(
-            "maru_lang.graph.rag.graph._build_retriever_and_compressor",
-            return_value=(MagicMock(), None),
-        ):
+        with patch("maru_lang.graph.rag.graph.build_retriever", return_value=MagicMock()), \
+             patch("maru_lang.graph.rag.graph.build_compressor", return_value=None):
             return create_rag_graph(mock_model)
 
     def test_graph_compiles_with_mock_model(self):
         compiled = self._make_graph()
         nodes = list(compiled.get_graph().nodes.keys())
-        # agent + search plumbing + rag pipeline nodes all in one graph
-        assert "agent" in nodes
+        # route(분류) + generate(답변) + RAG 파이프라인 노드
+        assert "route" in nodes
+        assert "generate" in nodes
         assert "search_entry" in nodes
-        assert "search_result" in nodes
         assert "intent" in nodes
         assert "evaluate" in nodes
-        # no separate ToolNode anymore
-        assert "tools" not in nodes
+        # ReAct/tool 잔재 없음
+        assert "agent" not in nodes
+        assert "search_result" not in nodes
 
     def test_graph_has_correct_edges(self):
         compiled = self._make_graph()
         edge_strs = str(compiled.get_graph().edges)
-        assert "agent" in edge_strs
+        assert "route" in edge_strs
+        assert "generate" in edge_strs
         assert "search_entry" in edge_strs
-        assert "search_result" in edge_strs
 
 
 class TestBuildRetriever:
@@ -90,9 +90,8 @@ class TestBuildRetriever:
 
     def test_no_reranker_returns_vector_retriever(self):
         cfg = MaruConfig(reranker_enabled=False)
-        retriever, compressor = _build_retriever_and_compressor(cfg)
-        assert isinstance(retriever, VectorRetriever)
-        assert compressor is None
+        assert isinstance(build_retriever(cfg), VectorRetriever)
+        assert build_compressor(cfg) is None
 
     def test_cross_encoder_reranker(self):
         cfg = MaruConfig(
@@ -101,8 +100,7 @@ class TestBuildRetriever:
             reranker_model="BAAI/bge-reranker-v2-m3",
             reranker_top_k=3,
         )
-        retriever, compressor = _build_retriever_and_compressor(cfg)
-        assert isinstance(retriever, VectorRetriever)
+        compressor = build_compressor(cfg)
 
         from maru_lang.graph.rag.reranker import CrossEncoderCompressor
         assert isinstance(compressor, CrossEncoderCompressor)
@@ -114,7 +112,7 @@ class TestBuildRetriever:
         from langchain_core.language_models import BaseChatModel
 
         mock_llm = MagicMock(spec=BaseChatModel)
-        with patch("maru_lang.graph.rag.graph.create_chat_model", return_value=mock_llm):
+        with patch("maru_lang.graph.rag.reranker.create_chat_model", return_value=mock_llm):
             cfg = MaruConfig(
                 reranker_enabled=True,
                 reranker_type="llm",
@@ -125,8 +123,7 @@ class TestBuildRetriever:
                               api_key="fake-key"),
                 ],
             )
-            retriever, compressor = _build_retriever_and_compressor(cfg)
-            assert isinstance(retriever, VectorRetriever)
+            compressor = build_compressor(cfg)
 
             from maru_lang.graph.rag.reranker import LLMReranker
             assert isinstance(compressor, LLMReranker)
@@ -137,7 +134,7 @@ class TestBuildRetriever:
         from langchain_core.language_models import BaseChatModel
 
         mock_llm = MagicMock(spec=BaseChatModel)
-        with patch("maru_lang.graph.rag.graph.create_chat_model", return_value=mock_llm):
+        with patch("maru_lang.graph.rag.reranker.create_chat_model", return_value=mock_llm):
             cfg = MaruConfig(
                 reranker_enabled=True,
                 reranker_type="llm",
@@ -147,8 +144,7 @@ class TestBuildRetriever:
                               api_key="fake-key"),
                 ],
             )
-            retriever, compressor = _build_retriever_and_compressor(cfg)
-            assert compressor is not None
+            assert build_compressor(cfg) is not None
 
     def test_llm_reranker_no_llms_raises(self):
         cfg = MaruConfig(
@@ -157,7 +153,7 @@ class TestBuildRetriever:
             llms=[],
         )
         with pytest.raises(RuntimeError, match="LLM reranker requires"):
-            _build_retriever_and_compressor(cfg)
+            build_compressor(cfg)
 
     def test_retriever_inherits_config_values(self):
         cfg = MaruConfig(
@@ -165,7 +161,7 @@ class TestBuildRetriever:
             embedding_model="custom/model",
             reranker_enabled=False,
         )
-        retriever, compressor = _build_retriever_and_compressor(cfg)
+        retriever = build_retriever(cfg)
         assert isinstance(retriever, VectorRetriever)
         assert retriever.top_k == 10
 
@@ -178,126 +174,115 @@ class TestBuildRetriever:
 # ─── New Unit Tests ──────────────────────────────────────────
 
 
-class TestShouldContinue:
-    def test_returns_search_entry_when_tool_calls_exist(self):
-        from langchain_core.messages import AIMessage
-        from maru_lang.graph.rag.graph import _should_continue
+class TestRouting:
+    def test_route_decision_search(self):
+        from maru_lang.graph.rag.nodes.route import route_decision
+        assert route_decision({"route": "search"}) == "search_entry"
 
-        msg = AIMessage(content="", tool_calls=[{"name": "knowledge_search", "args": {"query": "q"}, "id": "1"}])
-        state = {"messages": [msg], "team_ids": [], "team_names": []}
-        assert _should_continue(state) == "search_entry"
+    def test_route_decision_direct(self):
+        from maru_lang.graph.rag.nodes.route import route_decision
+        assert route_decision({"route": "direct"}) == "generate"
 
-    def test_returns_end_when_no_tool_calls(self):
-        from langchain_core.messages import AIMessage
-        from langgraph.graph import END
-        from maru_lang.graph.rag.graph import _should_continue
+    def test_feedback_route_on(self):
+        from maru_lang.graph.rag.nodes.feedback import feedback_route
+        assert feedback_route({"function": "feedback"}) == "score"
 
-        msg = AIMessage(content="answer")
-        state = {"messages": [msg], "team_ids": [], "team_names": []}
-        assert _should_continue(state) == END
-
-    def test_returns_score_when_feedback_mode(self):
-        from langchain_core.messages import AIMessage
-        from maru_lang.graph.rag.graph import _should_continue
-
-        msg = AIMessage(content="answer")
-        state = {"messages": [msg], "team_ids": [], "function": "feedback"}
-        assert _should_continue(state) == "score"
+    def test_feedback_route_off(self):
+        from maru_lang.graph.rag.nodes.feedback import feedback_route
+        assert feedback_route({}) == "summarize"
 
 
-class TestMakeAgentNode:
+class TestRouteNode:
     @pytest.mark.asyncio
-    async def test_default_system_prompt_when_empty(self):
+    async def test_classifies_search_vs_direct(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.language_models import BaseChatModel
+        from maru_lang.graph.rag.nodes.route import make_route_node
+
+        model = MagicMock(spec=BaseChatModel)
+        model.ainvoke = AsyncMock(return_value=AIMessage(content="DIRECT"))
+        node = make_route_node(model)
+        out = await node({"messages": [HumanMessage(content="안녕")]})
+        assert out["route"] == "direct"
+
+        model.ainvoke = AsyncMock(return_value=AIMessage(content="SEARCH"))
+        out = await node({"messages": [HumanMessage(content="우리 휴가 규정?")]})
+        assert out["route"] == "search"
+
+
+class TestGenerateNode:
+    @pytest.mark.asyncio
+    async def test_default_system_prompt_and_context_injection(self):
         from unittest.mock import AsyncMock, MagicMock
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
         from langchain_core.language_models import BaseChatModel
-        from maru_lang.graph.rag.nodes.agent import make_agent_node
+        from maru_lang.graph.rag.nodes.generate import make_generate_node
         from maru_lang.constants import SYSTEM_PROMPT
 
-        mock_model = MagicMock(spec=BaseChatModel)
-        mock_model.ainvoke = AsyncMock(return_value=AIMessage(content="response"))
+        model = MagicMock(spec=BaseChatModel)
+        model.ainvoke = AsyncMock(return_value=AIMessage(content="답변"))
 
-        node = make_agent_node(mock_model, "")
-        state = {
-            "messages": [HumanMessage(content="hello")],
-            "team_ids": [],
-            "team_names": [],
-        }
-        await node(state)
+        node = make_generate_node(model, "")
+        # 검색 결과(result)가 있으면 컨텍스트 SystemMessage가 추가되어야 함
+        await node({"messages": [HumanMessage(content="hi")], "result": "문서내용"})
 
-        call_args = mock_model.ainvoke.call_args[0][0]
-        assert isinstance(call_args[0], SystemMessage)
-        assert call_args[0].content == SYSTEM_PROMPT
+        sent = model.ainvoke.call_args[0][0]
+        sys_msgs = [m for m in sent if isinstance(m, SystemMessage)]
+        assert sys_msgs[0].content == SYSTEM_PROMPT
+        assert any("문서내용" in m.content for m in sys_msgs)  # context 주입
 
     @pytest.mark.asyncio
-    async def test_existing_system_message_not_duplicated(self):
+    async def test_no_context_when_no_result(self):
         from unittest.mock import AsyncMock, MagicMock
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
         from langchain_core.language_models import BaseChatModel
-        from maru_lang.graph.rag.nodes.agent import make_agent_node
+        from maru_lang.graph.rag.nodes.generate import make_generate_node
 
-        mock_model = MagicMock(spec=BaseChatModel)
-        mock_model.ainvoke = AsyncMock(return_value=AIMessage(content="response"))
+        model = MagicMock(spec=BaseChatModel)
+        model.ainvoke = AsyncMock(return_value=AIMessage(content="답변"))
+        node = make_generate_node(model, "prompt")
+        await node({"messages": [HumanMessage(content="hi")]})
 
-        node = make_agent_node(mock_model, "custom prompt")
-        state = {
-            "messages": [
-                SystemMessage(content="existing system"),
-                HumanMessage(content="hello"),
-            ],
-            "team_ids": [],
-            "team_names": [],
-        }
-        await node(state)
-
-        call_args = mock_model.ainvoke.call_args[0][0]
-        system_messages = [m for m in call_args if isinstance(m, SystemMessage)]
-        assert len(system_messages) == 1
-        assert system_messages[0].content == "existing system"
+        sent = model.ainvoke.call_args[0][0]
+        sys_msgs = [m for m in sent if isinstance(m, SystemMessage)]
+        assert len(sys_msgs) == 1  # 컨텍스트 없음 → 시스템 프롬프트 하나뿐
 
 
 class TestSearchEntryNode:
     @pytest.mark.asyncio
-    async def test_extracts_query_and_id_and_resets(self):
-        from langchain_core.messages import AIMessage
+    async def test_seeds_query_from_message_and_resets(self):
+        from langchain_core.messages import HumanMessage
         from maru_lang.graph.rag.nodes.search import make_search_entry_node
 
         node = make_search_entry_node()
-        msg = AIMessage(
-            content="",
-            tool_calls=[{"name": "knowledge_search", "args": {"query": "물어볼것"}, "id": "call_9"}],
-        )
-        # Carry stale rag fields to confirm reset
-        state = {"messages": [msg], "team_ids": [1], "retry_count": 2,
-                 "excluded_doc_ids": ["x"], "rag_log": ["old"]}
+        state = {"messages": [HumanMessage(content="강남 스시 맛집?")], "team_ids": [1],
+                 "retry_count": 2, "excluded_doc_ids": ["x"], "documents": ["stale"]}
         result = await node(state)
 
-        assert result["query"] == "물어볼것"
-        assert result["tool_call_id"] == "call_9"
+        assert result["query"] == "강남 스시 맛집?"
         assert result["retry_count"] == 0
         assert result["excluded_doc_ids"] == []
-        assert result["rag_log"] == []
         assert result["documents"] == []
 
 
-class TestSearchResultNode:
+class TestFormatNode:
     @pytest.mark.asyncio
-    async def test_builds_tool_message_and_sets_documents(self):
+    async def test_sets_result_and_retrieved_documents(self):
         from langchain_core.documents import Document
-        from langchain_core.messages import ToolMessage
-        from maru_lang.graph.rag.nodes.search import make_search_result_node
+        from maru_lang.graph.rag.nodes.format import format_node
 
-        node = make_search_result_node()
         doc = Document(page_content="본문", metadata={"document_id": "d1", "score": 0.5})
-        state = {"result": "formatted", "tool_call_id": "call_7", "documents": [doc]}
-        result = await node(state)
+        out = await format_node({"documents": [doc], "query": "q"})
+        assert out["result"]
+        assert out["retrieved_documents"][0]["document_id"] == "d1"
+        assert out["retrieved_documents"][0]["score"] == 0.5
 
-        msg = result["messages"][0]
-        assert isinstance(msg, ToolMessage)
-        assert msg.tool_call_id == "call_7"
-        assert msg.content == "formatted"
-        assert result["retrieved_documents"][0]["document_id"] == "d1"
-        assert result["retrieved_documents"][0]["score"] == 0.5
+    @pytest.mark.asyncio
+    async def test_empty_when_no_documents(self):
+        from maru_lang.graph.rag.nodes.format import format_node
+        out = await format_node({"documents": [], "query": "q"})
+        assert out["retrieved_documents"] == []
 
 
 class TestCreateRagGraphAutoModel:

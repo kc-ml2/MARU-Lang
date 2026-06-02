@@ -25,6 +25,28 @@ async def list_teams_by_user(user: User) -> list[dict]:
     ]
 
 
+async def resolve_user_graph_ids(user: User) -> list[str]:
+    """Graph ids the user may access = union over their teams' allowed_graphs.
+
+    A team with an empty allowed_graphs grants only the default graph (not all),
+    so newly registered graphs are opt-in per team. The result is intersected
+    with the registry and returned in registry order.
+    """
+    # Imported lazily: the registry pulls in the graph stack (embeddings/transformers),
+    # which we don't want to load just by importing this service module.
+    from maru_lang.graph.registry import registry_graph_ids, DEFAULT_GRAPH_ID
+
+    all_ids = registry_graph_ids()
+    memberships = await TeamMember.filter(user=user).select_related("team")
+
+    allowed: set[str] = set()
+    for m in memberships:
+        team_graphs = m.team.allowed_graphs or [DEFAULT_GRAPH_ID]
+        allowed |= set(team_graphs)
+
+    return [gid for gid in all_ids if gid in allowed]
+
+
 async def get_team_detail(team_id: int, user: User) -> dict:
     """
     Team 상세 조회: 멤버 목록 + 폴더(DocumentGroup) 목록

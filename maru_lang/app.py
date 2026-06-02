@@ -12,6 +12,8 @@ from maru_lang.core.relation_db import get_register_orm
 from maru_lang.configs import get_config
 from maru_lang.graph.ingest.embedder import get_embeddings
 from maru_lang.graph.checkpoint import build_checkpointer
+from maru_lang.graph.registry import GRAPH_REGISTRY
+from maru_lang.core.llm import get_model_with_fallbacks
 from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.chat import router as chat_router
 from maru_lang.api.endpoints.config import router as config_router
@@ -19,6 +21,7 @@ from maru_lang.api.endpoints.ingest import router as ingest_router
 from maru_lang.api.endpoints.internal import router as internal_router
 from maru_lang.api.endpoints.teams import router as teams_router
 from maru_lang.api.endpoints.session import router as session_router
+from maru_lang.api.endpoints.memory import router as memory_router
 
 
 class MaruLangApp(FastAPI):
@@ -127,6 +130,19 @@ class MaruLangApp(FastAPI):
             scheme, _ = cfg.resolve_checkpoint_target()
             print(f"✓ Checkpointer initialized ({scheme})")
 
+            # 5. Compile every registered graph once (app-scoped, shared across
+            #    connections; state lives in the checkpointer keyed by thread_id).
+            #    The graph_router picks among these per request. Empty if no LLM.
+            self.state.graphs = {}
+            self.state.router_model = None
+            try:
+                self.state.router_model = get_model_with_fallbacks()
+                for gid, spec in GRAPH_REGISTRY.items():
+                    self.state.graphs[gid] = spec.factory(checkpointer=self.state.checkpointer)
+                print(f"✓ Graphs compiled: {', '.join(self.state.graphs) or '(none)'}")
+            except RuntimeError as e:
+                logger.warning(f"Graphs not compiled — chat disabled: {e}")
+
             print("=" * 60)
             print("✨ Application startup complete!")
             print("=" * 60)
@@ -191,6 +207,7 @@ class MaruLangApp(FastAPI):
             self.include_router(internal_router)
             self.include_router(teams_router)
             self.include_router(session_router)
+            self.include_router(memory_router)
 
         # Run custom router hooks
         for hook in self._router_hooks:

@@ -27,6 +27,7 @@ class Team(Model):
         on_delete=fields.RESTRICT  # Prevents User deletion if managing Teams
     )
     is_private = fields.BooleanField(default=False)
+    allowed_graphs = fields.JSONField(default=list)  # graph ids; empty = all registered
     created_at = fields.DatetimeField(auto_now_add=True)
 
 

@@ -77,29 +77,26 @@ def _rag_seed(query="test", team_ids=(1,)):
 class TestRagGraphStructure:
     @staticmethod
     def _build():
-        from unittest.mock import patch
         from langchain_core.language_models import BaseChatModel
         from maru_lang.graph.rag.graph import create_rag_graph
 
         mock_model = MagicMock(spec=BaseChatModel)
         mock_model.bind_tools = MagicMock(return_value=mock_model)
-        with patch(
-            "maru_lang.graph.rag.graph._build_retriever_and_compressor",
-            return_value=(_make_mock_retriever(), None),
-        ):
+        with patch("maru_lang.graph.rag.graph.build_retriever", return_value=_make_mock_retriever()), \
+             patch("maru_lang.graph.rag.graph.build_compressor", return_value=None):
             return create_rag_graph(mock_model)
 
     def test_graph_compiles_with_all_nodes(self):
         node_names = list(self._build().get_graph().nodes.keys())
-        # rag pipeline nodes + agent + search plumbing all present in one graph
+        # route(분류) + generate(답변) + RAG 파이프라인 노드
         for expected in ["intent", "keywords", "retrieve", "evaluate", "rerank", "format",
-                         "agent", "search_entry", "search_result"]:
+                         "route", "generate", "search_entry", "context_builder", "summarize", "memory_extractor"]:
             assert expected in node_names, f"Missing node: {expected}"
 
     def test_graph_has_correct_edges(self):
         edges_str = str(self._build().get_graph().edges)
         for expected in ["intent", "keywords", "retrieve", "evaluate", "rerank", "format",
-                         "agent", "search_entry", "search_result"]:
+                         "route", "generate", "search_entry", "context_builder", "summarize", "memory_extractor"]:
             assert expected in edges_str
 
 

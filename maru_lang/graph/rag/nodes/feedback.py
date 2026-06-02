@@ -3,7 +3,15 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langgraph.types import interrupt
 
+from maru_lang.constants import FEEDBACK_REASON_THRESHOLD
 from maru_lang.graph.rag.state import RagState
+
+
+def feedback_route(state: RagState) -> str:
+    """After generate: go to score in feedback mode, else to summarize (terminal)."""
+    if state.get("function") == "feedback":
+        return "score"
+    return "summarize"
 
 
 def score_node(state: RagState) -> dict:
@@ -17,12 +25,11 @@ def score_node(state: RagState) -> dict:
 
 
 def score_route(state: RagState) -> str:
-    """Route to reason node if score <= 3, otherwise END."""
-    from langgraph.graph import END
+    """Route to reason if score is low, otherwise to summarize (terminal)."""
     score = state.get("feedback_score")
-    if score is not None and score <= 3:
+    if score is not None and score <= FEEDBACK_REASON_THRESHOLD:
         return "reason"
-    return END
+    return "summarize"
 
 
 def make_reason_node(model: BaseChatModel):

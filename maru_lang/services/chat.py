@@ -40,6 +40,16 @@ async def fetch_conversation_by_user_and_date(
 
     return conversations if conversations else None
 
+async def fetch_recent_conversations_by_session(
+    session_id: str,
+    limit: int = 3,
+) -> List[Conversation]:
+    """Fetch the session's recent conversations, newest first (for memory context)."""
+    return await Conversation.filter(
+        session_id=session_id,
+    ).order_by("-created_at").limit(limit).all()
+
+
 async def create_conversation(
     user: User,
     question: str,
@@ -47,6 +57,7 @@ async def create_conversation(
     references: List[dict],
     session: Session | None = None,
     enhanced_question: str | None = None,
+    summary: str | None = None,
     feedback_score: int | None = None,
     feedback_reason: str | None = None,
 ) -> Conversation:
@@ -58,7 +69,7 @@ async def create_conversation(
         question: User's question
         answer: Generated answer
         references: Retrieved documents from graph state (list of dicts with
-            "document_id" and "score" keys, as produced by the knowledge_search tool)
+            "document_id" and "score" keys, as produced by the RAG format node)
         session: Owning chat session (LangGraph thread), if any
         enhanced_question: Enhanced/rewritten question (optional)
         feedback_score: User feedback score for this turn (optional)
@@ -70,6 +81,7 @@ async def create_conversation(
         question=question,
         answer=answer,
         enhanced_question=enhanced_question,
+        summary=summary,
         feedback_score=feedback_score,
         feedback_reason=feedback_reason,
     )

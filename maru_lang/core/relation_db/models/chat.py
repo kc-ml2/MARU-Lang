@@ -1,6 +1,6 @@
 from tortoise.models import Model
 from tortoise import fields
-from maru_lang.enums.chat import SessionStatus
+from maru_lang.enums.chat import SessionStatus, UserMemoryKind
 
 
 class Session(Model):
@@ -21,6 +21,22 @@ class Session(Model):
 
     class Meta:  # type: ignore
         table = "session"
+        ordering = ["-updated_at"]
+
+
+class UserMemory(Model):
+    """사용자 단위 영구 메모리 (세션 무관) — 사실/선호."""
+    id = fields.IntField(pk=True)
+    user = fields.ForeignKeyField(
+        "models.User", related_name="memories", on_delete=fields.CASCADE, index=True)
+    kind = fields.IntEnumField(UserMemoryKind)
+    key = fields.CharField(max_length=255, null=True)  # FACT upsert 키 (예: "name")
+    content = fields.TextField()
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:  # type: ignore
+        table = "user_memory"
         ordering = ["-updated_at"]
 
 
