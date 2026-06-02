@@ -31,6 +31,7 @@ class ConversationResponse(BaseModel):
     id: int
     question: str
     answer: str
+    summary: Optional[str] = None
     created_at: datetime
 
     class Config:

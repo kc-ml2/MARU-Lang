@@ -1,16 +1,20 @@
 """Sessions API 통합 테스트.
 
 엔드포인트:
-  POST /sessions       — 새 세션 생성
-  GET  /sessions/last  — 마지막 세션 조회 (없으면 생성)
+  POST /sessions                         — 새 세션 생성
+  GET  /sessions                         — 내 세션 목록(페이지네이션)
+  GET  /sessions/last                    — 마지막 세션 조회 (없으면 생성)
+  GET  /sessions/{id}/conversations      — 세션 대화 이력(페이지네이션)
 """
 import pytest
 from fastapi import FastAPI
+from fastapi_pagination import add_pagination
 from httpx import AsyncClient, ASGITransport
 
 from maru_lang.core.relation_db.models.chat import Session
 from maru_lang.enums.chat import SessionStatus
 from maru_lang.services.session import create_session
+from maru_lang.services.chat import create_conversation
 from tests.conftest import auth_header
 
 
@@ -21,6 +25,7 @@ def app() -> FastAPI:
 
     test_app = FastAPI()
     test_app.include_router(session_router)
+    add_pagination(test_app)
     return test_app
 
 
@@ -80,3 +85,35 @@ class TestGetLastSession:
         resp = await client.get("/sessions/last", headers=auth_header(user_alice.id))
         assert resp.status_code == 200
         assert resp.json()["id"] != deleted.id
+
+
+class TestListSessions:
+    async def test_lists_my_sessions_excludes_deleted_and_others(self, client, user_alice, user_bob):
+        await create_session(user_alice, title="A")
+        gone = await create_session(user_alice, title="B")
+        gone.status = SessionStatus.DELETED
+        await gone.save()
+        await create_session(user_bob)  # other user
+
+        resp = await client.get("/sessions", headers=auth_header(user_alice.id))
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["title"] == "A"
+
+
+class TestSessionConversations:
+    async def test_returns_chronological_history(self, client, user_alice):
+        session = await create_session(user_alice)
+        await create_conversation(user=user_alice, session=session, question="q1", answer="a1", references=[])
+        await create_conversation(user=user_alice, session=session, question="q2", answer="a2", references=[])
+
+        resp = await client.get(f"/sessions/{session.id}/conversations", headers=auth_header(user_alice.id))
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert [c["question"] for c in items] == ["q1", "q2"]  # chronological
+
+    async def test_404_for_other_users_session(self, client, user_alice, user_bob):
+        session = await create_session(user_bob)
+        resp = await client.get(f"/sessions/{session.id}/conversations", headers=auth_header(user_alice.id))
+        assert resp.status_code == 404

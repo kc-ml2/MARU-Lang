@@ -35,6 +35,11 @@ async def get_session_for_user(session_id: str, user: User) -> Session | None:
     return session
 
 
+def list_sessions_by_user(user: User):
+    """User's non-deleted sessions as a QuerySet (newest first; for pagination)."""
+    return Session.filter(user=user).exclude(status=SessionStatus.DELETED).order_by("-updated_at")
+
+
 async def get_last_session(user: User) -> Session | None:
     """Return the user's most recently updated non-deleted session, or None."""
     return (

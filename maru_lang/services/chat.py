@@ -50,6 +50,11 @@ async def fetch_recent_conversations_by_session(
     ).order_by("-created_at").limit(limit).all()
 
 
+def fetch_conversations_by_session(session_id: str):
+    """The session's conversations as a QuerySet (chronological; for pagination)."""
+    return Conversation.filter(session_id=session_id).order_by("created_at")
+
+
 async def create_conversation(
     user: User,
     question: str,
