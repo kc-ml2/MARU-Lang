@@ -55,6 +55,85 @@ Powers intelligent query processing and response generation — **core functiona
 
 ---
 
+## 🏗️ Architecture
+
+### System overview
+
+```mermaid
+graph LR
+    Client[Web UI / CLI]
+    Client -->|REST| API["FastAPI<br/>auth · teams · sessions · memory · ingest · config"]
+    Client -->|WebSocket| WS["/chat/connect"]
+
+    WS --> Router{"graph_router<br/>(team-scoped selection)"}
+    Router --> Chat["chat graph"]
+    Router -.-> Other["other graphs<br/>(registry, opt-in per team)"]
+
+    API --> RDB[("Relational DB<br/>User · Team · Session<br/>Conversation · UserMemory")]
+    Chat --> RDB
+    Chat --> CP[("Checkpointer<br/>(turn state)")]
+    Chat --> VDB[("Vector DB")]
+    Ingest["Ingest pipeline<br/>load → chunk → embed"] --> VDB
+```
+
+- **Two routing levels**: `graph_router` (L1) picks which graph to run within the team's accessible set; each graph then routes internally (L2).
+- **Memory loop**: the chat graph reads memory up front (`context_builder`) and writes it back at the end (`summarize`, `memory_extractor`) — see below.
+
+### Chat graph (auto-generated from the compiled graph)
+
+> Regenerate with `python scripts/draw_graph.py` — traced from the actual `create_rag_graph()` topology.
+
+```mermaid
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	context_builder(context_builder)
+	route(route)
+	generate(generate)
+	search_entry(search_entry)
+	intent(intent)
+	keywords(keywords)
+	retrieve(retrieve)
+	evaluate(evaluate)
+	rerank(rerank)
+	format(format)
+	score(score)
+	reason(reason)
+	summarize(summarize)
+	memory_extractor(memory_extractor)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> context_builder;
+	context_builder --> route;
+	evaluate -. &nbsp;retry&nbsp; .-> keywords;
+	evaluate -.-> rerank;
+	format --> generate;
+	generate -.-> score;
+	generate -.-> summarize;
+	intent --> keywords;
+	keywords --> retrieve;
+	reason --> summarize;
+	rerank --> format;
+	retrieve --> evaluate;
+	route -.-> generate;
+	route -.-> search_entry;
+	score -.-> reason;
+	score -.-> summarize;
+	search_entry --> intent;
+	summarize --> memory_extractor;
+	memory_extractor --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
+- **context_builder** → loads user memory (facts/preferences) + session summary/recent turns.
+- **route** → classifies search vs. direct answer.
+- **search_entry → … → format** → RAG retrieval with an evaluate/retry loop.
+- **generate** → produces the answer (with retrieved + memory context).
+- **score/reason** → optional feedback collection (interrupt/resume).
+- **summarize → memory_extractor** → write-back: turn/session summaries + durable user memory.
+
+---
+
 ## 🧩 Getting Started
 
 ### 🔧 Installation
