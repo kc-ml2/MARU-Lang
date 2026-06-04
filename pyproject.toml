@@ -54,6 +54,7 @@ dependencies = [
     "unstructured[pdf]>=0.10.0",
     "msoffcrypto-tool>=5.0.0",
     "python-docx>=0.8.11",
+    "docx2txt>=0.8",
     "python-pptx>=0.6.21",
     "openpyxl>=3.0.0",
     "beautifulsoup4>=4.12.0",
