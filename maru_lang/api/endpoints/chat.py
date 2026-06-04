@@ -186,5 +186,12 @@ async def chat_websocket(websocket: WebSocket):
         except Exception:
             pass
     finally:
-        if websocket.client_state != WebSocketState.DISCONNECTED:
-            await websocket.close()
+        # Guard on application_state (did *we* already send a close?), not
+        # client_state — otherwise a re-close after the socket is already closed
+        # raises 'Cannot call "send" once a close message has been sent.' The
+        # try/except absorbs a close racing with a client disconnect.
+        if websocket.application_state != WebSocketState.DISCONNECTED:
+            try:
+                await websocket.close()
+            except RuntimeError:
+                pass
