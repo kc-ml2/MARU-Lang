@@ -7,7 +7,7 @@ from starlette.websockets import WebSocketState
 
 from maru_lang.services.auth import verify_chat_token
 from maru_lang.dependencies.auth import User
-from maru_lang.services.team import list_teams_by_user, resolve_user_graph_ids
+from maru_lang.services.team import list_teams_by_user, resolve_user_graph_ids, scope_team_ids
 from maru_lang.services.session import get_session_for_user
 from maru_lang.core.relation_db.models.chat import Session
 from maru_lang.graph.router import select_graph
@@ -38,7 +38,10 @@ async def chat_websocket(websocket: WebSocket):
         1. Client sends: {"type": "auth", "chat_token": "...", "session_id": "..."}
         2. Server authenticates + validates session ownership
         3. (Optional) Client sends: {"type": "configure", "function": "legal", ...}
-        4. Client sends: {"type": "message", "content": "..."}
+        4. Client sends: {"type": "message", "content": "...", "team_ids": [1, 2]}
+           - team_ids is optional; it scopes document search to those teams
+             (intersected with the user's own teams). Omit/empty -> all the
+             user's teams.
         5. Server streams: {"type": "routed"|"thinking"|"stream"|"retrieve"|"interrupt"|"complete"|"error", ...}
         6. On interrupt, client sends: {"type": "resume", "content": ...}
     """
@@ -53,6 +56,8 @@ async def chat_websocket(websocket: WebSocket):
     active_session: Session | None = None
     allowed_graph_ids: list[str] = []
     active_graph_id: str | None = None  # graph chosen for the current turn
+    active_team_ids: list[int] = []     # team scope for the current turn
+    active_team_names: list[str] = []
     config = {}
     session_function: str | None = None
 
@@ -110,6 +115,16 @@ async def chat_websocket(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "content": "User does not belong to any team"})
                     break
 
+                # Per-message team scoping: the client may send `team_ids` to limit
+                # document search to a subset of its teams. Unset/empty -> all of the
+                # user's teams. scope_team_ids intersects with the user's own teams so
+                # an inaccessible team can't be searched (returns None if none match).
+                scoped = scope_team_ids(data.get("team_ids"), all_user_teams)
+                if scoped is None:
+                    await websocket.send_json({"type": "error", "content": "None of the requested team_ids are accessible"})
+                    break
+                active_team_ids, active_team_names = scoped
+
                 graphs = getattr(websocket.app.state, "graphs", {}) or {}
                 if not graphs or not allowed_graph_ids:
                     await websocket.send_json({"type": "error", "content": "Chat is unavailable (no LLM configured)."})
@@ -130,8 +145,8 @@ async def chat_websocket(websocket: WebSocket):
                 await stream_and_send(
                     websocket,
                     content,
-                    all_user_team_ids,
-                    all_user_team_names,
+                    active_team_ids,
+                    active_team_names,
                     graph,
                     config,
                     user=user,
@@ -146,12 +161,12 @@ async def chat_websocket(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "content": "No active turn to resume"})
                     break
 
-                # Reuse the current turn's thread_id (set when the message arrived).
+                # Reuse the current turn's thread_id + team scope (set when the message arrived).
                 await stream_and_send(
                     websocket,
                     Command(resume=data.get("content")),
-                    all_user_team_ids,
-                    all_user_team_names,
+                    active_team_ids,
+                    active_team_names,
                     graph,
                     config,
                     user=user,

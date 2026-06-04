@@ -25,6 +25,33 @@ async def list_teams_by_user(user: User) -> list[dict]:
     ]
 
 
+def scope_team_ids(
+    requested_team_ids,
+    all_user_teams: list[dict],
+) -> tuple[list[int], list[str]] | None:
+    """Resolve a client's requested team_ids against the user's own teams.
+
+    Used to scope chat document search per message. The request is never trusted:
+    only teams the user actually belongs to survive.
+
+    - unset/empty request -> all the user's teams
+    - otherwise -> the intersection with the user's teams (order preserved)
+    - returns None if the request names only teams the user can't access
+      (the caller should reject the message)
+    """
+    if isinstance(requested_team_ids, int):
+        requested_team_ids = [requested_team_ids]
+
+    if requested_team_ids:
+        requested = set(requested_team_ids)
+        scoped = [t for t in all_user_teams if t["id"] in requested]
+        if not scoped:
+            return None
+        return [t["id"] for t in scoped], [t["name"] for t in scoped]
+
+    return [t["id"] for t in all_user_teams], [t["name"] for t in all_user_teams]
+
+
 async def resolve_user_graph_ids(user: User) -> list[str]:
     """Graph ids the user may access = union over their teams' allowed_graphs.
 
