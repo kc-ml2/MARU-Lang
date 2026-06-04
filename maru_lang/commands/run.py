@@ -9,6 +9,11 @@ import websockets
 from pathlib import Path
 
 import httpx
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion, PathCompleter
+from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.live import Live
@@ -17,6 +22,50 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 console = Console()
+
+# Slash commands available in the chat REPL (used for autocomplete + help).
+_SLASH_COMMANDS = [
+    "/ingest", "/team", "/status", "/llms", "/function", "/help", "/clear", "/quit", "/exit",
+]
+
+
+class _ChatCompleter(Completer):
+    """Context-aware completion for the chat REPL.
+
+    - bare `/...`      → slash command names
+    - `/ingest <path>` → filesystem path completion
+    - `/function <x>`  → feedback | off
+    - `/team <names>`  → current team names (comma-separated)
+    """
+
+    def __init__(self, teams_getter):
+        self._path = PathCompleter(expanduser=True)
+        self._teams_getter = teams_getter  # callable -> list[str]
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+
+        if " " not in text:  # still typing the command itself
+            for cmd in _SLASH_COMMANDS:
+                if cmd.startswith(text):
+                    yield Completion(cmd, start_position=-len(text))
+            return
+
+        cmd, _, arg = text.partition(" ")
+        if cmd == "/ingest":
+            sub = Document(arg, cursor_position=len(arg))
+            yield from self._path.get_completions(sub, complete_event)
+        elif cmd == "/function":
+            for opt in ("feedback", "off"):
+                if opt.startswith(arg.strip()):
+                    yield Completion(opt, start_position=-len(arg))
+        elif cmd == "/team":
+            frag = arg.rsplit(",", 1)[-1].lstrip()
+            for name in self._teams_getter():
+                if name.startswith(frag):
+                    yield Completion(name, start_position=-len(frag))
 
 
 class _QuitSignal(Exception):
@@ -205,14 +254,20 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
     console.print(Panel.fit(
         "[bold cyan]MARU Run[/bold cyan]\n"
         f"[yellow]Teams: {team_display}[/yellow]\n"
-        "[dim]Type /help for commands, /quit to exit[/dim]",
+        "[dim]Type /help for commands, /quit to exit · Tab for autocomplete[/dim]",
         border_style="cyan",
     ))
+
+    # prompt_toolkit session: Tab autocomplete (slash commands, /ingest paths) + history.
+    session = PromptSession(
+        history=InMemoryHistory(),
+        completer=_ChatCompleter(lambda: current_teams),
+    )
 
     try:
         while True:
             try:
-                user_input = Prompt.ask("\n[bold blue]You[/bold blue]")
+                user_input = await session.prompt_async(HTML("\n<ansiblue><b>You</b></ansiblue> ❯ "))
             except (EOFError, KeyboardInterrupt):
                 break
 
@@ -329,7 +384,12 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
 
                         msg_type = msg.get("type")
 
-                        if msg_type == "stream":
+                        if msg_type == "routed":
+                            gid = msg.get("graph_id")
+                            if gid:
+                                # printed above the live region; persists with the answer
+                                console.print(f"[dim]🧭 graph: {gid}[/dim]")
+                        elif msg_type == "stream":
                             answer += msg.get("content", "")
                             live.update(Markdown(answer))
                         elif msg_type == "thinking":

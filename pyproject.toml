@@ -24,6 +24,7 @@ dependencies = [
     "fastapi-pagination>=0.12.0",
     # CLI
     "typer[all]>=0.9.0",
+    "prompt_toolkit>=3.0.0",
     # ORM / DB
     "tortoise-orm[asyncpg]>=0.20.0",
     "aerich>=0.7.2",
