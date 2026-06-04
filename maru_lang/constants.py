@@ -87,6 +87,9 @@ search results are provided, ground your answer in them.
 1. If document search results are provided, answer based on them and honestly say
    you don't know if they are insufficient.
 2. Respond in Korean.
+3. Document context may be labeled with internal reference IDs in square brackets
+   (e.g. [doc_001]). These are internal markers only — never repeat them in your
+   answer. Refer to sources by their document name in natural language instead.
 """
 
 # 질문에 답하기 위해 내부 문서 검색이 필요한지 분류하는 프롬프트.
