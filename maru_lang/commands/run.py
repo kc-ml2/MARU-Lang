@@ -164,30 +164,17 @@ def _start_workers(count: int) -> list:
         return []
 
     from maru_lang.configs import get_config
+    from maru_lang.commands.worker import spawn_worker
 
     cfg = get_config()
-    if not cfg.task_queue_enabled or not cfg.redis_url:
+    if not cfg.queue_enabled:
         console.print(
             "[yellow]--worker ignored:[/yellow] task_queue_enabled + redis_url not set."
         )
         return []
 
-    env = os.environ.copy()
-    cwd = os.getcwd()
-    paths = [cwd]
-    if env.get("PYTHONPATH"):
-        paths.append(env["PYTHONPATH"])
-    env["PYTHONPATH"] = os.pathsep.join(paths)
-
     console.print(f"[dim]Starting {count} ingest worker(s) (redis={cfg.redis_url})...[/dim]")
-    return [
-        subprocess.Popen(
-            [sys.executable, "-m", "arq", "maru_lang.worker.WorkerSettings"],
-            env=env,
-            cwd=cwd,
-        )
-        for _ in range(count)
-    ]
+    return [spawn_worker() for _ in range(count)]
 
 
 def _stop_server(proc: subprocess.Popen):

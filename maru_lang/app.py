@@ -148,7 +148,7 @@ class MaruLangApp(FastAPI):
             #    ARQ Redis pool used by /ingest/upload to enqueue embedding jobs.
             #    Its presence on app.state is the on/off switch for queue mode.
             self.state.arq = None
-            if cfg.task_queue_enabled:
+            if cfg.queue_enabled:
                 from arq import create_pool
                 from arq.connections import RedisSettings
                 self.state.arq = await create_pool(RedisSettings.from_dsn(cfg.redis_url))

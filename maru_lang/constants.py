@@ -23,6 +23,12 @@ CHROMA_MAX_BATCH_SIZE = 5000
 
 LOCALHOST_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
+# --- Task queue (ARQ) ---
+
+# Single source of truth for the ingest job name: the enqueue side
+# (api/endpoints/ingest.py) and the worker registration (worker.py) must agree.
+INGEST_TASK_NAME = "ingest_document_task"
+
 # --- Admin ---
 
 ADMIN_EMAIL = "admin@maru.local"

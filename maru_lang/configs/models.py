@@ -222,6 +222,11 @@ class MaruConfig:
 
     # --- Convenience helpers ---
 
+    @property
+    def queue_enabled(self) -> bool:
+        """True when the ingest task queue is active (flag on + redis_url set)."""
+        return bool(self.task_queue_enabled and self.redis_url)
+
     def resolve_ingest_embedding_device(self) -> Optional[str]:
         """Device for document (ingest) embedding; falls back to embedding_device."""
         return (

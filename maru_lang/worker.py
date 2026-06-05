@@ -11,9 +11,11 @@ API process never pays the embedding cost and the GPU is held by one place.
 """
 import logging
 
+from arq import func
 from arq.connections import RedisSettings
 
 from maru_lang.configs import get_config
+from maru_lang.constants import INGEST_TASK_NAME
 from maru_lang.core.relation_db.connection import orm_context
 from maru_lang.graph.ingest.embedder import get_embeddings
 
@@ -73,7 +75,9 @@ if not _cfg.redis_url:
 class WorkerSettings:
     """ARQ entrypoint: `arq maru_lang.worker.WorkerSettings`."""
 
-    functions = [ingest_document_task]
+    # Register with an explicit name tied to INGEST_TASK_NAME so the enqueue
+    # side (api/endpoints/ingest.py) and the worker can't drift apart.
+    functions = [func(ingest_document_task, name=INGEST_TASK_NAME)]
     redis_settings = RedisSettings.from_dsn(_cfg.redis_url)
     on_startup = _on_startup
     on_shutdown = _on_shutdown

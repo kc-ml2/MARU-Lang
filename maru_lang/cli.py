@@ -3,6 +3,7 @@ from maru_lang.commands.install import install_configs
 from maru_lang.commands.run import run_session
 from maru_lang.commands.test import run_test_command
 from maru_lang.core.relation_db.connection import run_with_orm_context
+from maru_lang.constants import PUBLIC_TEAM_NAME
 import asyncio
 import logging
 import sys
@@ -180,7 +181,7 @@ def _require_queue_for_worker(config, worker_count: int) -> None:
     A worker without task_queue_enabled+redis_url can never receive jobs, so
     treat it as a misconfiguration and refuse to start (rather than warn+skip).
     """
-    if worker_count > 0 and (not config.task_queue_enabled or not config.redis_url):
+    if worker_count > 0 and not config.queue_enabled:
         typer.echo(
             "❌ --worker requires task_queue_enabled: true and redis_url in maru_config.yaml.\n"
             "   Enable the queue, or drop --worker to run ingest in-process."
@@ -192,20 +193,9 @@ def _start_ingest_workers(config, count: int) -> list:
     """Launch `count` ARQ ingest worker subprocesses (empty list if count<=0)."""
     if count <= 0:
         return []
-    env = os.environ.copy()
-    paths = [os.getcwd()]
-    if env.get("PYTHONPATH"):
-        paths.append(env["PYTHONPATH"])
-    env["PYTHONPATH"] = os.pathsep.join(paths)
+    from maru_lang.commands.worker import spawn_worker
     typer.echo(f"🧵 Starting {count} ingest worker(s) (redis={config.redis_url})")
-    return [
-        subprocess.Popen(
-            [sys.executable, "-m", "arq", "maru_lang.worker.WorkerSettings"],
-            env=env,
-            cwd=os.getcwd(),
-        )
-        for _ in range(count)
-    ]
+    return [spawn_worker() for _ in range(count)]
 
 
 @app.command()
@@ -229,8 +219,11 @@ def run(
     if not teams:
         # No --team given: start on the default 'public' team without blocking
         # on a prompt. Switch any time in chat with /team <name>.
-        teams = "public"
-        typer.echo("ℹ️  No --team given; starting on 'public' (switch in chat with /team <name>).")
+        teams = PUBLIC_TEAM_NAME
+        typer.echo(
+            f"ℹ️  No --team given; starting on '{PUBLIC_TEAM_NAME}' "
+            "(switch in chat with /team <name>)."
+        )
 
     _check_maru_app_installation()
 

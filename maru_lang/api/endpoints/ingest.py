@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form, Query
 
+from maru_lang.constants import INGEST_TASK_NAME
 from maru_lang.enums.auth import UserRoleCode
 from maru_lang.enums.documents import DocumentStatus, AuditAction
 
@@ -64,7 +65,7 @@ async def upload_file(
 
     arq = getattr(request.app.state, "arq", None)
     if arq is not None:
-        await arq.enqueue_job("ingest_document_task", doc.id, team_id)
+        await arq.enqueue_job(INGEST_TASK_NAME, doc.id, team_id)
         status = "queued"
     else:
         background_tasks.add_task(run_ingest_for_document, doc, team_id)
