@@ -26,8 +26,11 @@ dependencies = [
     "typer[all]>=0.9.0",
     "prompt_toolkit>=3.0.0",
     # ORM / DB
-    "tortoise-orm[asyncpg]>=0.20.0",
-    "aerich>=0.7.2",
+    # Pinned <1.0: tortoise 1.x switched connections to context-scoped
+    # (TortoiseContext), which breaks the app's RegisterTortoise-at-startup
+    # lifespan pattern (see issue: tortoise 1.x migration).
+    "tortoise-orm[asyncpg]>=0.20.0,<1.0",
+    "aerich>=0.7.2,<0.9",
     # Auth
     "python-jose[cryptography]>=3.3.0",
     "passlib>=1.7.4",
