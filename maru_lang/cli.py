@@ -211,7 +211,7 @@ def _start_ingest_workers(config, count: int) -> list:
 @app.command()
 def run(
     teams: str = typer.Option(None, "--team", "-t",
-                              help="Team names (comma-separated, e.g. 'team1,team2')"),
+                              help="Team names (comma-separated). Default: 'public' (switch in chat with /team)."),
     host: str = typer.Option(None, help="Server host"),
     port: int = typer.Option(None, help="Server port"),
     skip_migrations: bool = typer.Option(
@@ -227,7 +227,10 @@ def run(
         _enable_verbose_logging()
 
     if not teams:
-        teams = typer.prompt("Team name(s)")
+        # No --team given: start on the default 'public' team without blocking
+        # on a prompt. Switch any time in chat with /team <name>.
+        teams = "public"
+        typer.echo("ℹ️  No --team given; starting on 'public' (switch in chat with /team <name>).")
 
     _check_maru_app_installation()
 
