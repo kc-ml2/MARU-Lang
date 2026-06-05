@@ -67,6 +67,9 @@ system_prompt: |
 # --- AI/ML ---
 
 embedding_model: BAAI/bge-m3
+# embedding_device: null          # query/retrieval device; null=auto (GPU if avail), or "cuda"/"cpu"/"mps"
+# ingest_embedding_device: null   # worker/ingest device; null=follow embedding_device.
+                                  # Split to keep one GPU copy: embedding_device=cpu + ingest_embedding_device=cuda
 retriever_top_k: 5
 retriever_search_method: vector  # "vector" or "hybrid" (hybrid requires LanceDB)
 
@@ -76,3 +79,11 @@ reranker_enabled: false
 reranker_type: cross_encoder
 reranker_model: BAAI/bge-reranker-v2-m3
 reranker_top_k: 5
+
+# --- Ingest task queue (optional) ---
+# When enabled, /ingest/upload offloads embedding to a separate ARQ worker
+# process (run it with `maru worker`). Disabled -> embedding runs in-process
+# via FastAPI BackgroundTasks (identical to default behavior).
+# Enabling REQUIRES redis_url, otherwise startup fails fast.
+task_queue_enabled: false
+# redis_url: redis://localhost:6379

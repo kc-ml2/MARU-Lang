@@ -37,6 +37,8 @@ dependencies = [
     # HTTP / WebSocket
     "httpx>=0.24.0",
     "websockets>=12.0",
+    # Task queue (optional ingest offloading; activated by task_queue_enabled)
+    "arq>=0.25.0",
     # Config
     "pyyaml>=6.0.0",
     # VectorDB

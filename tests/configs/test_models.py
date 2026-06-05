@@ -101,6 +101,38 @@ class TestMaruConfig:
         assert config.server.host == "127.0.0.1"
         assert config.retriever_top_k == 5
 
+    def test_task_queue_defaults_disabled(self):
+        config = MaruConfig.from_dict({})
+        assert config.task_queue_enabled is False
+        assert config.redis_url is None
+
+    def test_task_queue_enabled_with_redis(self):
+        config = MaruConfig.from_dict(
+            {"task_queue_enabled": True, "redis_url": "redis://localhost:6379"}
+        )
+        assert config.task_queue_enabled is True
+        assert config.redis_url == "redis://localhost:6379"
+
+    def test_task_queue_enabled_without_redis_fails_fast(self):
+        with pytest.raises(ValueError, match="redis_url"):
+            MaruConfig.from_dict({"task_queue_enabled": True})
+
+    def test_ingest_embedding_device_falls_back_to_embedding_device(self):
+        cfg = MaruConfig.from_dict({"embedding_device": "cpu"})
+        assert cfg.ingest_embedding_device is None
+        assert cfg.resolve_ingest_embedding_device() == "cpu"
+
+    def test_ingest_embedding_device_override(self):
+        cfg = MaruConfig.from_dict(
+            {"embedding_device": "cpu", "ingest_embedding_device": "cuda"}
+        )
+        assert cfg.resolve_ingest_embedding_device() == "cuda"
+        assert cfg.embedding_device == "cpu"  # query side unchanged
+
+    def test_ingest_embedding_device_both_none_is_auto(self):
+        cfg = MaruConfig.from_dict({})
+        assert cfg.resolve_ingest_embedding_device() is None
+
     def test_from_dict_llm_parsing(self):
         data = {
             "llms": [

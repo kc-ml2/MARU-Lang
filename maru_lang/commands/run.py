@@ -77,14 +77,22 @@ async def run_session(
     host: str,
     port: int,
     skip_migrations: bool,
+    worker_count: int = 0,
 ):
-    """Main entry: start server, connect WebSocket, run REPL."""
+    """Main entry: start server, connect WebSocket, run REPL.
+
+    When worker_count > 0 (and the task queue is enabled) that many ARQ ingest
+    workers are co-launched as sibling subprocesses and torn down with the server.
+    """
     base_url = f"http://{host}:{port}"
     ws_url = f"ws://{host}:{port}/chat/connect"
 
     # 1. Start server
     server_proc = _start_server(host, port, skip_migrations)
     console.print(f"[dim]Starting server on {host}:{port}...[/dim]")
+
+    # 1b. Optionally co-launch ingest worker(s).
+    worker_procs = _start_workers(worker_count)
 
     try:
         # 2. Wait for server ready
@@ -106,6 +114,10 @@ async def run_session(
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted.[/yellow]")
     finally:
+        for p in worker_procs:
+            _stop_server(p)
+        if worker_procs:
+            console.print(f"[dim]Worker(s) stopped ({len(worker_procs)}).[/dim]")
         _stop_server(server_proc)
         console.print("[dim]Server stopped.[/dim]")
 
@@ -139,6 +151,43 @@ def _start_server(host: str, port: int, skip_migrations: bool) -> subprocess.Pop
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
+
+
+def _start_workers(count: int) -> list:
+    """Start `count` ARQ ingest workers as sibling subprocesses.
+
+    Returns [] for count<=0 or when the task queue isn't enabled (the CLI
+    already fails fast on --worker without a queue; this is a belt-and-suspenders
+    guard for direct callers).
+    """
+    if count <= 0:
+        return []
+
+    from maru_lang.configs import get_config
+
+    cfg = get_config()
+    if not cfg.task_queue_enabled or not cfg.redis_url:
+        console.print(
+            "[yellow]--worker ignored:[/yellow] task_queue_enabled + redis_url not set."
+        )
+        return []
+
+    env = os.environ.copy()
+    cwd = os.getcwd()
+    paths = [cwd]
+    if env.get("PYTHONPATH"):
+        paths.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(paths)
+
+    console.print(f"[dim]Starting {count} ingest worker(s) (redis={cfg.redis_url})...[/dim]")
+    return [
+        subprocess.Popen(
+            [sys.executable, "-m", "arq", "maru_lang.worker.WorkerSettings"],
+            env=env,
+            cwd=cwd,
+        )
+        for _ in range(count)
+    ]
 
 
 def _stop_server(proc: subprocess.Popen):

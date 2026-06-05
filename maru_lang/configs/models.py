@@ -94,7 +94,18 @@ class MaruConfig:
 
     # Embedder
     embedding_model: str = "BAAI/bge-m3"
-    embedding_device: Optional[str] = None
+    embedding_device: Optional[str] = None  # query/retrieval device; None=auto (GPU if avail)
+    # Document (ingest) embedding device, used by the ARQ worker / ingest pipeline.
+    # None -> falls back to embedding_device. Split these to keep a single GPU copy,
+    # e.g. embedding_device=cpu (query) + ingest_embedding_device=cuda (worker bulk).
+    ingest_embedding_device: Optional[str] = None
+
+    # Ingest task queue (ARQ). When enabled, /ingest/upload enqueues the embedding
+    # job to a separate ARQ worker process instead of running it in-process via
+    # FastAPI BackgroundTasks. Disabled -> identical to the in-process behavior.
+    # Enabling requires redis_url (validated in __post_init__).
+    task_queue_enabled: bool = False
+    redis_url: Optional[str] = None  # e.g. "redis://localhost:6379"
 
     # Retriever
     retriever_top_k: int = 5
@@ -124,6 +135,13 @@ class MaruConfig:
             logger.warning(
                 "SECURITY: production=True but auth.secret_key is the default value. "
                 "Set a strong secret_key in maru_config.yaml before deploying."
+            )
+        if self.task_queue_enabled and not self.redis_url:
+            # Fail fast rather than silently falling back to in-process ingest —
+            # otherwise the queue looks "on" but jobs never reach a worker.
+            raise ValueError(
+                "task_queue_enabled=true requires redis_url (e.g. redis://localhost:6379). "
+                "Set redis_url in maru_config.yaml, or set task_queue_enabled=false."
             )
 
     @classmethod
@@ -186,6 +204,9 @@ class MaruConfig:
             llms=llms,
             embedding_model=data.get("embedding_model", cls.embedding_model),
             embedding_device=data.get("embedding_device"),
+            ingest_embedding_device=data.get("ingest_embedding_device"),
+            task_queue_enabled=bool(data.get("task_queue_enabled", False)),
+            redis_url=data.get("redis_url"),
             retriever_top_k=data.get("retriever_top_k", cls.retriever_top_k),
             retriever_search_method=data.get("retriever_search_method", cls.retriever_search_method),
             memory_recent_turns=data.get("memory_recent_turns", cls.memory_recent_turns),
@@ -200,6 +221,14 @@ class MaruConfig:
         )
 
     # --- Convenience helpers ---
+
+    def resolve_ingest_embedding_device(self) -> Optional[str]:
+        """Device for document (ingest) embedding; falls back to embedding_device."""
+        return (
+            self.ingest_embedding_device
+            if self.ingest_embedding_device is not None
+            else self.embedding_device
+        )
 
     def get_database_url_absolute(self) -> str:
         """Resolve relative sqlite path to absolute."""

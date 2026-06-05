@@ -50,6 +50,10 @@ def serve(
     workers: int = typer.Option(1, help="Number of server workers"),
     skip_migrations: bool = typer.Option(
         False, "--skip-migrations", help="Skip automatic database migrations"),
+    worker: int = typer.Option(
+        0, "--worker",
+        help="Number of ARQ ingest workers to co-launch (0=none; distinct from --workers, "
+             "which sets uvicorn server workers; needs task_queue_enabled)"),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable DEBUG logs for maru_lang (default: quiet)"),
 ):
@@ -59,6 +63,7 @@ def serve(
         _enable_verbose_logging()
 
     config = get_config()
+    _require_queue_for_worker(config, worker)
 
     # Check if installation is complete
     _check_maru_app_installation()
@@ -127,42 +132,80 @@ def serve(
     typer.echo(
         f"🚀 Running on {host}:{port} (workers={workers}, reload={reload})")
 
-    if workers > 1:
-        # Execute uvicorn CLI in a subprocess for multi-worker mode
-        typer.echo("🔧 Production mode: running with multiple workers")
+    # Optionally co-launch ARQ ingest worker(s); torn down when the server exits.
+    worker_procs = _start_ingest_workers(config, worker)
 
-        # Set PYTHONPATH to include current directory
-        # env = os.environ.copy()
-        # if 'PYTHONPATH' in env:
-        #     env['PYTHONPATH'] = f"{os.getcwd()}{os.pathsep}{env['PYTHONPATH']}"
-        # else:
-        #     env['PYTHONPATH'] = os.getcwd()
+    try:
+        if workers > 1:
+            # Execute uvicorn CLI in a subprocess for multi-worker mode
+            typer.echo("🔧 Production mode: running with multiple workers")
 
-        cmd = [
-            "uvicorn",
-            target_app_module,
-            "--host", host,
-            "--port", str(port),
-            "--workers", str(workers),
-            "--log-level", log_level,
-        ]
-        typer.echo(f"   Command: {' '.join(cmd)}")
-        subprocess.run(cmd)
-
-        # subprocess.run(cmd, env=env)
-    else:
-        if reload:
-            typer.echo("🔧 Development mode: single worker with code reloading")
+            cmd = [
+                "uvicorn",
+                target_app_module,
+                "--host", host,
+                "--port", str(port),
+                "--workers", str(workers),
+                "--log-level", log_level,
+            ]
+            typer.echo(f"   Command: {' '.join(cmd)}")
+            subprocess.run(cmd)
         else:
-            typer.echo("🔧 Single worker mode: reload disabled")
+            if reload:
+                typer.echo("🔧 Development mode: single worker with code reloading")
+            else:
+                typer.echo("🔧 Single worker mode: reload disabled")
 
-        uvicorn.run(
-            target_app_module,
-            host=host,
-            port=port,
-            reload=reload,
-            log_level=log_level,
+            uvicorn.run(
+                target_app_module,
+                host=host,
+                port=port,
+                reload=reload,
+                log_level=log_level,
+            )
+    finally:
+        for p in worker_procs:
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        if worker_procs:
+            typer.echo(f"✓ Ingest worker(s) stopped ({len(worker_procs)})")
+
+
+def _require_queue_for_worker(config, worker_count: int) -> None:
+    """Fail fast when --worker is requested but the task queue is off.
+
+    A worker without task_queue_enabled+redis_url can never receive jobs, so
+    treat it as a misconfiguration and refuse to start (rather than warn+skip).
+    """
+    if worker_count > 0 and (not config.task_queue_enabled or not config.redis_url):
+        typer.echo(
+            "❌ --worker requires task_queue_enabled: true and redis_url in maru_config.yaml.\n"
+            "   Enable the queue, or drop --worker to run ingest in-process."
         )
+        raise typer.Exit(1)
+
+
+def _start_ingest_workers(config, count: int) -> list:
+    """Launch `count` ARQ ingest worker subprocesses (empty list if count<=0)."""
+    if count <= 0:
+        return []
+    env = os.environ.copy()
+    paths = [os.getcwd()]
+    if env.get("PYTHONPATH"):
+        paths.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(paths)
+    typer.echo(f"🧵 Starting {count} ingest worker(s) (redis={config.redis_url})")
+    return [
+        subprocess.Popen(
+            [sys.executable, "-m", "arq", "maru_lang.worker.WorkerSettings"],
+            env=env,
+            cwd=os.getcwd(),
+        )
+        for _ in range(count)
+    ]
 
 
 @app.command()
@@ -173,6 +216,9 @@ def run(
     port: int = typer.Option(None, help="Server port"),
     skip_migrations: bool = typer.Option(
         False, "--skip-migrations", help="Skip automatic database migrations"),
+    worker: int = typer.Option(
+        0, "--worker",
+        help="Number of ARQ ingest workers to co-launch (0=none; needs task_queue_enabled)"),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable DEBUG logs for maru_lang (default: quiet)"),
 ):
@@ -186,6 +232,7 @@ def run(
     _check_maru_app_installation()
 
     config = get_config()
+    _require_queue_for_worker(config, worker)
     host = host or config.server.host
     port = port or config.server.port
 
@@ -196,6 +243,7 @@ def run(
         host=host,
         port=port,
         skip_migrations=skip_migrations,
+        worker_count=worker,
     ))
 
 
@@ -256,6 +304,13 @@ def status(
 def test_command():
     """Run an interactive integration smoke test (pick provider, key/url, model)."""
     run_test_command()
+
+
+@app.command("worker")
+def worker_command():
+    """Run the ARQ ingest worker (requires task_queue_enabled + redis_url)."""
+    from maru_lang.commands.worker import run_worker_command
+    raise typer.Exit(run_worker_command())
 
 
 

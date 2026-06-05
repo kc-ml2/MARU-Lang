@@ -115,10 +115,11 @@ class MaruLangApp(FastAPI):
         register_orm = get_register_orm()
         async with register_orm(self):
 
-            # 3. Pre-load embedding model
+            # 3. Pre-load embedding model (device from config; None=auto/GPU).
+            #    Pass embedding_device so the cache key matches the ingest path.
             print(f"Loading embedding model: {cfg.embedding_model}...")
-            await asyncio.to_thread(get_embeddings, cfg.embedding_model)
-            print(f"✓ Embedding model loaded: {cfg.embedding_model}")
+            await asyncio.to_thread(get_embeddings, cfg.embedding_model, cfg.embedding_device)
+            print(f"✓ Embedding model loaded: {cfg.embedding_model} (device={cfg.embedding_device or 'auto'})")
 
             # 4. Initialize the LangGraph checkpointer (app-scoped, persistent).
             #    Kept alive for the whole app lifetime via an AsyncExitStack on
@@ -143,6 +144,16 @@ class MaruLangApp(FastAPI):
             except RuntimeError as e:
                 logger.warning(f"Graphs not compiled — chat disabled: {e}")
 
+            # 6. Ingest task queue (optional). When task_queue_enabled, create an
+            #    ARQ Redis pool used by /ingest/upload to enqueue embedding jobs.
+            #    Its presence on app.state is the on/off switch for queue mode.
+            self.state.arq = None
+            if cfg.task_queue_enabled:
+                from arq import create_pool
+                from arq.connections import RedisSettings
+                self.state.arq = await create_pool(RedisSettings.from_dsn(cfg.redis_url))
+                print(f"✓ Ingest task queue enabled (ARQ @ {cfg.redis_url})")
+
             print("=" * 60)
             print("✨ Application startup complete!")
             print("=" * 60)
@@ -151,6 +162,12 @@ class MaruLangApp(FastAPI):
         """Default shutdown routine."""
         # Clean up resources such as database connections
         print("🔄 Shutting down application...")
+
+        # Close the ingest task queue pool, if it was created.
+        arq = getattr(self.state, "arq", None)
+        if arq is not None:
+            await arq.close()
+            print("✓ Ingest task queue pool closed")
 
         # Close the LangGraph checkpointer (and its DB connection).
         exit_stack = getattr(self.state, "exit_stack", None)

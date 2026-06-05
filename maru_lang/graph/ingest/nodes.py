@@ -6,6 +6,7 @@ from maru_lang.graph.ingest.state import IngestState
 from maru_lang.graph.ingest.loader import load_file
 from maru_lang.graph.ingest.splitter import split_documents
 from maru_lang.graph.ingest.embedder import get_embeddings
+from maru_lang.configs import get_config
 from maru_lang.core.vector_db import get_vector_db
 from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
 from maru_lang.enums.documents import DocumentStatus
@@ -86,7 +87,10 @@ async def process_document(state: IngestState) -> dict:
     await update_document_status(db_doc, DocumentStatus.PROCESSING)
 
     vdb = get_vector_db()
-    embeddings = get_embeddings(model_name=embedder_model)
+    embeddings = get_embeddings(
+        model_name=embedder_model,
+        device=get_config().resolve_ingest_embedding_device(),
+    )
 
     try:
         # Read from storage_path (permanent) or file_path (original)
