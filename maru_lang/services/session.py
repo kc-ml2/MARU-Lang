@@ -35,6 +35,21 @@ async def get_session_for_user(session_id: str, user: User) -> Session | None:
     return session
 
 
+async def get_session(session_id: str) -> Session | None:
+    """Return a session by id (no ownership/status filter).
+
+    For access-controlled lookups use get_session_for_user; this is the plain
+    id lookup the graph uses to rebuild/persist a thread's memory.
+    """
+    return await Session.get_or_none(id=session_id)
+
+
+async def update_session_summary(session: Session, summary: str) -> None:
+    """Persist the rolling conversation summary on a session."""
+    session.summary = summary
+    await session.save()
+
+
 def list_sessions_by_user(user: User):
     """User's non-deleted sessions as a QuerySet (newest first; for pagination)."""
     return Session.filter(user=user).exclude(status=SessionStatus.DELETED).order_by("-updated_at")

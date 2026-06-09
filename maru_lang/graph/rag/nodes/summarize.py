@@ -9,8 +9,8 @@ from langchain_core.messages import HumanMessage
 
 from maru_lang.constants import TURN_SUMMARY_PROMPT, SESSION_SUMMARY_PROMPT
 from maru_lang.core.relation_db.models.auth import User
-from maru_lang.core.relation_db.models.chat import Session
 from maru_lang.services.chat import create_conversation
+from maru_lang.services.session import get_session, update_session_summary
 from maru_lang.graph.rag.state import RagState
 
 
@@ -31,7 +31,7 @@ def make_summarize_node(llm: BaseChatModel):
         if not (session_id and user_id):
             return {}
 
-        session = await Session.get_or_none(id=session_id)
+        session = await get_session(session_id)
         user = await User.get_or_none(id=user_id)
         if session is None or user is None:
             return {}
@@ -61,8 +61,7 @@ def make_summarize_node(llm: BaseChatModel):
             feedback_reason=state.get("feedback_reason"),
         )
 
-        session.summary = session_summary
-        await session.save()
+        await update_session_summary(session, session_summary)
 
         return {}
 

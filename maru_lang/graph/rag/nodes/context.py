@@ -5,10 +5,10 @@ previous turns. This entry node rebuilds memory from the DB — the user's
 persistent facts/preferences (UserMemory) plus the session's rolling summary
 and recent turns — into `memory_context`, which route/generate then share.
 """
-from maru_lang.core.relation_db.models.chat import Session
 from maru_lang.enums.chat import UserMemoryKind
 from maru_lang.services.chat import fetch_recent_conversations_by_session
 from maru_lang.services.memory import list_user_memories
+from maru_lang.services.session import get_session
 from maru_lang.graph.rag.state import RagState
 
 
@@ -44,7 +44,7 @@ def make_context_builder_node(recent_turns: int = 3):
 
         session_id = state.get("session_id")
         if session_id:
-            session = await Session.get_or_none(id=session_id)
+            session = await get_session(session_id)
             if session and session.summary:
                 parts.append(f"[이전 대화 요약]\n{session.summary}")
 
