@@ -7,12 +7,13 @@ from langchain_core.documents import Document as LCDocument
 from maru_lang.graph.ingest.state import IngestState
 from maru_lang.graph.ingest.parser import parse_file
 from maru_lang.graph.ingest.splitter import split_documents
-from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
+from maru_lang.core.relation_db.models.documents import Document
 from maru_lang.enums.documents import DocumentStatus
 from maru_lang.services.document import (
-    get_or_create_document_group,
+    get_or_create_group_hierarchy,
     upsert_document_from_file,
     update_document_status,
+    set_document_error,
 )
 from maru_lang.utils.document import make_chunk_uid
 
@@ -35,7 +36,7 @@ async def sync_document(state: IngestState) -> dict:
         file_abs_path = Path(file_info.absolutePath).resolve()
         dir_abs_path = str(file_abs_path.parent)
 
-        group = await _get_or_create_group(dir_abs_path, team_id)
+        group = await get_or_create_group_hierarchy(dir_abs_path, team_id)
 
         doc, needs_processing = await upsert_document_from_file(
             group=group,
@@ -103,7 +104,7 @@ async def parse_document(state: IngestState) -> dict:
 
         lc_docs, parser = await parse_file(file_path, doc["id"])
         if not lc_docs or not any(d.page_content.strip() for d in lc_docs):
-            await _set_error(db_doc, "Empty content")
+            await set_document_error(db_doc, "Empty content")
             return {
                 "parsed_docs": None,
                 "error": "Empty content",
@@ -126,7 +127,7 @@ async def parse_document(state: IngestState) -> dict:
 
     except Exception as e:
         if await Document.exists(id=doc["id"]):
-            await _set_error(db_doc, str(e))
+            await set_document_error(db_doc, str(e))
         return {
             "parsed_docs": None,
             "error": str(e),
@@ -163,7 +164,7 @@ def make_process_document_node(vdb, embeddings):
             ]
             chunks = await asyncio.to_thread(split_documents, lc_docs)
             if not chunks:
-                await _set_error(db_doc, "No chunks produced")
+                await set_document_error(db_doc, "No chunks produced")
                 return {"messages": [f"No chunks: {doc['name']}"], "error": "No chunks"}
 
             chunk_texts = [c.page_content for c in chunks]
@@ -218,43 +219,10 @@ def make_process_document_node(vdb, embeddings):
         except Exception as e:
             # 에러 기록 전 문서 존재 여부 확인 — 삭제된 문서에 에러 상태를 쓰지 않음
             if await Document.exists(id=doc["id"]):
-                await _set_error(db_doc, str(e))
+                await set_document_error(db_doc, str(e))
             return {
                 "error": str(e),
                 "messages": [f"{doc['name']}: ERROR - {e}"],
             }
 
     return process_document
-
-
-async def _set_error(doc: Document, message: str) -> None:
-    """Set document status to ERROR with message."""
-    doc.status = DocumentStatus.ERROR
-    doc.error_message = message
-    await doc.save()
-
-
-async def _get_or_create_group(
-    abs_path: str,
-    team_id: int,
-) -> DocumentGroup:
-    """Create a DocumentGroup hierarchy based on absolute path."""
-    path_obj = Path(abs_path)
-    parts = path_obj.parts
-
-    current_path = ""
-    parent_group = None
-    current_group = None
-
-    for part in parts:
-        if part == "/":
-            continue
-        current_path = current_path + "/" + part if current_path else "/" + part
-
-        current_group, _ = await get_or_create_document_group(
-            team_id=team_id, name=part, parent=parent_group,
-        )
-        parent_group = current_group
-
-    assert current_group is not None, f"Invalid absolute path: {abs_path}"
-    return current_group

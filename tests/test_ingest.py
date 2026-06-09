@@ -260,7 +260,7 @@ class TestIngestGraphExecution:
     @patch("maru_lang.graph.ingest.nodes.parse_file")
     @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.upsert_document_from_file")
-    @patch("maru_lang.graph.ingest.nodes._get_or_create_group")
+    @patch("maru_lang.graph.ingest.nodes.get_or_create_group_hierarchy")
     @patch("maru_lang.graph.ingest.nodes.Document")
     async def test_file_entry_flow_runs_sync_then_parse_process(
         self, mock_doc, mock_group, mock_upsert, mock_status, mock_parse, mock_split, mock_uid
@@ -384,9 +384,8 @@ class TestSyncDocument:
 
     @pytest.mark.asyncio
     @patch("maru_lang.graph.ingest.nodes.upsert_document_from_file")
-    @patch("maru_lang.graph.ingest.nodes.get_or_create_document_group")
-    @patch("maru_lang.graph.ingest.nodes._get_or_create_group")
-    async def test_sync_creates_document(self, mock_get_group, mock_get_or_create, mock_upsert, mock_file_info):
+    @patch("maru_lang.graph.ingest.nodes.get_or_create_group_hierarchy")
+    async def test_sync_creates_document(self, mock_get_group, mock_upsert, mock_file_info):
         from maru_lang.graph.ingest.nodes import sync_document
 
         mock_group = MagicMock()
@@ -413,7 +412,7 @@ class TestSyncDocument:
         assert "Synced" in result["messages"][0]
 
     @pytest.mark.asyncio
-    @patch("maru_lang.graph.ingest.nodes._get_or_create_group")
+    @patch("maru_lang.graph.ingest.nodes.get_or_create_group_hierarchy")
     async def test_sync_skips_when_already_synced(self, mock_get_group):
         """API/worker path: document is pre-synced, so sync passes through."""
         from maru_lang.graph.ingest.nodes import sync_document
@@ -433,7 +432,7 @@ class TestSyncDocument:
         assert "Already synced" in result["messages"][0]
 
     @pytest.mark.asyncio
-    @patch("maru_lang.graph.ingest.nodes._get_or_create_group")
+    @patch("maru_lang.graph.ingest.nodes.get_or_create_group_hierarchy")
     @patch("maru_lang.graph.ingest.nodes.upsert_document_from_file")
     async def test_sync_skips_when_unchanged(self, mock_upsert, mock_get_group, mock_file_info):
         from maru_lang.graph.ingest.nodes import sync_document
@@ -456,7 +455,7 @@ class TestSyncDocument:
         assert result["needs_processing"] is False
 
     @pytest.mark.asyncio
-    @patch("maru_lang.graph.ingest.nodes._get_or_create_group", side_effect=Exception("DB error"))
+    @patch("maru_lang.graph.ingest.nodes.get_or_create_group_hierarchy", side_effect=Exception("DB error"))
     async def test_sync_error_returns_error_state(self, mock_get_group, mock_file_info):
         from maru_lang.graph.ingest.nodes import sync_document
 
@@ -695,14 +694,14 @@ class TestKordocHeaderStrip:
         assert _strip_header("plain body no header") == "plain body no header"
 
 
-# ─── _get_or_create_group (mock ORM) ─────────────────────────
+# ─── get_or_create_group_hierarchy (service; mock ORM) ───────
 
 
-class TestGetOrCreateGroup:
+class TestGetOrCreateGroupHierarchy:
     @pytest.mark.asyncio
-    @patch("maru_lang.graph.ingest.nodes.get_or_create_document_group")
+    @patch("maru_lang.services.document.get_or_create_document_group")
     async def test_creates_hierarchy_from_path(self, mock_get_or_create):
-        from maru_lang.graph.ingest.nodes import _get_or_create_group
+        from maru_lang.services.document import get_or_create_group_hierarchy
 
         call_count = 0
         async def side_effect(team_id, name, parent):
@@ -714,14 +713,14 @@ class TestGetOrCreateGroup:
 
         mock_get_or_create.side_effect = side_effect
 
-        result = await _get_or_create_group("/usr/local/data", team_id=1)
+        result = await get_or_create_group_hierarchy("/usr/local/data", team_id=1)
         assert result is not None
         assert call_count == 3  # usr, local, data
 
     @pytest.mark.asyncio
-    @patch("maru_lang.graph.ingest.nodes.get_or_create_document_group")
+    @patch("maru_lang.services.document.get_or_create_document_group")
     async def test_skips_root_slash(self, mock_get_or_create):
-        from maru_lang.graph.ingest.nodes import _get_or_create_group
+        from maru_lang.services.document import get_or_create_group_hierarchy
 
         groups_created = []
         async def side_effect(team_id, name, parent):
@@ -731,5 +730,5 @@ class TestGetOrCreateGroup:
 
         mock_get_or_create.side_effect = side_effect
 
-        await _get_or_create_group("/data", team_id=1)
+        await get_or_create_group_hierarchy("/data", team_id=1)
         assert "/" not in groups_created

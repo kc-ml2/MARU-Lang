@@ -5,11 +5,10 @@ from typing import Optional
 
 from maru_lang.core.relation_db.models.documents import (
     Document,
-    DocumentGroup,
     DocumentAuditLog,
 )
 from maru_lang.enums.documents import DocumentStatus, AuditAction
-from maru_lang.services.document import get_or_create_document_group
+from maru_lang.services.document import get_or_create_upload_group, set_document_error
 from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
 from maru_lang.utils.file_storage import save_upload
 from maru_lang.graph.ingest.graph import get_ingest_graph
@@ -48,7 +47,7 @@ async def upload_and_ingest(
     storage_path = await save_upload(file_obj, filename, team_id, doc_id)
 
     # Get or create group named after the uploaded folder
-    group = await _get_or_create_upload_group(team_id, folder_path)
+    group = await get_or_create_upload_group(team_id, folder_path)
 
     # Fingerprint uses client-provided mtime so check() can match
     abs_path = str(Path(folder_path) / filename) if folder_path else filename
@@ -135,9 +134,7 @@ async def run_ingest_for_document(doc: Document, team_id: int) -> None:
 
         # 삭제된 문서에 에러 상태를 쓰면 레코드가 되살아날 수 있으므로 존재 확인
         if await Document.exists(id=doc.id):
-            doc.status = DocumentStatus.ERROR
-            doc.error_message = str(e)
-            await doc.save()
+            await set_document_error(doc, str(e))
 
         await _record_audit(
             document_id=doc.id,
@@ -250,21 +247,3 @@ async def _record_audit(
     )
 
 
-async def _get_or_create_upload_group(
-    team_id: int,
-    folder_path: str = "",
-) -> DocumentGroup:
-    """Get or create a group named after the upload folder.
-
-    Uses the last component of folder_path as the group name.
-    Falls back to 'uploads' when folder_path is empty.
-    """
-    if folder_path:
-        group_name = Path(folder_path).name
-    else:
-        group_name = "uploads"
-
-    group, _ = await get_or_create_document_group(
-        team_id=team_id, name=group_name, parent=None,
-    )
-    return group

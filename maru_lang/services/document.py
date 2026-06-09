@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List, Optional, Tuple
 from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
 from maru_lang.enums.documents import DocumentStatus
@@ -61,6 +62,42 @@ async def get_or_create_document_group(
     )
 
     return group, created
+
+
+async def get_or_create_group_hierarchy(abs_path: str, team_id: int) -> DocumentGroup:
+    """Create a DocumentGroup hierarchy mirroring an absolute filesystem path.
+
+    Each path segment becomes a nested group (e.g. /usr/local/data -> usr ->
+    local -> data) and the deepest group is returned.
+    """
+    current_group = None
+    parent_group = None
+
+    for part in Path(abs_path).parts:
+        if part == "/":
+            continue
+        current_group, _ = await get_or_create_document_group(
+            team_id=team_id, name=part, parent=parent_group,
+        )
+        parent_group = current_group
+
+    assert current_group is not None, f"Invalid absolute path: {abs_path}"
+    return current_group
+
+
+async def get_or_create_upload_group(team_id: int, folder_path: str = "") -> DocumentGroup:
+    """Get or create a single group named after the uploaded folder.
+
+    Uses the last path component as the group name; falls back to 'uploads' when
+    folder_path is empty. (API uploads land in one group, unlike the CLI sync
+    path which mirrors the full directory hierarchy via
+    get_or_create_group_hierarchy.)
+    """
+    group_name = Path(folder_path).name if folder_path else "uploads"
+    group, _ = await get_or_create_document_group(
+        team_id=team_id, name=group_name, parent=None,
+    )
+    return group
 
 
 async def get_all_descendant_groups(group: DocumentGroup) -> List[DocumentGroup]:
@@ -233,4 +270,11 @@ async def upsert_document_from_file(
 async def update_document_status(doc: Document, status: DocumentStatus) -> None:
     """Document 상태 업데이트"""
     doc.status = status
+    await doc.save()
+
+
+async def set_document_error(doc: Document, message: str) -> None:
+    """Mark a document as ERROR with a failure message."""
+    doc.status = DocumentStatus.ERROR
+    doc.error_message = message
     await doc.save()
