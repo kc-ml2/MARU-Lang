@@ -58,18 +58,25 @@ async def _on_startup(ctx) -> None:
 
 
 async def _on_shutdown(ctx) -> None:
+    # Tear down the persistent KorDoc MCP session (no-op if it was never used).
+    from maru_lang.graph.ingest.loader.kordoc_mcp import close_kordoc_client
+    await close_kordoc_client()
+
     cm = ctx.get("_orm_cm")
     if cm is not None:
         # orm_context's finally closes the Tortoise connections.
         await cm.__aexit__(None, None, None)
 
 
-_cfg = get_config()
-if not _cfg.redis_url:
-    raise RuntimeError(
-        "maru worker requires redis_url in maru_config.yaml "
-        "(set task_queue_enabled: true and redis_url)."
-    )
+def _worker_redis_settings() -> RedisSettings:
+    """RedisSettings from config; defaults to localhost when redis_url is unset.
+
+    The supported launch paths (`maru worker`, `maru run/serve --worker`) already
+    fail fast when the queue is off, so this just keeps the module importable
+    (e.g. for tests) instead of raising at import time.
+    """
+    cfg = get_config()
+    return RedisSettings.from_dsn(cfg.redis_url) if cfg.redis_url else RedisSettings()
 
 
 class WorkerSettings:
@@ -78,7 +85,7 @@ class WorkerSettings:
     # Register with an explicit name tied to INGEST_TASK_NAME so the enqueue
     # side (api/endpoints/ingest.py) and the worker can't drift apart.
     functions = [func(ingest_document_task, name=INGEST_TASK_NAME)]
-    redis_settings = RedisSettings.from_dsn(_cfg.redis_url)
+    redis_settings = _worker_redis_settings()
     on_startup = _on_startup
     on_shutdown = _on_shutdown
     max_jobs = 2   # embedding is GPU/CPU-bound; keep per-worker concurrency low

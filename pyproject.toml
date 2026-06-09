@@ -55,6 +55,9 @@ dependencies = [
     "langchain-text-splitters>=0.3.0",
     # Reranker
     "sentence-transformers>=2.2.0",
+    # MCP (KorDoc parser; activated by kordoc_mcp_enabled). The KorDoc server
+    # itself runs via `npx -y kordoc mcp`; this is the Python stdio client.
+    "mcp>=1.0.0",
     # Document parsers
     "unstructured[pdf]>=0.10.0",
     "msoffcrypto-tool>=5.0.0",

@@ -154,16 +154,22 @@ class TestSplitter:
 
 class TestIngestGraph:
     def test_graph_compiles(self):
-        graph = create_ingest_graph()
+        graph = create_ingest_graph(vdb=MagicMock(), embeddings=MagicMock())
         nodes = list(graph.get_graph().nodes.keys())
         assert "sync_document" in nodes
+        assert "parse_document" in nodes
         assert "process_document" in nodes
 
     def test_graph_has_correct_flow(self):
-        graph = create_ingest_graph()
-        edges = str(graph.get_graph().edges)
-        assert "sync_document" in edges
-        assert "process_document" in edges
+        graph = create_ingest_graph(vdb=MagicMock(), embeddings=MagicMock())
+        pairs = {(e.source, e.target) for e in graph.get_graph().edges}
+        # Exact wiring: start → sync → parse → process → end (no skipped/reversed edge).
+        assert pairs == {
+            ("__start__", "sync_document"),
+            ("sync_document", "parse_document"),
+            ("parse_document", "process_document"),
+            ("process_document", "__end__"),
+        }
 
     def test_state_schema(self):
         keys = list(IngestState.__annotations__.keys())
@@ -171,7 +177,122 @@ class TestIngestGraph:
         assert "team_id" in keys
         assert "messages" in keys
         assert "total_chunks" in keys
-        assert "embedder_model" in keys
+
+
+# ─── Graph execution (compiled graph, nodes chained) ─────────
+
+
+class TestIngestGraphExecution:
+    """Invoke the compiled graph end to end — verifies node chaining, state
+    threading, and error propagation that node-level tests can't catch."""
+
+    @staticmethod
+    def _graph(vectors=None):
+        from maru_lang.graph.ingest.graph import create_ingest_graph
+        vdb = MagicMock()
+        vdb.get_chunk_ids_by_document_id = MagicMock(return_value=[])
+        emb = MagicMock()
+        emb.embed_documents = MagicMock(return_value=vectors or [[0.1, 0.2, 0.3]])
+        return create_ingest_graph(vdb=vdb, embeddings=emb), vdb, emb
+
+    @staticmethod
+    def _presynced_input(doc_id="d1"):
+        from maru_lang.graph.ingest.state import build_ingest_input
+        return build_ingest_input(
+            1,
+            document={"id": doc_id, "name": "doc", "file_path": "/tmp/x.pdf",
+                      "storage_path": None, "group_id": 5, "metadata": {}},
+            needs_processing=True,
+        )
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.make_chunk_uid", side_effect=lambda i, x, c: f"{i}-{x}")
+    @patch("maru_lang.graph.ingest.nodes.split_documents")
+    @patch("maru_lang.graph.ingest.nodes.parse_file")
+    @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.Document")
+    async def test_presynced_flow_chains_sync_skip_parse_process(
+        self, mock_doc, mock_status, mock_parse, mock_split, mock_uid
+    ):
+        from langchain_core.documents import Document as LCDoc
+        db_doc = MagicMock(); db_doc.metadata = {}; db_doc.save = AsyncMock()
+        mock_doc.get_or_none = AsyncMock(return_value=db_doc)
+        mock_doc.exists = AsyncMock(return_value=True)
+        mock_parse.return_value = ([LCDoc(page_content="body")], "kordoc")
+        mock_split.return_value = [LCDoc(page_content="c1"), LCDoc(page_content="c2")]
+
+        graph, vdb, emb = self._graph(vectors=[[0.1] * 3, [0.2] * 3])
+        result = await graph.ainvoke(self._presynced_input())
+
+        # sync skipped (document pre-set), parse ran, process embedded + stored.
+        assert result["parser"] == "kordoc"
+        assert result["total_chunks"] == 2
+        assert result["error"] is None
+        assert emb.embed_documents.called and vdb.upsert_documents.called
+        assert db_doc.metadata["parser"] == "kordoc"
+        joined = " ".join(result["messages"])  # reducer accumulates across nodes
+        assert "Already synced" in joined and "Parsed (kordoc)" in joined
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.parse_file")
+    @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.Document")
+    async def test_parse_error_propagates_and_skips_processing(
+        self, mock_doc, mock_status, mock_parse
+    ):
+        db_doc = MagicMock(); db_doc.save = AsyncMock()
+        mock_doc.get_or_none = AsyncMock(return_value=db_doc)
+        mock_doc.exists = AsyncMock(return_value=True)
+        mock_parse.side_effect = RuntimeError("boom")
+
+        graph, vdb, emb = self._graph()
+        result = await graph.ainvoke(self._presynced_input("d2"))
+
+        # Error survives to the final state; process_document must not embed.
+        assert result["error"] == "boom"
+        assert result["total_chunks"] == 0
+        assert not emb.embed_documents.called
+        assert not vdb.upsert_documents.called
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.make_chunk_uid", side_effect=lambda i, x, c: f"{i}-{x}")
+    @patch("maru_lang.graph.ingest.nodes.split_documents")
+    @patch("maru_lang.graph.ingest.nodes.parse_file")
+    @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.upsert_document_from_file")
+    @patch("maru_lang.graph.ingest.nodes._get_or_create_group")
+    @patch("maru_lang.graph.ingest.nodes.Document")
+    async def test_file_entry_flow_runs_sync_then_parse_process(
+        self, mock_doc, mock_group, mock_upsert, mock_status, mock_parse, mock_split, mock_uid
+    ):
+        from datetime import datetime
+        from langchain_core.documents import Document as LCDoc
+        from maru_lang.graph.ingest.state import build_ingest_input
+
+        synced = MagicMock()
+        synced.id = "d3"; synced.name = "doc"; synced.file_path = "/tmp/z.pdf"
+        synced.storage_path = None; synced.group_id = 7; synced.metadata = {}
+        synced.save = AsyncMock()
+        mock_upsert.return_value = (synced, True)   # unchanged check -> needs_processing
+        mock_group.return_value = MagicMock()
+
+        db_doc = MagicMock(); db_doc.metadata = {}; db_doc.save = AsyncMock()
+        mock_doc.get_or_none = AsyncMock(return_value=db_doc)
+        mock_doc.exists = AsyncMock(return_value=True)
+        mock_parse.return_value = ([LCDoc(page_content="body")], "langchain")
+        mock_split.return_value = [LCDoc(page_content="c1")]
+
+        graph, vdb, emb = self._graph()
+        fi = MagicMock()
+        fi.absolutePath = "/tmp/z.pdf"; fi.fileName = "z.pdf"; fi.size = 10
+        fi.createdAt = datetime(2026, 1, 1); fi.tempFilePath = None
+
+        result = await graph.ainvoke(build_ingest_input(1, file=fi))
+
+        mock_group.assert_called()  # sync actually ran (not skipped)
+        assert result["parser"] == "langchain"
+        assert result["total_chunks"] == 1
+        assert vdb.upsert_documents.called
 
 
 # ─── E2E (Load -> Split) ────────────────────────────────────
@@ -293,6 +414,26 @@ class TestSyncDocument:
 
     @pytest.mark.asyncio
     @patch("maru_lang.graph.ingest.nodes._get_or_create_group")
+    async def test_sync_skips_when_already_synced(self, mock_get_group):
+        """API/worker path: document is pre-synced, so sync passes through."""
+        from maru_lang.graph.ingest.nodes import sync_document
+
+        state = {
+            "file": None,
+            "team_id": 1,
+            "re_embed": False,
+            "document": {"id": "abc", "name": "doc"},
+            "needs_processing": True,
+        }
+        result = await sync_document(state)
+
+        # No DB/group work — and it must not clobber the pre-set document/flag.
+        mock_get_group.assert_not_called()
+        assert "document" not in result  # left as-is in state
+        assert "Already synced" in result["messages"][0]
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes._get_or_create_group")
     @patch("maru_lang.graph.ingest.nodes.upsert_document_from_file")
     async def test_sync_skips_when_unchanged(self, mock_upsert, mock_get_group, mock_file_info):
         from maru_lang.graph.ingest.nodes import sync_document
@@ -331,45 +472,51 @@ class TestSyncDocument:
 
 
 class TestProcessDocument:
+    @staticmethod
+    def _node(vdb=None, embeddings=None):
+        """process_document with injected deps (mocks by default)."""
+        from maru_lang.graph.ingest.nodes import make_process_document_node
+        return make_process_document_node(vdb or MagicMock(), embeddings or MagicMock())
+
     @pytest.mark.asyncio
     async def test_skips_when_not_needed(self):
-        from maru_lang.graph.ingest.nodes import process_document
-
         state = {
             "document": {"id": 1, "name": "doc"},
             "needs_processing": False,
             "team_id": 1,
-            "embedder_model": "test",
         }
-        result = await process_document(state)
+        result = await self._node()(state)
         assert "Skipped" in result["messages"][0]
 
     @pytest.mark.asyncio
     async def test_skips_when_no_document(self):
-        from maru_lang.graph.ingest.nodes import process_document
-
         state = {
             "document": None,
             "needs_processing": True,
             "team_id": 1,
-            "embedder_model": "test",
         }
-        result = await process_document(state)
+        result = await self._node()(state)
+        assert "Skipped" in result["messages"][0]
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_parsed_docs(self):
+        state = {
+            "document": {"id": 1, "name": "doc"},
+            "needs_processing": True,
+            "parsed_docs": None,
+            "team_id": 1,
+        }
+        result = await self._node()(state)
         assert "Skipped" in result["messages"][0]
 
     @pytest.mark.asyncio
     @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.Document")
-    @patch("maru_lang.graph.ingest.nodes.get_vector_db")
-    @patch("maru_lang.graph.ingest.nodes.get_embeddings")
-    @patch("maru_lang.graph.ingest.nodes.load_file")
     @patch("maru_lang.graph.ingest.nodes.split_documents")
     @patch("maru_lang.graph.ingest.nodes.make_chunk_uid")
-    async def test_process_loads_splits_embeds_stores(
-        self, mock_uid, mock_split, mock_load, mock_get_emb, mock_get_vdb,
-        mock_doc_model, mock_update_status
+    async def test_process_splits_embeds_stores(
+        self, mock_uid, mock_split, mock_doc_model, mock_update_status
     ):
-        from maru_lang.graph.ingest.nodes import process_document
         from langchain_core.documents import Document as LCDoc
 
         mock_db_doc = MagicMock()
@@ -379,13 +526,10 @@ class TestProcessDocument:
         mock_vdb = MagicMock()
         mock_vdb.upsert_documents = MagicMock()
         mock_vdb.get_chunk_ids_by_document_id = MagicMock(return_value=[])
-        mock_get_vdb.return_value = mock_vdb
 
         mock_emb = MagicMock()
         mock_emb.embed_documents = MagicMock(return_value=[[0.1] * 384, [0.2] * 384])
-        mock_get_emb.return_value = mock_emb
 
-        mock_load.return_value = [LCDoc(page_content="test content")]
         mock_split.return_value = [LCDoc(page_content="chunk1"), LCDoc(page_content="chunk2")]
         mock_uid.side_effect = lambda doc_id, idx, content: f"uid-{doc_id}-{idx}"
 
@@ -395,31 +539,77 @@ class TestProcessDocument:
                 "storage_path": None, "group_id": 10, "metadata": {},
             },
             "needs_processing": True,
+            "parsed_docs": [{"content": "test content", "metadata": {}}],
             "team_id": 1,
-            "embedder_model": "test-model",
         }
-        result = await process_document(state)
+        result = await self._node(mock_vdb, mock_emb)(state)
 
         assert result["total_chunks"] == 2
         assert "2 chunks" in result["messages"][0]
 
+
+# ─── parse_document (mock parser+ORM) ────────────────────────
+
+
+class TestParseDocument:
+    @pytest.mark.asyncio
+    async def test_skips_when_not_needed(self):
+        from maru_lang.graph.ingest.nodes import parse_document
+
+        state = {
+            "document": {"id": 1, "name": "doc"},
+            "needs_processing": False,
+            "team_id": 1,
+        }
+        result = await parse_document(state)
+        assert result["parsed_docs"] is None
+        assert "Skipped" in result["messages"][0]
+
     @pytest.mark.asyncio
     @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.Document")
-    @patch("maru_lang.graph.ingest.nodes.get_vector_db")
-    @patch("maru_lang.graph.ingest.nodes.get_embeddings")
-    @patch("maru_lang.graph.ingest.nodes.load_file")
-    async def test_process_handles_empty_content(
-        self, mock_load, mock_get_emb, mock_get_vdb, mock_doc_model, mock_update_status
+    @patch("maru_lang.graph.ingest.nodes.parse_file")
+    async def test_parses_and_records_parser(
+        self, mock_parse, mock_doc_model, mock_update_status
     ):
-        from maru_lang.graph.ingest.nodes import process_document
+        from maru_lang.graph.ingest.nodes import parse_document
+        from langchain_core.documents import Document as LCDoc
+
+        mock_db_doc = MagicMock()
+        mock_db_doc.metadata = {}
+        mock_db_doc.save = AsyncMock()
+        mock_doc_model.get_or_none = AsyncMock(return_value=mock_db_doc)
+
+        mock_parse.return_value = ([LCDoc(page_content="parsed text")], "kordoc")
+
+        state = {
+            "document": {
+                "id": 1, "name": "doc", "file_path": "/tmp/doc.pdf",
+                "storage_path": None, "group_id": 10, "metadata": {},
+            },
+            "needs_processing": True,
+            "team_id": 1,
+        }
+        result = await parse_document(state)
+
+        assert result["parser"] == "kordoc"
+        assert result["parsed_docs"] == [{"content": "parsed text", "metadata": {}}]
+        # parser recorded in metadata for later quality review
+        assert mock_db_doc.metadata["parser"] == "kordoc"
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.Document")
+    @patch("maru_lang.graph.ingest.nodes.parse_file")
+    async def test_parse_handles_empty_content(
+        self, mock_parse, mock_doc_model, mock_update_status
+    ):
+        from maru_lang.graph.ingest.nodes import parse_document
 
         mock_db_doc = MagicMock()
         mock_db_doc.save = AsyncMock()
         mock_doc_model.get_or_none = AsyncMock(return_value=mock_db_doc)
-        mock_get_vdb.return_value = MagicMock()
-        mock_get_emb.return_value = MagicMock()
-        mock_load.return_value = []
+        mock_parse.return_value = ([], "langchain")
 
         state = {
             "document": {
@@ -428,10 +618,81 @@ class TestProcessDocument:
             },
             "needs_processing": True,
             "team_id": 1,
-            "embedder_model": "test",
         }
-        result = await process_document(state)
-        assert "error" in result or "Empty" in result["messages"][0]
+        result = await parse_document(state)
+        assert result["parsed_docs"] is None
+        assert result["error"] == "Empty content"
+
+
+# ─── Parser routing + KorDoc header strip ────────────────────
+
+
+class TestParserRouting:
+    @staticmethod
+    def _set_config(**overrides):
+        import maru_lang.configs.manager as mgr
+        from maru_lang.configs.models import MaruConfig
+        mgr._config = MaruConfig.from_dict(overrides)
+
+    def test_disabled_routes_all_to_langchain(self):
+        from maru_lang.graph.ingest.parser import select_parser
+        from maru_lang.graph.ingest.constants import PARSER_LANGCHAIN
+        self._set_config(kordoc_mcp_enabled=False)
+        assert select_parser(".pdf", "d") == PARSER_LANGCHAIN
+        assert select_parser(".txt", "d") == PARSER_LANGCHAIN
+
+    def test_hwp_guard_when_disabled(self):
+        from maru_lang.graph.ingest.parser import select_parser
+        self._set_config(kordoc_mcp_enabled=False)
+        with pytest.raises(ValueError, match="kordoc_mcp_enabled"):
+            select_parser(".hwp", "d")
+
+    def test_kordoc_only_when_enabled(self):
+        from maru_lang.graph.ingest.parser import select_parser
+        from maru_lang.graph.ingest.constants import PARSER_KORDOC
+        self._set_config(kordoc_mcp_enabled=True)
+        assert select_parser(".hwpx", "d") == PARSER_KORDOC
+
+    def test_langchain_only_format_always_langchain(self):
+        from maru_lang.graph.ingest.parser import select_parser
+        from maru_lang.graph.ingest.constants import PARSER_LANGCHAIN
+        self._set_config(kordoc_mcp_enabled=True)
+        assert select_parser(".csv", "d") == PARSER_LANGCHAIN
+
+    def test_dual_split_is_deterministic_and_balanced(self):
+        from maru_lang.graph.ingest.parser import select_parser
+        from maru_lang.graph.ingest.constants import PARSER_KORDOC
+        self._set_config(kordoc_mcp_enabled=True, kordoc_mcp_ratio=0.5)
+        assert select_parser(".pdf", "x") == select_parser(".pdf", "x")  # stable
+        kc = sum(select_parser(".pdf", f"doc{i}") == PARSER_KORDOC for i in range(400))
+        assert 120 < kc < 280  # roughly 50%, not all-or-nothing
+
+    def test_ratio_zero_routes_dual_to_langchain(self):
+        from maru_lang.graph.ingest.parser import select_parser
+        from maru_lang.graph.ingest.constants import PARSER_LANGCHAIN
+        self._set_config(kordoc_mcp_enabled=True, kordoc_mcp_ratio=0.0)
+        assert all(
+            select_parser(".docx", f"d{i}") == PARSER_LANGCHAIN for i in range(50)
+        )
+
+    def teardown_method(self):
+        import maru_lang.configs.manager as mgr
+        mgr._config = None  # don't leak injected config into other tests
+
+
+class TestKordocHeaderStrip:
+    def test_strips_meta_and_outline(self):
+        from maru_lang.graph.ingest.loader.kordoc_mcp import _strip_header
+        raw = "[포맷: DOCX]\n📑 문서 구조:\n- 제목\n\n# 본문\n\n내용"
+        assert _strip_header(raw) == "# 본문\n\n내용"
+
+    def test_meta_only(self):
+        from maru_lang.graph.ingest.loader.kordoc_mcp import _strip_header
+        assert _strip_header("[포맷: PDF]\n\n# 제목\n본문") == "# 제목\n본문"
+
+    def test_passthrough_without_header(self):
+        from maru_lang.graph.ingest.loader.kordoc_mcp import _strip_header
+        assert _strip_header("plain body no header") == "plain body no header"
 
 
 # ─── _get_or_create_group (mock ORM) ─────────────────────────

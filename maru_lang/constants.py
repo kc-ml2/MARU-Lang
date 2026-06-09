@@ -5,6 +5,8 @@
 SUPPORTED_EXTENSIONS = {
     # Documents
     ".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xls",
+    # Korean documents (require KorDoc MCP parser; no LangChain loader)
+    ".hwp", ".hwpx", ".hwpml",
     # Data
     ".csv", ".tsv", ".json",
     # Web/Markup
@@ -14,6 +16,8 @@ SUPPORTED_EXTENSIONS = {
     # Code
     ".py", ".js", ".ts", ".java", ".go", ".rs", ".cpp", ".c", ".h",
 }
+# Parser routing vocabulary (PARSER_*, KORDOC_*_EXTENSIONS) is cohesive to the
+# ingest graph and lives in maru_lang.graph.ingest.constants.
 
 # --- VectorDB ---
 

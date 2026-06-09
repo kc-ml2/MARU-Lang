@@ -107,6 +107,18 @@ class MaruConfig:
     task_queue_enabled: bool = False
     redis_url: Optional[str] = None  # e.g. "redis://localhost:6379"
 
+    # KorDoc MCP parser. When enabled, KorDoc-supported formats are parsed via
+    # the KorDoc MCP server (run locally as `npx -y kordoc mcp`) instead of the
+    # LangChain loaders. Formats only KorDoc can read (hwp/hwpx/hwpml) always go
+    # to KorDoc; formats both can read (pdf/docx/xls/xlsx) are split by
+    # kordoc_mcp_ratio — deterministically per document — so the two parsers'
+    # quality can be A/B compared on the same corpus.
+    kordoc_mcp_enabled: bool = False
+    kordoc_mcp_command: str = "npx"
+    kordoc_mcp_args: list = field(default_factory=lambda: ["-y", "kordoc", "mcp"])
+    kordoc_mcp_ratio: float = 0.5  # share of dual-support docs routed to KorDoc
+    kordoc_mcp_timeout: float = 120.0  # seconds; bounds the per-document MCP call
+
     # Retriever
     retriever_top_k: int = 5
     retriever_search_method: str = "vector"  # "vector" or "hybrid"
@@ -207,6 +219,11 @@ class MaruConfig:
             ingest_embedding_device=data.get("ingest_embedding_device"),
             task_queue_enabled=bool(data.get("task_queue_enabled", False)),
             redis_url=data.get("redis_url"),
+            kordoc_mcp_enabled=bool(data.get("kordoc_mcp_enabled", False)),
+            kordoc_mcp_command=data.get("kordoc_mcp_command", cls.kordoc_mcp_command),
+            kordoc_mcp_args=data.get("kordoc_mcp_args") or ["-y", "kordoc", "mcp"],
+            kordoc_mcp_ratio=float(data.get("kordoc_mcp_ratio", cls.kordoc_mcp_ratio)),
+            kordoc_mcp_timeout=float(data.get("kordoc_mcp_timeout", cls.kordoc_mcp_timeout)),
             retriever_top_k=data.get("retriever_top_k", cls.retriever_top_k),
             retriever_search_method=data.get("retriever_search_method", cls.retriever_search_method),
             memory_recent_turns=data.get("memory_recent_turns", cls.memory_recent_turns),

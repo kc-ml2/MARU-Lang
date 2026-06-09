@@ -69,6 +69,40 @@ class TestUpload:
         data = resp.json()
         assert "document_id" in data
         assert data["name"] == "test"
+        # No task queue configured -> in-process BackgroundTasks path.
+        assert data["status"] == "uploading"
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_upload_enqueues_when_task_queue_enabled(
+        self, mock_save, mock_ingest, app: FastAPI, client: AsyncClient, team_setup
+    ):
+        """With app.state.arq present, upload enqueues to the worker instead of
+        running ingest in-process."""
+        from maru_lang.constants import INGEST_TASK_NAME
+
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/path.md"
+
+        fake_arq = MagicMock()
+        fake_arq.enqueue_job = AsyncMock()
+        app.state.arq = fake_arq
+
+        resp = await client.post(
+            "/ingest/upload",
+            headers=auth_header(user.id),
+            data={"team_id": str(team.id), "mtime": "1712000000.0"},
+            files={"file": ("queued.md", io.BytesIO(b"# Hi"), "text/markdown")},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "queued"
+        # Enqueued under the shared constant name, not run in-process.
+        fake_arq.enqueue_job.assert_awaited_once()
+        assert fake_arq.enqueue_job.await_args.args[0] == INGEST_TASK_NAME
+        assert fake_arq.enqueue_job.await_args.args[1] == data["document_id"]
+        mock_ingest.assert_not_called()
 
     async def test_upload_requires_filename(
         self, client: AsyncClient, team_setup

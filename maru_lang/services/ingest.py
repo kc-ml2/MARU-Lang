@@ -12,8 +12,8 @@ from maru_lang.enums.documents import DocumentStatus, AuditAction
 from maru_lang.services.document import get_or_create_document_group
 from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
 from maru_lang.utils.file_storage import save_upload
-from maru_lang.configs import get_config
-from maru_lang.graph.ingest.nodes import process_document
+from maru_lang.graph.ingest.graph import get_ingest_graph
+from maru_lang.graph.ingest.state import build_ingest_input
 from maru_lang.core.vector_db import get_vector_db
 
 logger = logging.getLogger(__name__)
@@ -98,19 +98,15 @@ async def upload_and_ingest(
 
 
 async def run_ingest_for_document(doc: Document, team_id: int) -> None:
-    """Run process_document directly for an API-uploaded document.
+    """Run the ingest graph for an already-synced (API-uploaded) document.
 
-    Skips sync_document because upload_and_ingest already created the
-    Document record and group. Only the embedding pipeline is needed.
+    The Document record and group already exist (created by upload_and_ingest),
+    so the graph's sync_document step passes through and only parse + embedding
+    run — the same compiled graph the CLI sync path uses.
     """
-    cfg = get_config()
-
-    state = {
-        "file": None,
-        "team_id": team_id,
-        "re_embed": False,
-        "embedder_model": cfg.embedding_model,
-        "document": {
+    state = build_ingest_input(
+        team_id,
+        document={
             "id": doc.id,
             "name": doc.name,
             "file_path": doc.file_path,
@@ -118,14 +114,11 @@ async def run_ingest_for_document(doc: Document, team_id: int) -> None:
             "group_id": doc.group_id,
             "metadata": doc.metadata,
         },
-        "needs_processing": True,
-        "total_chunks": 0,
-        "error": None,
-        "messages": [],
-    }
+        needs_processing=True,
+    )
 
     try:
-        result = await process_document(state)
+        result = await get_ingest_graph().ainvoke(state)
 
         if result.get("error"):
             raise RuntimeError(result["error"])
