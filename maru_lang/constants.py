@@ -49,6 +49,10 @@ Analyze the conversation and rewrite the latest message as a clear, \
 specific search query. Remove filler words and emotional expressions. \
 Include keywords and concepts useful for document search.
 
+If the latest message is a follow-up that omits the subject or refers back to \
+earlier turns (pronouns, ellipsis, one-word replies like "TEPS?"), resolve those \
+references using the prior context so the query stands on its own.
+
 Return only the rewritten query. No explanation needed."""
 
 KEYWORD_PROMPT = """\
@@ -104,10 +108,12 @@ search results are provided, ground your answer in them.
 
 # 질문에 답하기 위해 내부 문서 검색이 필요한지 분류하는 프롬프트.
 # 모델은 정확히 'SEARCH' 또는 'DIRECT' 한 단어로만 답해야 한다.
-ROUTE_PROMPT = """다음 사용자 질문에 정확히 답하려면 내부 팀 문서를 검색해야 하는가?
+ROUTE_PROMPT = """이 시스템은 팀 내부 문서(업무 자료·규정·요건·절차·매뉴얼 등)를 근거로 \
+답하는 Q&A 도우미다. 사용자 질문에 답하기 위해 내부 문서를 검색해야 하는지 판단하라.
 
-- 문서/자료/내부 정보가 필요하면: SEARCH
-- 인사·잡담·일반 상식 등 검색 없이 답할 수 있으면: DIRECT
+- 사실·규정·요건·수치·절차·고유명사 등 내부 문서로 확인할 여지가 조금이라도 있으면: SEARCH
+- 명백한 인사·잡담·감사·감정 표현처럼 문서가 전혀 필요 없을 때만: DIRECT
+- 판단이 애매하면 SEARCH를 택하라 (검색을 놓치는 것이 불필요한 검색보다 나쁘다).
 
 오직 'SEARCH' 또는 'DIRECT' 한 단어로만 답하라.
 

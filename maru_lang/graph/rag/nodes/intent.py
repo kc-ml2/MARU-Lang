@@ -9,10 +9,19 @@ def make_intent_node(llm: BaseChatModel):
 
     async def intent_node(state: RagState) -> dict:
         query = state["query"]
-        try:
-            response = await llm.ainvoke(
-                f"{INTENT_PROMPT}\n\nOriginal query: {query}\n\nRewritten query:"
+        # Include recent conversation context so follow-up questions (pronouns,
+        # ellipsis, one-word replies) are rewritten into self-contained queries.
+        memory = state.get("memory_context")
+        if memory:
+            prompt = (
+                f"{INTENT_PROMPT}\n\n"
+                f"[이전 대화 맥락]\n{memory}\n\n"
+                f"[현재 메시지]\n{query}\n\nRewritten query:"
             )
+        else:
+            prompt = f"{INTENT_PROMPT}\n\nOriginal query: {query}\n\nRewritten query:"
+        try:
+            response = await llm.ainvoke(prompt)
             rewritten = response.content.strip()
             return {
                 "rewritten_query": rewritten if rewritten else query,

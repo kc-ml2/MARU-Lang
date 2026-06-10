@@ -286,3 +286,53 @@ class TestLLMEvaluateStrictVerdict:
     async def test_uppercase_sufficient_passes(self):
         """LLM might return uppercase; treat same as lowercase."""
         assert await self._run("SUFFICIENT") is None
+
+
+# ─── Intent node: memory-aware query rewriting (issue #13) ───
+
+
+class TestIntentNodeMemory:
+    """Intent must use recent conversation context so follow-up questions
+    (pronouns/ellipsis/one-word replies) become self-contained queries."""
+
+    @staticmethod
+    def _node(rewritten: str):
+        from maru_lang.graph.rag.nodes import make_intent_node
+        captured = {}
+        llm = MagicMock()
+
+        async def ainvoke(prompt):
+            captured["prompt"] = prompt
+            r = MagicMock()
+            r.content = rewritten
+            return r
+
+        llm.ainvoke = ainvoke
+        return make_intent_node(llm), captured
+
+    @pytest.mark.asyncio
+    async def test_followup_uses_memory_context(self):
+        node, captured = self._node("졸업하려면 TEPS가 필요한가요?")
+        out = await node({
+            "query": "TEPS!",
+            "memory_context": "Q: 졸업하려면 텝스 필요해?\nA: ...",
+        })
+        # Prior context AND the current message reach the rewrite prompt.
+        assert "졸업하려면 텝스" in captured["prompt"]
+        assert "TEPS!" in captured["prompt"]
+        assert out["rewritten_query"] == "졸업하려면 TEPS가 필요한가요?"
+
+    @pytest.mark.asyncio
+    async def test_no_memory_falls_back_to_plain_query(self):
+        node, captured = self._node("rewritten")
+        await node({"query": "hello", "memory_context": ""})
+        assert "Original query: hello" in captured["prompt"]
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_keeps_original_query(self):
+        from maru_lang.graph.rag.nodes import make_intent_node
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
+        node = make_intent_node(llm)
+        out = await node({"query": "TEPS!", "memory_context": "ctx"})
+        assert out["rewritten_query"] == "TEPS!"
