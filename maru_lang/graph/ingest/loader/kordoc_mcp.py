@@ -54,6 +54,25 @@ def _strip_header(text: str) -> str:
     return text[sep + 2:].strip()
 
 
+def _explain_failure(file_path: Path, exc: BaseException) -> str:
+    """Turn a raw spawn/transport failure into a clear, actionable message.
+
+    anyio wraps connection/protocol errors in ExceptionGroups, and a missing
+    runtime surfaces as a bare FileNotFoundError — both opaque to the user. Peel
+    to the root cause and name the likely fix.
+    """
+    root = exc
+    while getattr(root, "exceptions", None):  # unwrap (Base)ExceptionGroup chains
+        root = root.exceptions[0]
+    if isinstance(root, FileNotFoundError):
+        cmd = get_config().kordoc_mcp_command
+        return (
+            f"KorDoc command not found ({cmd!r}). Install Node.js and run "
+            f"`npx -y kordoc setup`, or set kordoc_mcp_command — while parsing {file_path.name}."
+        )
+    return f"KorDoc MCP failed for {file_path.name}: {type(root).__name__}: {root}"
+
+
 class _KordocClient:
     """Per-process persistent KorDoc MCP session, reused across parse calls."""
 
@@ -84,6 +103,13 @@ class _KordocClient:
             raise KordocParseError(
                 f"KorDoc timed out after {timeout}s parsing {file_path.name}"
             )
+        except KordocParseError:
+            raise  # already a clear parse/transport error from the server
+        except Exception as e:
+            # Spawn/connection/protocol failures surface as raw FileNotFoundError
+            # or anyio ExceptionGroups — translate to a clear, actionable message.
+            await self._restart()
+            raise KordocParseError(_explain_failure(file_path, e)) from e
 
     async def close(self) -> None:
         """Shut the session down (e.g. on worker shutdown)."""
