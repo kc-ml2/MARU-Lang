@@ -117,7 +117,11 @@ class MaruConfig:
     kordoc_mcp_enabled: bool = True
     kordoc_mcp_command: str = "npx"
     kordoc_mcp_args: list = field(default_factory=lambda: ["-y", "kordoc", "mcp"])
-    kordoc_mcp_ratio: float = 0.5  # share of dual-support docs routed to KorDoc
+    # Share of dual-support docs routed to KorDoc. Default 0.0: KorDoc handles
+    # only what LangChain can't (hwp/hwpx/hwpml) — KorDoc's PDF path needs the
+    # extra pdfjs-dist npm package, so out of the box PDFs stay on LangChain.
+    # Raise (e.g. 0.5) to A/B-compare parser quality on the same corpus.
+    kordoc_mcp_ratio: float = 0.0
     kordoc_mcp_timeout: float = 120.0  # seconds; bounds the per-document MCP call
 
     # Retriever
