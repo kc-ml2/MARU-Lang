@@ -12,11 +12,25 @@ from maru_lang.core.vector_db.base import VectorDB
 class ChromaVectorDB(VectorDB):
     def __init__(
         self,
-        persist_dir: str,
         collection_name: str,
+        persist_dir: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+        ssl: bool = False,
     ):
-        self.persist_dir: str = persist_dir
-        self.client = chromadb.PersistentClient(path=persist_dir)
+        # Two modes:
+        #  - Embedded (persist_dir): single-process local files. Fine for one
+        #    server doing in-process ingest, NOT for the task queue (the worker's
+        #    writes aren't visible to a separate API process, and concurrent
+        #    writers can corrupt the store).
+        #  - Server (host/port -> HttpClient): one shared store that both the API
+        #    and the ARQ worker connect to — required for queue mode.
+        if host:
+            self.persist_dir = None
+            self.client = chromadb.HttpClient(host=host, port=port or 8000, ssl=ssl)
+        else:
+            self.persist_dir = persist_dir
+            self.client = chromadb.PersistentClient(path=persist_dir)
         self.collection: Collection = self.client.get_or_create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
@@ -319,16 +333,17 @@ class ChromaVectorDB(VectorDB):
         """
         from pathlib import Path
 
-        # 1. 디렉토리 존재 확인
-        persist_path = Path(self.persist_dir)
-        if not persist_path.exists():
-            raise FileNotFoundError(
-                f"ChromaDB directory not found: {persist_path}\n"
-                f"Physical VectorDB files are missing.\n"
-                f"Please check your VectorDB configuration."
-            )
+        # 1. 디렉토리 존재 확인 (embedded 모드에만 해당; HTTP 모드는 서버가 소유)
+        if self.persist_dir is not None:
+            persist_path = Path(self.persist_dir)
+            if not persist_path.exists():
+                raise FileNotFoundError(
+                    f"ChromaDB directory not found: {persist_path}\n"
+                    f"Physical VectorDB files are missing.\n"
+                    f"Please check your VectorDB configuration."
+                )
 
-        # 2. 컬렉션 접근 확인
+        # 2. 컬렉션 접근 확인 (HTTP 모드면 서버 연결까지 검증)
         try:
             _ = self.collection.count()
             return True
