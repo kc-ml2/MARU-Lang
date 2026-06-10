@@ -235,7 +235,11 @@ async def _get_cli_token(base_url: str, team_names: list[str]) -> dict | None:
             )
             if resp.status_code == 200:
                 return resp.json()
-            console.print(f"[red]Token error: {resp.text}[/red]")
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except Exception:
+                detail = resp.text
+            console.print(f"[red]{detail}[/red]")
         except Exception as e:
             console.print(f"[red]Token request failed: {e}[/red]")
     return None

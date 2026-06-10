@@ -52,7 +52,14 @@ async def test_ingest_task_skips_missing_doc(monkeypatch):
     assert ran == []
 
 
-async def test_issue_cli_tokens_creates_admin_role_and_teams():
+async def test_issue_cli_tokens_joins_existing_teams_only():
+    # "public" is system-bootstrapped; "sales" must pre-exist (CLI never creates).
+    from maru_lang.services.admin import get_or_create_admin_user
+    from maru_lang.services.team import get_or_create_team
+
+    admin = await get_or_create_admin_user()
+    await get_or_create_team(name="sales", manager=admin)
+
     out = await issue_cli_tokens(["public", "sales"])
 
     assert out["chat_token"] and out["access_token"]
@@ -62,6 +69,17 @@ async def test_issue_cli_tokens_creates_admin_role_and_teams():
     admin = await User.get(email=ADMIN_EMAIL)
     assert admin.id == out["user_id"]
     assert admin.role_id is not None  # ADMIN role ensured
+
+
+async def test_issue_cli_tokens_rejects_unknown_team():
+    # A typo must NOT silently create an empty team — it fails, naming the
+    # missing team and listing what exists.
+    from maru_lang.core.relation_db.models.auth import Team
+
+    with pytest.raises(ValueError, match="salse"):
+        await issue_cli_tokens(["salse"])  # typo of "sales"
+
+    assert await Team.get_or_none(name="salse") is None  # nothing created
 
 
 async def test_issue_cli_tokens_empty_teams():

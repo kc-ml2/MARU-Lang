@@ -25,12 +25,19 @@ class CliTokenResponse(BaseModel):
 
 @router.post("/cli-token", response_model=CliTokenResponse)
 async def get_cli_token(request: Request, body: CliTokenRequest):
-    """Issue chat + access tokens for CLI usage. Localhost only."""
+    """Issue chat + access tokens for CLI usage. Localhost only.
+
+    Joins existing teams only; an unknown team name returns 404 with the list
+    of existing teams (team creation goes through the Teams API, not the CLI).
+    """
     client_host = request.client.host if request.client else None
     if client_host not in LOCALHOST_HOSTS:
         raise HTTPException(status_code=403, detail="Localhost access only")
 
-    return CliTokenResponse(**await issue_cli_tokens(body.teams))
+    try:
+        return CliTokenResponse(**await issue_cli_tokens(body.teams))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/llms")
