@@ -1,4 +1,5 @@
 """WebSocket streaming helpers for the chat endpoint."""
+import logging
 from typing import Union
 
 from fastapi import WebSocket
@@ -8,6 +9,8 @@ from langgraph.types import Command
 from maru_lang.graph import stream_rag
 from maru_lang.core.relation_db.models.auth import User
 from maru_lang.core.relation_db.models.chat import Session
+
+logger = logging.getLogger(__name__)
 
 
 async def stream_and_send(
@@ -35,23 +38,37 @@ async def stream_and_send(
         await websocket.send_json({"type": "thinking"})
 
     interrupted = False
-    async for event_type, event_content in stream_rag(
-        message=message,
-        team_ids=team_ids,
-        team_names=team_names,
-        graph=graph,
-        config=config,
-        function=function,
-        session_id=session.id if session else None,
-        user_id=user.id if user else None,
-    ):
-        if event_type == "token":
-            await websocket.send_json({"type": "stream", "content": event_content})
-        elif event_type == "retrieve":
-            await websocket.send_json({"type": "retrieve", "documents": event_content})
-        elif event_type == "interrupt":
-            await websocket.send_json({"type": "interrupt", "content": event_content})
-            interrupted = True
+    try:
+        async for event_type, event_content in stream_rag(
+            message=message,
+            team_ids=team_ids,
+            team_names=team_names,
+            graph=graph,
+            config=config,
+            function=function,
+            session_id=session.id if session else None,
+            user_id=user.id if user else None,
+        ):
+            if event_type == "token":
+                await websocket.send_json({"type": "stream", "content": event_content})
+            elif event_type == "retrieve":
+                await websocket.send_json({"type": "retrieve", "documents": event_content})
+            elif event_type == "interrupt":
+                await websocket.send_json({"type": "interrupt", "content": event_content})
+                interrupted = True
+    except Exception as e:
+        # Surface graph failures instead of silently dropping the stream: log the
+        # full traceback server-side, tell the client, and keep the socket open
+        # so the conversation survives a single failed turn.
+        logger.exception("Chat graph streaming failed (session=%s)", session.id if session else None)
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "content": f"응답 생성 중 오류가 발생했습니다: {type(e).__name__}: {e}",
+            })
+        except Exception:
+            pass
+        return False
 
     if not interrupted:
         await websocket.send_json({"type": "complete"})

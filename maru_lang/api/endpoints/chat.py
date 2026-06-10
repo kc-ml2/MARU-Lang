@@ -1,9 +1,12 @@
 """Chat WebSocket endpoint."""
+import logging
 import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from langgraph.types import Command
 from starlette.websockets import WebSocketState
+
+logger = logging.getLogger(__name__)
 
 from maru_lang.services.auth import verify_chat_token
 from maru_lang.dependencies.auth import User
@@ -181,8 +184,9 @@ async def chat_websocket(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception as e:
+        logger.exception("Chat websocket handler error")
         try:
-            await websocket.send_json({"type": "error", "content": f"Server error: {str(e)}"})
+            await websocket.send_json({"type": "error", "content": f"Server error: {type(e).__name__}: {e}"})
         except Exception:
             pass
     finally:
