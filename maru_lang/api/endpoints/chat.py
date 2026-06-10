@@ -144,6 +144,17 @@ async def chat_websocket(websocket: WebSocket):
 
                 # One graph run = one thread; fresh thread_id per turn.
                 config["configurable"] = {"thread_id": f"{active_session.id}:{uuid.uuid4().hex}"}
+                # Per-turn trace metadata. config["metadata"] is inherited by all
+                # child runs and lands in LangSmith (configurable only auto-copies
+                # scalars, so lists like team_ids must go here explicitly).
+                # Resume reuses this turn's config, so it carries over.
+                config["metadata"] = {
+                    "session_id": active_session.id,
+                    "user_id": user.id,
+                    "team_ids": active_team_ids,
+                    "team_names": active_team_names,
+                    "graph_id": active_graph_id,
+                }
 
                 await stream_and_send(
                     websocket,
