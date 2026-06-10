@@ -107,13 +107,14 @@ class MaruConfig:
     task_queue_enabled: bool = False
     redis_url: Optional[str] = None  # e.g. "redis://localhost:6379"
 
-    # KorDoc MCP parser. When enabled, KorDoc-supported formats are parsed via
-    # the KorDoc MCP server (run locally as `npx -y kordoc mcp`) instead of the
-    # LangChain loaders. Formats only KorDoc can read (hwp/hwpx/hwpml) always go
-    # to KorDoc; formats both can read (pdf/docx/xls/xlsx) are split by
-    # kordoc_mcp_ratio — deterministically per document — so the two parsers'
-    # quality can be A/B compared on the same corpus.
-    kordoc_mcp_enabled: bool = False
+    # KorDoc MCP parser. Enabled by default — KorDoc-supported formats are parsed
+    # via the KorDoc MCP server (run locally as `npx -y kordoc mcp`, needs Node)
+    # instead of the LangChain loaders. Formats only KorDoc can read
+    # (hwp/hwpx/hwpml) always go to KorDoc; formats both can read
+    # (pdf/docx/xls/xlsx) are split by kordoc_mcp_ratio — deterministically per
+    # document — so the two parsers' quality can be A/B compared on the same
+    # corpus. Set false on deployments without Node/npx.
+    kordoc_mcp_enabled: bool = True
     kordoc_mcp_command: str = "npx"
     kordoc_mcp_args: list = field(default_factory=lambda: ["-y", "kordoc", "mcp"])
     kordoc_mcp_ratio: float = 0.5  # share of dual-support docs routed to KorDoc
@@ -219,7 +220,7 @@ class MaruConfig:
             ingest_embedding_device=data.get("ingest_embedding_device"),
             task_queue_enabled=bool(data.get("task_queue_enabled", False)),
             redis_url=data.get("redis_url"),
-            kordoc_mcp_enabled=bool(data.get("kordoc_mcp_enabled", False)),
+            kordoc_mcp_enabled=bool(data.get("kordoc_mcp_enabled", cls.kordoc_mcp_enabled)),
             kordoc_mcp_command=data.get("kordoc_mcp_command", cls.kordoc_mcp_command),
             kordoc_mcp_args=data.get("kordoc_mcp_args") or ["-y", "kordoc", "mcp"],
             kordoc_mcp_ratio=float(data.get("kordoc_mcp_ratio", cls.kordoc_mcp_ratio)),

@@ -223,3 +223,7 @@ __marimo__/
 maru_app/*
 # LangGraph sqlite checkpointer sidecar files
 *.checkpoints
+
+# Sample/test binary documents (e.g. dropped into docs/ for ingest testing)
+*.hwp
+*.hwpx
