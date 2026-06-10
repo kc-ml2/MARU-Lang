@@ -579,7 +579,9 @@ async def _api_ingest(
     uploaded = 0
     failed = 0
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    # Generous timeout: with the queue off the server embeds in-process and the
+    # response waits for it (the first file also loads the embedding model).
+    async with httpx.AsyncClient(timeout=300) as client:
         for fp in files:
             try:
                 with open(fp, "rb") as f:
@@ -595,8 +597,12 @@ async def _api_ingest(
                     )
                 if resp.status_code == 200:
                     data = resp.json()
-                    console.print(f"  [green]OK[/green] {fp.name} (id: {data.get('document_id', '?')})")
-                    uploaded += 1
+                    if data.get("status") == "error":
+                        console.print(f"  [red]FAIL[/red] {fp.name}: {data.get('error') or 'embedding failed'}")
+                        failed += 1
+                    else:
+                        console.print(f"  [green]OK[/green] {fp.name} (id: {data.get('document_id', '?')})")
+                        uploaded += 1
                 else:
                     console.print(f"  [red]FAIL[/red] {fp.name}: {resp.text}")
                     failed += 1

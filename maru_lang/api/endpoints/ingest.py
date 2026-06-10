@@ -2,7 +2,7 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query
 
 from maru_lang.constants import INGEST_TASK_NAME
 from maru_lang.enums.auth import UserRoleCode
@@ -38,17 +38,18 @@ router = APIRouter(
 @router.post("/upload", response_model=UploadResponse)
 async def upload_file(
     request: Request,
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     team_id: int = Form(...),
     folder_path: str = Form(""),
     mtime: float = Form(..., description="Original file modification time (unix timestamp)"),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
-    """Upload a file and start ingest.
+    """Upload a file and ingest it.
 
-    Embedding runs on an ARQ worker when task_queue_enabled is set (app.state.arq
-    present), otherwise in-process via FastAPI BackgroundTasks.
+    When the task queue is on (app.state.arq present), embedding is enqueued to
+    an ARQ worker and the response returns immediately (status "queued").
+    Otherwise embedding runs in-process and the response waits for it, so the
+    caller gets the real outcome ("active" / "error") instead of fire-and-forget.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -64,18 +65,27 @@ async def upload_file(
     )
 
     arq = getattr(request.app.state, "arq", None)
+    error: str | None = None
     if arq is not None:
         await arq.enqueue_job(INGEST_TASK_NAME, doc.id, team_id)
         status = "queued"
     else:
-        background_tasks.add_task(run_ingest_for_document, doc, team_id)
-        status = "uploading"
+        # In-process + synchronous: the response reflects the embedding result,
+        # and sequential uploads embed one-at-a-time (no pile-up). The document
+        # is already marked ERROR + audited inside run_ingest_for_document.
+        try:
+            await run_ingest_for_document(doc, team_id)
+            status = "active"
+        except Exception as e:
+            status = "error"
+            error = str(e)
 
     return UploadResponse(
         document_id=doc.id,
         name=doc.name,
         status=status,
         is_reupload=is_reupload,
+        error=error,
     )
 
 

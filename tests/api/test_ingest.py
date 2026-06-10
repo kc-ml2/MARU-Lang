@@ -69,8 +69,10 @@ class TestUpload:
         data = resp.json()
         assert "document_id" in data
         assert data["name"] == "test"
-        # No task queue configured -> in-process BackgroundTasks path.
-        assert data["status"] == "uploading"
+        # No task queue -> in-process synchronous ingest; response reflects the
+        # real outcome ("active") and run_ingest_for_document was awaited.
+        assert data["status"] == "active"
+        mock_ingest.assert_awaited_once()
 
     @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
     @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)

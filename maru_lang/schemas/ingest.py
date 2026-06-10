@@ -18,8 +18,9 @@ class FileInfo(BaseModel):
 class UploadResponse(BaseModel):
     document_id: str
     name: str
-    status: str  # "uploading"
+    status: str  # "queued" | "active" | "error"
     is_reupload: bool = False
+    error: Optional[str] = None  # set when status == "error" (in-process path)
 
 
 # --- Status ---
