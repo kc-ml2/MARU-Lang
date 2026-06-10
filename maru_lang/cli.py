@@ -209,12 +209,21 @@ def run(
     worker: int = typer.Option(
         0, "--worker",
         help="Number of ARQ ingest workers to co-launch (0=none; needs task_queue_enabled)"),
+    attach: bool = typer.Option(
+        False, "--attach", "-a",
+        help="Attach the chat REPL to an already-running maru server (e.g. a "
+             "systemd `maru serve`) instead of starting one"),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable DEBUG logs for maru_lang (default: quiet)"),
 ):
     """Start server + interactive chat in one command."""
     if verbose:
         _enable_verbose_logging()
+
+    if attach and worker:
+        typer.echo("❌ --attach cannot be combined with --worker: the running "
+                   "server (service) owns its workers.")
+        raise typer.Exit(1)
 
     if not teams:
         # No --team given: start on the default 'public' team without blocking
@@ -240,6 +249,7 @@ def run(
         port=port,
         skip_migrations=skip_migrations,
         worker_count=worker,
+        attach=attach,
     ))
 
 

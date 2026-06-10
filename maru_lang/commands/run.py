@@ -78,31 +78,49 @@ async def run_session(
     port: int,
     skip_migrations: bool,
     worker_count: int = 0,
+    attach: bool = False,
 ):
     """Main entry: start server, connect WebSocket, run REPL.
 
     When worker_count > 0 (and the task queue is enabled) that many ARQ ingest
     workers are co-launched as sibling subprocesses and torn down with the server.
+
+    With attach=True no server (or worker) is spawned — the REPL connects to an
+    already-running maru server (e.g. a systemd `maru serve`) and leaves it
+    running on exit. This is safe because the REPL is a pure HTTP/WS client:
+    all DB work (migrations, admin bootstrap, graph compilation) lives in the
+    server process, which the running service has already done.
     """
     base_url = f"http://{host}:{port}"
     ws_url = f"ws://{host}:{port}/chat/connect"
 
-    # 1. Start server
-    server_proc = _start_server(host, port, skip_migrations)
-    console.print(f"[dim]Starting server on {host}:{port}...[/dim]")
-
-    # 1b. Optionally co-launch ingest worker(s).
-    worker_procs = _start_workers(worker_count)
+    # 1. Start server — or attach to one that's already running.
+    server_proc = None
+    worker_procs = []
+    if attach:
+        console.print(f"[dim]Attaching to running server at {host}:{port}...[/dim]")
+    else:
+        server_proc = _start_server(host, port, skip_migrations)
+        console.print(f"[dim]Starting server on {host}:{port}...[/dim]")
+        # 1b. Optionally co-launch ingest worker(s).
+        worker_procs = _start_workers(worker_count)
 
     try:
-        # 2. Wait for server ready
-        if not await _wait_for_health(base_url, timeout=30):
-            console.print("[red]Server failed to start within 30 seconds.[/red]")
-            # Show server stderr for debugging
-            if server_proc.stderr:
-                stderr = server_proc.stderr.read()
-                if stderr:
-                    console.print(f"[red]Server log:[/red]\n{stderr.decode(errors='replace')}")
+        # 2. Wait for server ready (attach: just verify it's reachable)
+        if not await _wait_for_health(base_url, timeout=5 if attach else 30):
+            if attach:
+                console.print(
+                    f"[red]No maru server responding at {base_url}.[/red]\n"
+                    "Is the service running? (systemctl status <service>) "
+                    "Or drop --attach to start one here."
+                )
+            else:
+                console.print("[red]Server failed to start within 30 seconds.[/red]")
+                # Show server stderr for debugging
+                if server_proc.stderr:
+                    stderr = server_proc.stderr.read()
+                    if stderr:
+                        console.print(f"[red]Server log:[/red]\n{stderr.decode(errors='replace')}")
             return
 
         console.print("[green]Server ready.[/green]\n")
@@ -118,8 +136,11 @@ async def run_session(
             _stop_server(p)
         if worker_procs:
             console.print(f"[dim]Worker(s) stopped ({len(worker_procs)}).[/dim]")
-        _stop_server(server_proc)
-        console.print("[dim]Server stopped.[/dim]")
+        if server_proc is not None:
+            _stop_server(server_proc)
+            console.print("[dim]Server stopped.[/dim]")
+        elif attach:
+            console.print("[dim]Detached (server left running).[/dim]")
 
 
 def _start_server(host: str, port: int, skip_migrations: bool) -> subprocess.Popen:
