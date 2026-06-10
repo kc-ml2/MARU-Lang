@@ -442,6 +442,57 @@ class TestDelete:
         assert log is not None
         assert log.user_id == user.id
 
+    @patch("maru_lang.services.ingest.get_vector_db")
+    async def test_delete_in_flight_defers_to_worker(
+        self, mock_get_vdb, client: AsyncClient, team_setup
+    ):
+        """Deleting a PROCESSING doc marks it DELETING (no hard-delete/chunk race)."""
+        team, user = team_setup
+        mock_vdb = MagicMock()
+        mock_get_vdb.return_value = mock_vdb
+
+        group = await DocumentGroup.create(name="uploads", team=team)
+        await Document.create(
+            id="doc-inflight", name="processing", group=group,
+            status=DocumentStatus.PROCESSING, file_size=100,
+        )
+
+        resp = await client.delete(
+            f"/ingest/doc-inflight?team_id={team.id}", headers=auth_header(user.id),
+        )
+        assert resp.status_code == 200
+
+        # Deferred: row kept (now DELETING), chunks NOT touched (worker owns them).
+        doc = await Document.get_or_none(id="doc-inflight")
+        assert doc is not None
+        assert doc.status == DocumentStatus.DELETING
+        mock_vdb.delete_all_chunks_by_document_id.assert_not_called()
+        # Intent still audited.
+        assert await DocumentAuditLog.filter(
+            document_id="doc-inflight", action=AuditAction.DELETE,
+        ).exists()
+
+    @patch("maru_lang.services.ingest.get_vector_db")
+    async def test_reconcile_finalizes_deleting(
+        self, mock_get_vdb, team_setup
+    ):
+        """reconcile_deletions() finalizes docs stuck in DELETING."""
+        from maru_lang.services.ingest import reconcile_deletions
+        team, _ = team_setup
+        mock_vdb = MagicMock()
+        mock_get_vdb.return_value = mock_vdb
+
+        group = await DocumentGroup.create(name="uploads", team=team)
+        await Document.create(
+            id="doc-deleting", name="stuck", group=group,
+            status=DocumentStatus.DELETING, file_size=100,
+        )
+
+        n = await reconcile_deletions()
+        assert n >= 1
+        assert await Document.get_or_none(id="doc-deleting") is None
+        mock_vdb.delete_all_chunks_by_document_id.assert_any_call("doc-deleting")
+
     async def test_delete_nonexistent_returns_404(
         self, client: AsyncClient, team_setup
     ):

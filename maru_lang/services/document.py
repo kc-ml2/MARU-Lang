@@ -278,3 +278,50 @@ async def set_document_error(doc: Document, message: str) -> None:
     doc.status = DocumentStatus.ERROR
     doc.error_message = message
     await doc.save()
+
+
+# --- Atomic status transitions (race-safe ingest/delete coordination) ---
+#
+# These use a single conditional UPDATE so the check and the transition are
+# atomic — no TOCTOU window between "is it still mine?" and "commit". The row
+# count tells us whether we won the race.
+
+async def begin_processing(document_id: str) -> bool:
+    """UPLOADING/PROCESSING -> PROCESSING. False if the doc is gone or DELETING."""
+    n = await Document.filter(
+        id=document_id,
+        status__in=[DocumentStatus.UPLOADING, DocumentStatus.PROCESSING],
+    ).update(status=DocumentStatus.PROCESSING)
+    return n > 0
+
+
+async def try_activate(document_id: str) -> bool:
+    """PROCESSING -> ACTIVE. False if a delete cancelled it (now DELETING) or it's gone."""
+    n = await Document.filter(
+        id=document_id, status=DocumentStatus.PROCESSING,
+    ).update(status=DocumentStatus.ACTIVE)
+    return n > 0
+
+
+async def fail_processing(document_id: str, message: str) -> bool:
+    """PROCESSING -> ERROR(message). False if cancelled (DELETING) or gone —
+    never resurrects a doc the user already asked to delete."""
+    n = await Document.filter(
+        id=document_id, status=DocumentStatus.PROCESSING,
+    ).update(status=DocumentStatus.ERROR, error_message=message)
+    return n > 0
+
+
+async def mark_deleting(document_id: str) -> bool:
+    """Mark an in-flight (UPLOADING/PROCESSING) doc as DELETING for deferred cleanup.
+
+    Returns True if marked (the worker/sweep will finalize), False if the doc is
+    in a terminal state (ACTIVE/ERROR/INACTIVE) and the caller should hard-delete
+    now. Filters by id + status only (no team JOIN — UPDATEs can't JOIN on SQLite;
+    the caller already verified team ownership).
+    """
+    n = await Document.filter(
+        id=document_id,
+        status__in=[DocumentStatus.UPLOADING, DocumentStatus.PROCESSING],
+    ).update(status=DocumentStatus.DELETING)
+    return n > 0

@@ -30,6 +30,7 @@ class IngestState(TypedDict):
     needs_processing: bool
     parsed_docs: Optional[list[dict]]
     parser: Optional[str]
+    cancelled: bool
     total_chunks: int
     error: Optional[str]
     messages: Annotated[list[str], operator.add]
@@ -62,6 +63,7 @@ def build_ingest_input(
         "needs_processing": needs_processing,
         "parsed_docs": None,
         "parser": None,
+        "cancelled": False,
         "total_chunks": 0,
         "error": None,
         "messages": [],

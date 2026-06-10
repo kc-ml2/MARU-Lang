@@ -56,6 +56,14 @@ async def _on_startup(ctx) -> None:
         device or "auto",
     )
 
+    # Backstop for the cooperative-cancel state machine: finalize any documents
+    # left in DELETING by a worker that crashed mid-cleanup or a delete that
+    # raced a just-finished job.
+    from maru_lang.services.ingest import reconcile_deletions
+    n = await reconcile_deletions()
+    if n:
+        logger.info("Worker reconcile: finalized %d DELETING document(s)", n)
+
 
 async def _on_shutdown(ctx) -> None:
     # Tear down the persistent KorDoc MCP session (no-op if it was never used).

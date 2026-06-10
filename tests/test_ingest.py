@@ -205,19 +205,34 @@ class TestIngestGraphExecution:
             needs_processing=True,
         )
 
+    @staticmethod
+    def _doc_mock():
+        """Patched Document model with awaitable filter().update()/delete()."""
+        m = MagicMock()
+        db_doc = MagicMock(); db_doc.metadata = {}
+        m.get_or_none = AsyncMock(return_value=db_doc)
+        flt = MagicMock()
+        flt.update = AsyncMock(return_value=1)
+        flt.delete = AsyncMock(return_value=1)
+        m.filter = MagicMock(return_value=flt)
+        return m, db_doc
+
     @pytest.mark.asyncio
     @patch("maru_lang.graph.ingest.nodes.make_chunk_uid", side_effect=lambda i, x, c: f"{i}-{x}")
     @patch("maru_lang.graph.ingest.nodes.split_documents")
     @patch("maru_lang.graph.ingest.nodes.parse_file")
-    @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.try_activate", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.begin_processing", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.Document")
     async def test_presynced_flow_chains_sync_skip_parse_process(
-        self, mock_doc, mock_status, mock_parse, mock_split, mock_uid
+        self, mock_doc, mock_begin, mock_try, mock_parse, mock_split, mock_uid
     ):
         from langchain_core.documents import Document as LCDoc
-        db_doc = MagicMock(); db_doc.metadata = {}; db_doc.save = AsyncMock()
-        mock_doc.get_or_none = AsyncMock(return_value=db_doc)
-        mock_doc.exists = AsyncMock(return_value=True)
+        m, db_doc = self._doc_mock()
+        mock_doc.get_or_none = m.get_or_none
+        mock_doc.filter = m.filter
+        mock_begin.return_value = True
+        mock_try.return_value = True  # PROCESSING -> ACTIVE committed
         mock_parse.return_value = ([LCDoc(page_content="body")], "kordoc")
         mock_split.return_value = [LCDoc(page_content="c1"), LCDoc(page_content="c2")]
 
@@ -229,20 +244,23 @@ class TestIngestGraphExecution:
         assert result["total_chunks"] == 2
         assert result["error"] is None
         assert emb.embed_documents.called and vdb.upsert_documents.called
-        assert db_doc.metadata["parser"] == "kordoc"
+        # parser recorded via field-scoped metadata update
+        m.filter().update.assert_any_await(metadata={"parser": "kordoc"})
         joined = " ".join(result["messages"])  # reducer accumulates across nodes
         assert "Already synced" in joined and "Parsed (kordoc)" in joined
 
     @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.fail_processing", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.parse_file")
-    @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.begin_processing", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.Document")
     async def test_parse_error_propagates_and_skips_processing(
-        self, mock_doc, mock_status, mock_parse
+        self, mock_doc, mock_begin, mock_parse, mock_fail
     ):
-        db_doc = MagicMock(); db_doc.save = AsyncMock()
-        mock_doc.get_or_none = AsyncMock(return_value=db_doc)
-        mock_doc.exists = AsyncMock(return_value=True)
+        m, _ = self._doc_mock()
+        mock_doc.get_or_none = m.get_or_none
+        mock_doc.filter = m.filter
+        mock_begin.return_value = True
         mock_parse.side_effect = RuntimeError("boom")
 
         graph, vdb, emb = self._graph()
@@ -258,12 +276,13 @@ class TestIngestGraphExecution:
     @patch("maru_lang.graph.ingest.nodes.make_chunk_uid", side_effect=lambda i, x, c: f"{i}-{x}")
     @patch("maru_lang.graph.ingest.nodes.split_documents")
     @patch("maru_lang.graph.ingest.nodes.parse_file")
-    @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.try_activate", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.begin_processing", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.upsert_document_from_file")
     @patch("maru_lang.graph.ingest.nodes.get_or_create_group_hierarchy")
     @patch("maru_lang.graph.ingest.nodes.Document")
     async def test_file_entry_flow_runs_sync_then_parse_process(
-        self, mock_doc, mock_group, mock_upsert, mock_status, mock_parse, mock_split, mock_uid
+        self, mock_doc, mock_group, mock_upsert, mock_begin, mock_try, mock_parse, mock_split, mock_uid
     ):
         from datetime import datetime
         from langchain_core.documents import Document as LCDoc
@@ -276,9 +295,11 @@ class TestIngestGraphExecution:
         mock_upsert.return_value = (synced, True)   # unchanged check -> needs_processing
         mock_group.return_value = MagicMock()
 
-        db_doc = MagicMock(); db_doc.metadata = {}; db_doc.save = AsyncMock()
-        mock_doc.get_or_none = AsyncMock(return_value=db_doc)
-        mock_doc.exists = AsyncMock(return_value=True)
+        m, _ = self._doc_mock()
+        mock_doc.get_or_none = m.get_or_none
+        mock_doc.filter = m.filter
+        mock_begin.return_value = True
+        mock_try.return_value = True
         mock_parse.return_value = ([LCDoc(page_content="body")], "langchain")
         mock_split.return_value = [LCDoc(page_content="c1")]
 
@@ -509,18 +530,20 @@ class TestProcessDocument:
         assert "Skipped" in result["messages"][0]
 
     @pytest.mark.asyncio
-    @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.try_activate", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.Document")
     @patch("maru_lang.graph.ingest.nodes.split_documents")
     @patch("maru_lang.graph.ingest.nodes.make_chunk_uid")
     async def test_process_splits_embeds_stores(
-        self, mock_uid, mock_split, mock_doc_model, mock_update_status
+        self, mock_uid, mock_split, mock_doc_model, mock_try_activate
     ):
         from langchain_core.documents import Document as LCDoc
+        from maru_lang.enums.documents import DocumentStatus
 
         mock_db_doc = MagicMock()
+        mock_db_doc.status = DocumentStatus.PROCESSING  # not DELETING -> proceeds
         mock_doc_model.get_or_none = AsyncMock(return_value=mock_db_doc)
-        mock_doc_model.exists = AsyncMock(return_value=True)
+        mock_try_activate.return_value = True  # PROCESSING -> ACTIVE committed
 
         mock_vdb = MagicMock()
         mock_vdb.upsert_documents = MagicMock()
@@ -545,6 +568,70 @@ class TestProcessDocument:
 
         assert result["total_chunks"] == 2
         assert "2 chunks" in result["messages"][0]
+        mock_try_activate.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.try_activate", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.Document")
+    @patch("maru_lang.graph.ingest.nodes.split_documents")
+    @patch("maru_lang.graph.ingest.nodes.make_chunk_uid")
+    async def test_process_cancels_when_delete_wins_commit(
+        self, mock_uid, mock_split, mock_doc_model, mock_try_activate
+    ):
+        """try_activate False (delete marked DELETING mid-embed) -> cancel + cleanup."""
+        from langchain_core.documents import Document as LCDoc
+        from maru_lang.enums.documents import DocumentStatus
+
+        db_doc = MagicMock(); db_doc.status = DocumentStatus.PROCESSING
+        mock_doc_model.get_or_none = AsyncMock(return_value=db_doc)
+        flt = MagicMock(); flt.delete = AsyncMock(return_value=1)
+        mock_doc_model.filter = MagicMock(return_value=flt)
+        mock_try_activate.return_value = False  # commit lost the race
+
+        mock_vdb = MagicMock()
+        mock_vdb.get_chunk_ids_by_document_id = MagicMock(return_value=[])
+        mock_emb = MagicMock(); mock_emb.embed_documents = MagicMock(return_value=[[0.1] * 3])
+        mock_split.return_value = [LCDoc(page_content="c1")]
+        mock_uid.side_effect = lambda i, x, c: f"{i}-{x}"
+
+        state = {
+            "document": {"id": 1, "name": "doc", "file_path": "/tmp/doc.txt",
+                         "storage_path": None, "group_id": 10, "metadata": {}},
+            "needs_processing": True,
+            "parsed_docs": [{"content": "x", "metadata": {}}],
+            "team_id": 1,
+        }
+        result = await self._node(mock_vdb, mock_emb)(state)
+
+        assert result["cancelled"] is True
+        # chunks we wrote + the row are cleaned up
+        mock_vdb.delete_all_chunks_by_document_id.assert_called_once_with(1)
+        flt.delete.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.Document")
+    async def test_process_skips_when_deleting_before_embed(self, mock_doc_model):
+        """Early DELETING guard: skip embedding entirely if delete already landed."""
+        from maru_lang.enums.documents import DocumentStatus
+
+        db_doc = MagicMock(); db_doc.status = DocumentStatus.DELETING
+        mock_doc_model.get_or_none = AsyncMock(return_value=db_doc)
+        flt = MagicMock(); flt.delete = AsyncMock(return_value=1)
+        mock_doc_model.filter = MagicMock(return_value=flt)
+
+        mock_emb = MagicMock(); mock_emb.embed_documents = MagicMock()
+        mock_vdb = MagicMock()
+        state = {
+            "document": {"id": 1, "name": "doc", "file_path": "/tmp/d.txt",
+                         "storage_path": None, "group_id": 1, "metadata": {}},
+            "needs_processing": True,
+            "parsed_docs": [{"content": "x", "metadata": {}}],
+            "team_id": 1,
+        }
+        result = await self._node(mock_vdb, mock_emb)(state)
+
+        assert result["cancelled"] is True
+        mock_emb.embed_documents.assert_not_called()  # no wasted embedding
 
 
 # ─── parse_document (mock parser+ORM) ────────────────────────
@@ -564,20 +651,34 @@ class TestParseDocument:
         assert result["parsed_docs"] is None
         assert "Skipped" in result["messages"][0]
 
+    @staticmethod
+    def _doc_model_mock(db_doc):
+        """Document mock whose get_or_none returns db_doc and filter().update() awaits."""
+        m = MagicMock()
+        m.get_or_none = AsyncMock(return_value=db_doc)
+        flt = MagicMock()
+        flt.update = AsyncMock(return_value=1)
+        flt.delete = AsyncMock(return_value=1)
+        m.filter = MagicMock(return_value=flt)
+        m._filter = flt  # expose for assertions
+        return m
+
     @pytest.mark.asyncio
-    @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.begin_processing", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.Document")
     @patch("maru_lang.graph.ingest.nodes.parse_file")
     async def test_parses_and_records_parser(
-        self, mock_parse, mock_doc_model, mock_update_status
+        self, mock_parse, mock_doc_model, mock_begin
     ):
         from maru_lang.graph.ingest.nodes import parse_document
         from langchain_core.documents import Document as LCDoc
 
         mock_db_doc = MagicMock()
         mock_db_doc.metadata = {}
-        mock_db_doc.save = AsyncMock()
-        mock_doc_model.get_or_none = AsyncMock(return_value=mock_db_doc)
+        m = self._doc_model_mock(mock_db_doc)
+        mock_doc_model.get_or_none = m.get_or_none
+        mock_doc_model.filter = m.filter
+        mock_begin.return_value = True  # claimed for processing
 
         mock_parse.return_value = ([LCDoc(page_content="parsed text")], "kordoc")
 
@@ -593,21 +694,22 @@ class TestParseDocument:
 
         assert result["parser"] == "kordoc"
         assert result["parsed_docs"] == [{"content": "parsed text", "metadata": {}}]
-        # parser recorded in metadata for later quality review
-        assert mock_db_doc.metadata["parser"] == "kordoc"
+        # parser recorded via a field-scoped metadata update (not db_doc.save()).
+        m._filter.update.assert_awaited_once_with(metadata={"parser": "kordoc"})
 
     @pytest.mark.asyncio
-    @patch("maru_lang.graph.ingest.nodes.update_document_status", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.fail_processing", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.begin_processing", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.Document")
     @patch("maru_lang.graph.ingest.nodes.parse_file")
     async def test_parse_handles_empty_content(
-        self, mock_parse, mock_doc_model, mock_update_status
+        self, mock_parse, mock_doc_model, mock_begin, mock_fail
     ):
         from maru_lang.graph.ingest.nodes import parse_document
 
         mock_db_doc = MagicMock()
-        mock_db_doc.save = AsyncMock()
         mock_doc_model.get_or_none = AsyncMock(return_value=mock_db_doc)
+        mock_begin.return_value = True
         mock_parse.return_value = ([], "langchain")
 
         state = {
@@ -621,6 +723,27 @@ class TestParseDocument:
         result = await parse_document(state)
         assert result["parsed_docs"] is None
         assert result["error"] == "Empty content"
+        mock_fail.assert_awaited_once_with(1, "Empty content")
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.begin_processing", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.Document")
+    async def test_skips_when_delete_in_progress(self, mock_doc_model, mock_begin):
+        """begin_processing False (doc marked DELETING) -> cancelled, no parse."""
+        from maru_lang.graph.ingest.nodes import parse_document
+
+        mock_doc_model.get_or_none = AsyncMock(return_value=MagicMock())
+        mock_begin.return_value = False  # already DELETING / gone
+
+        state = {
+            "document": {"id": 1, "name": "doc", "file_path": "/tmp/d.txt",
+                         "storage_path": None, "group_id": 1, "metadata": {}},
+            "needs_processing": True,
+            "team_id": 1,
+        }
+        result = await parse_document(state)
+        assert result["parsed_docs"] is None
+        assert result["cancelled"] is True
 
 
 # ─── Parser routing + KorDoc header strip ────────────────────

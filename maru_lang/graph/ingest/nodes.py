@@ -12,8 +12,9 @@ from maru_lang.enums.documents import DocumentStatus
 from maru_lang.services.document import (
     get_or_create_group_hierarchy,
     upsert_document_from_file,
-    update_document_status,
-    set_document_error,
+    begin_processing,
+    try_activate,
+    fail_processing,
 )
 from maru_lang.utils.document import make_chunk_uid
 
@@ -90,12 +91,18 @@ async def parse_document(state: IngestState) -> dict:
     if not doc or not state["needs_processing"]:
         return {"parsed_docs": None, "messages": ["Skipped (no processing needed)"]}
 
-    # Document가 삭제되었는지 확인 후 상태 전환
     db_doc = await Document.get_or_none(id=doc["id"])
     if not db_doc:
         return {"parsed_docs": None, "messages": [f"Skipped (document deleted): {doc['name']}"]}
 
-    await update_document_status(db_doc, DocumentStatus.PROCESSING)
+    # Atomically claim the doc for processing. False = a delete already marked it
+    # DELETING (or it's gone) → bail; the worker/sweep finalizes the deletion.
+    if not await begin_processing(doc["id"]):
+        return {
+            "parsed_docs": None,
+            "cancelled": True,
+            "messages": [f"Skipped (delete in progress): {doc['name']}"],
+        }
 
     try:
         # Read from storage_path (permanent) or file_path (original)
@@ -104,16 +111,17 @@ async def parse_document(state: IngestState) -> dict:
 
         lc_docs, parser = await parse_file(file_path, doc["id"])
         if not lc_docs or not any(d.page_content.strip() for d in lc_docs):
-            await set_document_error(db_doc, "Empty content")
+            await fail_processing(doc["id"], "Empty content")
             return {
                 "parsed_docs": None,
                 "error": "Empty content",
                 "messages": [f"Empty content ({parser}): {doc['name']}"],
             }
 
-        # 어느 파서로 생성됐는지 metadata에 기록
-        db_doc.metadata = {**(db_doc.metadata or {}), "parser": parser}
-        await db_doc.save()
+        # 어느 파서로 생성됐는지 metadata에 기록 (status는 begin_processing이 이미
+        # 바꿨으므로 db_doc.save() 대신 필드 한정 update — stale status 덮어쓰기 방지)
+        new_meta = {**(db_doc.metadata or {}), "parser": parser}
+        await Document.filter(id=doc["id"]).update(metadata=new_meta)
 
         parsed_docs = [
             {"content": d.page_content, "metadata": d.metadata or {}}
@@ -126,8 +134,9 @@ async def parse_document(state: IngestState) -> dict:
         }
 
     except Exception as e:
-        if await Document.exists(id=doc["id"]):
-            await set_document_error(db_doc, str(e))
+        # fail_processing only writes ERROR if still PROCESSING — a concurrent
+        # delete (DELETING) is not resurrected.
+        await fail_processing(doc["id"], str(e))
         return {
             "parsed_docs": None,
             "error": str(e),
@@ -152,10 +161,15 @@ def make_process_document_node(vdb, embeddings):
         if not doc or not parsed_docs:
             return {"messages": ["Skipped (nothing to process)"]}
 
-        # parse 노드 이후 삭제되었는지 재확인
+        # parse 노드 이후 삭제/취소되었는지 재확인
         db_doc = await Document.get_or_none(id=doc["id"])
         if not db_doc:
             return {"messages": [f"Skipped (document deleted): {doc['name']}"]}
+        if db_doc.status == DocumentStatus.DELETING:
+            # Delete landed between parse and embed — finalize without wasting
+            # embedding compute.
+            await _finalize_cancel(vdb, doc["id"])
+            return {"cancelled": True, "messages": [f"Aborted (delete before embed): {doc['name']}"]}
 
         try:
             lc_docs = [
@@ -164,7 +178,7 @@ def make_process_document_node(vdb, embeddings):
             ]
             chunks = await asyncio.to_thread(split_documents, lc_docs)
             if not chunks:
-                await set_document_error(db_doc, "No chunks produced")
+                await fail_processing(doc["id"], "No chunks produced")
                 return {"messages": [f"No chunks: {doc['name']}"], "error": "No chunks"}
 
             chunk_texts = [c.page_content for c in chunks]
@@ -200,16 +214,12 @@ def make_process_document_node(vdb, embeddings):
             if orphan_ids:
                 await asyncio.to_thread(vdb.delete_chunks_by_ids, list(orphan_ids))
 
-            # embedding 완료 후 삭제 여부 재확인 — 삭제된 문서를 ACTIVE로 되살리지 않음
-            if not await Document.exists(id=doc["id"]):
-                # 처리 중 삭제됨 → VectorDB에 넣은 청크도 정리
-                try:
-                    await asyncio.to_thread(vdb.delete_all_chunks_by_document_id, doc["id"])
-                except Exception:
-                    pass
-                return {"messages": [f"Aborted (document deleted during processing): {doc['name']}"]}
-
-            await update_document_status(db_doc, DocumentStatus.ACTIVE)
+            # Atomic commit: PROCESSING -> ACTIVE. False = a delete cancelled us
+            # mid-embed (now DELETING) or the row is gone → clean up our chunks
+            # and finalize instead of resurrecting the doc to ACTIVE.
+            if not await try_activate(doc["id"]):
+                await _finalize_cancel(vdb, doc["id"])
+                return {"cancelled": True, "messages": [f"Aborted (delete during processing): {doc['name']}"]}
 
             return {
                 "total_chunks": len(chunks),
@@ -217,12 +227,20 @@ def make_process_document_node(vdb, embeddings):
             }
 
         except Exception as e:
-            # 에러 기록 전 문서 존재 여부 확인 — 삭제된 문서에 에러 상태를 쓰지 않음
-            if await Document.exists(id=doc["id"]):
-                await set_document_error(db_doc, str(e))
+            # fail_processing won't resurrect a doc already marked DELETING.
+            await fail_processing(doc["id"], str(e))
             return {
                 "error": str(e),
                 "messages": [f"{doc['name']}: ERROR - {e}"],
             }
 
     return process_document
+
+
+async def _finalize_cancel(vdb, document_id: str) -> None:
+    """Finalize a cancelled (DELETING) document: drop its chunks + the row."""
+    try:
+        await asyncio.to_thread(vdb.delete_all_chunks_by_document_id, document_id)
+    except Exception:
+        pass
+    await Document.filter(id=document_id, status=DocumentStatus.DELETING).delete()

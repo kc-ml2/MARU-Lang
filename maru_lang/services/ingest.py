@@ -8,7 +8,7 @@ from maru_lang.core.relation_db.models.documents import (
     DocumentAuditLog,
 )
 from maru_lang.enums.documents import DocumentStatus, AuditAction
-from maru_lang.services.document import get_or_create_upload_group, set_document_error
+from maru_lang.services.document import get_or_create_upload_group, mark_deleting
 from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
 from maru_lang.utils.file_storage import save_upload
 from maru_lang.graph.ingest.graph import get_ingest_graph
@@ -119,6 +119,12 @@ async def run_ingest_for_document(doc: Document, team_id: int) -> None:
     try:
         result = await get_ingest_graph().ainvoke(state)
 
+        if result.get("cancelled"):
+            # A delete landed mid-ingest — ensure chunks + row are gone (the
+            # graph already marked it DELETING). No success/error audit.
+            await finalize_document_deletion(doc.id)
+            return
+
         if result.get("error"):
             raise RuntimeError(result["error"])
 
@@ -131,18 +137,16 @@ async def run_ingest_for_document(doc: Document, team_id: int) -> None:
 
     except Exception as e:
         logger.error(f"Ingest failed for {doc.id}: {e}")
-
-        # 삭제된 문서에 에러 상태를 쓰면 레코드가 되살아날 수 있으므로 존재 확인
+        # The graph set ERROR atomically (fail_processing won't resurrect a
+        # DELETING doc); here we only audit, and skip if it was deleted.
         if await Document.exists(id=doc.id):
-            await set_document_error(doc, str(e))
-
-        await _record_audit(
-            document_id=doc.id,
-            document_name=doc.name,
-            team_id=team_id,
-            action=AuditAction.INGEST_ERROR,
-            detail={"error": str(e)},
-        )
+            await _record_audit(
+                document_id=doc.id,
+                document_name=doc.name,
+                team_id=team_id,
+                action=AuditAction.INGEST_ERROR,
+                detail={"error": str(e)},
+            )
         raise
 
 
@@ -192,14 +196,7 @@ async def delete_document_by_id(
     if not doc:
         raise ValueError("Document not found")
 
-    # 1. VectorDB 청크 삭제
-    try:
-        vdb = get_vector_db()
-        vdb.delete_all_chunks_by_document_id(document_id)
-    except Exception as e:
-        logger.warning(f"VectorDB chunk deletion failed for {document_id}: {e}")
-
-    # 2. Audit log 기록 (삭제 전에 기록)
+    # Record the user's intent up front (before any state change).
     await _record_audit(
         document_id=doc.id,
         document_name=doc.name,
@@ -208,8 +205,36 @@ async def delete_document_by_id(
         action=AuditAction.DELETE,
     )
 
-    # 3. RDB 레코드 삭제
-    await doc.delete()
+    # If the doc is mid-ingest (UPLOADING/PROCESSING), don't hard-delete — that
+    # races the worker's chunk writes. Atomically mark DELETING; the worker
+    # finalizes at its next checkpoint, and reconcile_deletions is the crash
+    # backstop. mark_deleting returns False for terminal states → finalize now.
+    if await mark_deleting(document_id):
+        return
+    await finalize_document_deletion(document_id)
+
+
+async def finalize_document_deletion(document_id: str) -> None:
+    """Physically remove a document's vector chunks and DB row (idempotent)."""
+    try:
+        get_vector_db().delete_all_chunks_by_document_id(document_id)
+    except Exception as e:
+        logger.warning(f"VectorDB chunk deletion failed for {document_id}: {e}")
+    await Document.filter(id=document_id).delete()
+
+
+async def reconcile_deletions() -> int:
+    """Finalize documents stuck in DELETING (worker missed them or crashed).
+
+    Run on worker startup as the backstop for the cooperative-cancel state
+    machine. Returns the number of documents finalized.
+    """
+    stuck = await Document.filter(status=DocumentStatus.DELETING).all()
+    for doc in stuck:
+        await finalize_document_deletion(doc.id)
+    if stuck:
+        logger.info("reconcile_deletions: finalized %d DELETING document(s)", len(stuck))
+    return len(stuck)
 
 
 async def get_audit_logs_for_documents(
