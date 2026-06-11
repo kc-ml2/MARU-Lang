@@ -19,11 +19,14 @@ from maru_lang.schemas.ingest import (
     CheckResponse,
     DeleteResponse,
     RetryResponse,
+    RetryItem,
+    GroupRetryResponse,
 )
 from maru_lang.services.ingest import (
     upload_and_ingest,
     run_ingest_for_document,
     retry_document,
+    retry_documents_in_group,
     get_team_documents,
     check_files_to_upload,
     delete_document_by_id,
@@ -194,6 +197,44 @@ async def retry_ingest(
             error = str(e)
 
     return RetryResponse(document_id=doc.id, name=doc.name, status=status, error=error)
+
+
+@router.post("/groups/{group_id}/retry", response_model=GroupRetryResponse)
+async def retry_group_ingest(
+    request: Request,
+    group_id: int,
+    team_id: int = Query(...),
+    force: bool = Query(False, description="Also re-ingest ACTIVE documents in the folder"),
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
+):
+    """Re-ingest every retryable document in one folder (bulk convenience).
+
+    Queue-only: jobs are enqueued to the worker and the response lists what was
+    requeued (poll /ingest/status for progress). Without the task queue this
+    returns 409 — retry documents individually via POST /ingest/{id}/retry,
+    whose synchronous response carries real per-document outcomes.
+    Non-retryable docs (in-flight/deleting/inactive; active without force) are
+    skipped, not errors.
+    """
+    arq = getattr(request.app.state, "arq", None)
+    if arq is None:
+        # Check BEFORE resetting statuses — never strand docs in UPLOADING.
+        raise HTTPException(
+            status_code=409,
+            detail="Bulk retry requires the task queue (task_queue_enabled). "
+                   "Retry documents individually via POST /ingest/{document_id}/retry.",
+        )
+
+    docs, skipped = await retry_documents_in_group(team_id, group_id, force)
+    for doc in docs:
+        await arq.enqueue_job(INGEST_TASK_NAME, doc.id, team_id)
+
+    return GroupRetryResponse(
+        group_id=group_id,
+        requeued=[RetryItem(document_id=d.id, name=d.name) for d in docs],
+        count=len(docs),
+        skipped=skipped,
+    )
 
 
 @router.delete("/{document_id}", response_model=DeleteResponse)

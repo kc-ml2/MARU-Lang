@@ -84,3 +84,15 @@ class RetryResponse(BaseModel):
     name: str
     status: str  # "queued" | "active" | "error" — same semantics as upload
     error: Optional[str] = None  # set when status == "error" (in-process path)
+
+
+class RetryItem(BaseModel):
+    document_id: str
+    name: str
+
+
+class GroupRetryResponse(BaseModel):
+    group_id: int
+    requeued: list[RetryItem]  # docs reset + enqueued (poll /ingest/status)
+    count: int
+    skipped: int  # docs in the folder not in a retryable state

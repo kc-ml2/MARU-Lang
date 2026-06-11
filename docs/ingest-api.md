@@ -8,6 +8,7 @@
 | `GET` | `/ingest/status` | Get document status for a team | Editor |
 | `POST` | `/ingest/check` | Check which files need uploading | Editor |
 | `POST` | `/ingest/{document_id}/retry` | Re-ingest a failed (or, with force, active) document | Editor |
+| `POST` | `/ingest/groups/{group_id}/retry` | Re-ingest every retryable document in a folder (queue mode only) | Editor |
 | `DELETE` | `/ingest/{document_id}` | Delete a document and its embeddings | Team admin |
 
 ## Processing model (read this first)
@@ -135,6 +136,46 @@ for (const doc of documents.filter(d => d.status === "error")) {
   // res.status: "queued" → poll status later; "active" → done; "error" → show res.error
 }
 ```
+
+## Group retry (`POST /ingest/groups/{group_id}/retry`)
+
+Bulk convenience: re-ingest **every retryable document in one folder** with a
+single call. **Queue mode only** — jobs are enqueued to the worker; poll
+`GET /ingest/status?team_id=&group_id=` for progress.
+
+**Query params:**
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `team_id` | int | Yes | Team ID |
+| `force` | bool | No | `true` also re-ingests **active** documents in the folder |
+
+**Response:**
+
+```json
+{
+  "group_id": 7,
+  "requeued": [
+    {"document_id": "01J5X...", "name": "report"},
+    {"document_id": "01J5Y...", "name": "annex"}
+  ],
+  "count": 2,
+  "skipped": 1
+}
+```
+
+- `requeued` — documents reset and enqueued.
+- `skipped` — documents in the folder that were not retryable (in-flight,
+  `deleting`, `inactive`, or `active` without `force`). Skipping is silent by
+  design — bulk retry never fails on individual document states.
+
+**Errors:**
+
+- `409` — the server runs without the task queue (`task_queue_enabled` off).
+  Use per-document `POST /ingest/{document_id}/retry` instead, whose synchronous
+  response carries real outcomes.
+
+A foreign/unknown `group_id` simply requeues nothing (`count: 0`).
 
 ## Check (`POST /ingest/check`)
 

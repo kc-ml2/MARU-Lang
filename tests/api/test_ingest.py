@@ -525,6 +525,74 @@ class TestRetry:
         assert resp.status_code == 404
 
 
+class TestGroupRetry:
+
+    @staticmethod
+    async def _folder_with_mixed_docs(team):
+        group = await DocumentGroup.create(name="folder", team=team)
+        await Document.create(id="g-err", name="err", group=group,
+                              status=DocumentStatus.ERROR, file_size=1, error_message="boom")
+        await Document.create(id="g-act", name="act", group=group,
+                              status=DocumentStatus.ACTIVE, file_size=1)
+        await Document.create(id="g-proc", name="proc", group=group,
+                              status=DocumentStatus.PROCESSING, file_size=1)
+        return group
+
+    async def test_group_retry_enqueues_error_docs_only(self, app, client: AsyncClient, team_setup):
+        from maru_lang.constants import INGEST_TASK_NAME
+        team, user = team_setup
+        group = await self._folder_with_mixed_docs(team)
+
+        fake_arq = MagicMock()
+        fake_arq.enqueue_job = AsyncMock()
+        app.state.arq = fake_arq
+
+        resp = await client.post(
+            f"/ingest/groups/{group.id}/retry?team_id={team.id}",
+            headers=auth_header(user.id),
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["skipped"] == 2  # active (no force) + processing
+        assert data["requeued"][0]["document_id"] == "g-err"
+        fake_arq.enqueue_job.assert_awaited_once_with(INGEST_TASK_NAME, "g-err", team.id)
+
+        assert (await Document.get(id="g-err")).status == DocumentStatus.UPLOADING
+        assert (await Document.get(id="g-act")).status == DocumentStatus.ACTIVE
+        assert (await Document.get(id="g-proc")).status == DocumentStatus.PROCESSING
+
+    async def test_group_retry_force_includes_active(self, app, client: AsyncClient, team_setup):
+        team, user = team_setup
+        group = await self._folder_with_mixed_docs(team)
+
+        fake_arq = MagicMock()
+        fake_arq.enqueue_job = AsyncMock()
+        app.state.arq = fake_arq
+
+        resp = await client.post(
+            f"/ingest/groups/{group.id}/retry?team_id={team.id}&force=true",
+            headers=auth_header(user.id),
+        )
+        data = resp.json()
+        assert data["count"] == 2          # error + active
+        assert data["skipped"] == 1        # processing never retried
+        assert fake_arq.enqueue_job.await_count == 2
+
+    async def test_group_retry_requires_queue(self, client: AsyncClient, team_setup):
+        """Queue off → 409, and no document status is touched."""
+        team, user = team_setup
+        group = await self._folder_with_mixed_docs(team)
+
+        resp = await client.post(
+            f"/ingest/groups/{group.id}/retry?team_id={team.id}",
+            headers=auth_header(user.id),
+        )
+        assert resp.status_code == 409
+        assert (await Document.get(id="g-err")).status == DocumentStatus.ERROR
+
+
 class TestDelete:
 
     @patch("maru_lang.services.ingest.get_vector_db")

@@ -260,6 +260,28 @@ async def retry_document(document_id: str, team_id: int, force: bool = False) ->
     return doc
 
 
+async def retry_documents_in_group(
+    team_id: int,
+    group_id: int,
+    force: bool = False,
+) -> tuple[list[Document], int]:
+    """Reset every retryable document in one folder for re-ingest.
+
+    Same per-document rules as retry_document (ERROR; +ACTIVE with force), but
+    non-retryable docs are silently skipped instead of raising — this is a bulk
+    convenience. Returns (reset_docs, skipped_count).
+    """
+    allowed = {DocumentStatus.ERROR} | ({DocumentStatus.ACTIVE} if force else set())
+
+    docs = await Document.filter(group__team_id=team_id, group_id=group_id).all()
+    targets = [d for d in docs if d.status in allowed]
+    for doc in targets:
+        doc.status = DocumentStatus.UPLOADING
+        doc.error_message = None
+        await doc.save()
+    return targets, len(docs) - len(targets)
+
+
 async def reconcile_deletions() -> int:
     """Finalize documents stuck in DELETING (worker missed them or crashed).
 
