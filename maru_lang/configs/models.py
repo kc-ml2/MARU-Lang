@@ -43,7 +43,9 @@ class AuthConfig:
     secret_key: Optional[str] = None  # Required for production
     salt: Optional[str] = None  # Required for production
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 15
+    # Sized to a typical working session (kept refreshable via the 30-day
+    # refresh token), rather than forcing a refresh round-trip every 15 min.
+    access_token_expire_minutes: int = 120
     refresh_token_expire_minutes: int = 43200
     default_validation_code: str = "456123"
     allowed_domains: list = field(default_factory=list)
@@ -197,7 +199,7 @@ class MaruConfig:
             secret_key=auth_data.get("secret_key", AuthConfig.secret_key),
             salt=auth_data.get("salt", AuthConfig.salt),
             algorithm=auth_data.get("algorithm", AuthConfig.algorithm),
-            access_token_expire_minutes=int(auth_data.get("access_token_expire_minutes", 15)),
+            access_token_expire_minutes=int(auth_data.get("access_token_expire_minutes", 120)),
             refresh_token_expire_minutes=int(auth_data.get("refresh_token_expire_minutes", 43200)),
             default_validation_code=auth_data.get("default_validation_code", "456123"),
             allowed_domains=auth_data.get("allowed_domains", []),

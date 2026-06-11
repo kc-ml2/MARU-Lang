@@ -17,7 +17,7 @@ database_url: sqlite:///chatbot.db
 auth:
   secret_key: ${ENV:SECRET_KEY:your-secret-key-change-in-production}
   salt: ${ENV:SALT:some-salt}
-  access_token_expire_minutes: 15
+  access_token_expire_minutes: 120
   refresh_token_expire_minutes: 43200
   # allowed_domains:
   #   - example.com
