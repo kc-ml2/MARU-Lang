@@ -548,6 +548,32 @@ class TestRetry:
         assert resp.status_code == 404
 
 
+class TestStateTransitions:
+    async def test_begin_processing_reclaims_error_doc(self, team_setup):
+        """ARQ 잡 재시도가 ERROR 문서를 재처리할 수 있어야 한다
+        (이전엔 claim 실패 → cancelled로 오인 → 문서가 삭제되는 버그)."""
+        from maru_lang.services.document import begin_processing
+        team, _ = team_setup
+        group = await DocumentGroup.create(name="uploads", team=team)
+        await Document.create(id="err-doc", name="e", group=group,
+                              status=DocumentStatus.ERROR, file_size=1)
+
+        assert await begin_processing("err-doc") is True
+        assert (await Document.get(id="err-doc")).status == DocumentStatus.PROCESSING
+
+    async def test_begin_processing_rejects_terminal_and_deleting(self, team_setup):
+        from maru_lang.services.document import begin_processing
+        team, _ = team_setup
+        group = await DocumentGroup.create(name="uploads", team=team)
+        await Document.create(id="act-doc", name="a", group=group,
+                              status=DocumentStatus.ACTIVE, file_size=1)
+        await Document.create(id="del-doc", name="d", group=group,
+                              status=DocumentStatus.DELETING, file_size=1)
+
+        assert await begin_processing("act-doc") is False
+        assert await begin_processing("del-doc") is False
+
+
 class TestGroupRetry:
 
     @staticmethod
@@ -614,6 +640,71 @@ class TestGroupRetry:
         )
         assert resp.status_code == 409
         assert (await Document.get(id="g-err")).status == DocumentStatus.ERROR
+
+
+class TestGroupDelete:
+
+    @patch("maru_lang.services.ingest.get_vector_db")
+    async def test_deletes_subtree_including_child_folder_docs(
+        self, mock_get_vdb, client: AsyncClient, team_setup
+    ):
+        """폴더 삭제는 하위 폴더의 문서까지 전체 트리를 정리한다."""
+        team, user = team_setup
+        mock_get_vdb.return_value = MagicMock()
+
+        parent = await DocumentGroup.create(name="parent", team=team)
+        child = await DocumentGroup.create(name="child", team=team, parent=parent)
+        await Document.create(id="p-doc", name="p", group=parent,
+                              status=DocumentStatus.ACTIVE, file_size=1)
+        await Document.create(id="c-doc", name="c", group=child,
+                              status=DocumentStatus.ACTIVE, file_size=1)
+
+        resp = await client.delete(
+            f"/ingest/groups/{parent.id}?team_id={team.id}",
+            headers=auth_header(user.id),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["deleted"] == 2          # 부모+자식 폴더 문서 모두
+        assert data["deferred"] == 0
+        assert data["group_removed"] is True
+
+        assert await Document.get_or_none(id="p-doc") is None
+        assert await Document.get_or_none(id="c-doc") is None
+        assert await DocumentGroup.get_or_none(id=parent.id) is None  # 폴더 트리 제거
+        assert await DocumentGroup.get_or_none(id=child.id) is None
+
+    @patch("maru_lang.services.ingest.get_vector_db")
+    async def test_in_flight_doc_defers_and_keeps_folder(
+        self, mock_get_vdb, client: AsyncClient, team_setup
+    ):
+        """처리중 문서는 DELETING으로 지연되고, 폴더 행은 워커 정리 전까지 유지."""
+        team, user = team_setup
+        mock_get_vdb.return_value = MagicMock()
+
+        group = await DocumentGroup.create(name="busy", team=team)
+        await Document.create(id="busy-doc", name="b", group=group,
+                              status=DocumentStatus.PROCESSING, file_size=1)
+
+        resp = await client.delete(
+            f"/ingest/groups/{group.id}?team_id={team.id}",
+            headers=auth_header(user.id),
+        )
+        data = resp.json()
+        assert data["deferred"] == 1 and data["deleted"] == 0
+        assert data["group_removed"] is False
+
+        doc = await Document.get(id="busy-doc")
+        assert doc.status == DocumentStatus.DELETING        # 워커가 마무리
+        assert await DocumentGroup.get_or_none(id=group.id) is not None
+
+    async def test_unknown_or_foreign_group_404(self, client: AsyncClient, team_setup):
+        team, user = team_setup
+        resp = await client.delete(
+            f"/ingest/groups/999999?team_id={team.id}",
+            headers=auth_header(user.id),
+        )
+        assert resp.status_code == 404
 
 
 class TestDelete:

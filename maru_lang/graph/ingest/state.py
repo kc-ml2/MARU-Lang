@@ -30,7 +30,8 @@ class IngestState(TypedDict):
     needs_processing: bool
     parsed_docs: Optional[list[dict]]
     parser: Optional[str]
-    cancelled: bool
+    cancelled: bool   # delete won the race → caller finalizes the deletion
+    skipped: bool     # claim/commit lost to a duplicate run → touch nothing
     total_chunks: int
     error: Optional[str]
     messages: Annotated[list[str], operator.add]
@@ -64,6 +65,7 @@ def build_ingest_input(
         "parsed_docs": None,
         "parser": None,
         "cancelled": False,
+        "skipped": False,
         "total_chunks": 0,
         "error": None,
         "messages": [],

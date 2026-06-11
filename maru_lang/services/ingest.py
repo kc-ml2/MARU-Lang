@@ -6,6 +6,7 @@ from typing import Optional
 from maru_lang.core.relation_db.models.documents import (
     Document,
     DocumentAuditLog,
+    DocumentGroup,
 )
 from maru_lang.enums.documents import DocumentStatus, AuditAction
 from maru_lang.services.document import get_or_create_upload_group, mark_deleting
@@ -139,6 +140,11 @@ async def run_ingest_for_document(doc: Document, team_id: int) -> None:
             await finalize_document_deletion(doc.id)
             return
 
+        if result.get("skipped"):
+            # Duplicate/stale job lost the claim or commit to another run —
+            # the document belongs to that run; record nothing.
+            return
+
         if result.get("error"):
             raise RuntimeError(result["error"])
 
@@ -250,6 +256,61 @@ async def finalize_document_deletion(document_id: str) -> None:
     await Document.filter(id=document_id).delete()
     if doc is not None:
         remove_document_storage(doc.storage_path, document_id)
+
+
+async def delete_group_documents(
+    group_id: int,
+    team_id: int,
+    user_id: int,
+) -> dict:
+    """Delete a folder's entire subtree: all documents in it and its descendant
+    folders, then the now-empty folder rows themselves.
+
+    Per-document semantics are identical to delete_document_by_id: terminal docs
+    are removed immediately (chunks + row + storage); in-flight docs are marked
+    DELETING and finalized by the worker. Folder rows are removed leaf-first and
+    only when empty — never via FK cascade, which would skip chunk/storage
+    cleanup. A folder holding deferred (DELETING) docs survives until the worker
+    finalizes them.
+
+    Raises:
+        LookupError: Folder not found in this team.
+    """
+    from maru_lang.services.document import get_all_descendant_groups
+
+    group = await DocumentGroup.get_or_none(id=group_id, team_id=team_id)
+    if group is None:
+        raise LookupError("Folder not found")
+
+    groups = await get_all_descendant_groups(group)  # self + subtree (pre-order)
+
+    deleted = deferred = 0
+    for g in groups:
+        for doc in await Document.filter(group_id=g.id).all():
+            await _record_audit(
+                document_id=doc.id,
+                document_name=doc.name,
+                team_id=team_id,
+                user_id=user_id,
+                action=AuditAction.DELETE,
+            )
+            if await mark_deleting(doc.id):
+                deferred += 1
+            else:
+                await finalize_document_deletion(doc.id)
+                deleted += 1
+
+    # Remove empty folder rows, leaves first (reversed pre-order).
+    group_removed = False
+    for g in reversed(groups):
+        has_docs = await Document.filter(group_id=g.id).exists()
+        has_children = await DocumentGroup.filter(parent_id=g.id).exists()
+        if not has_docs and not has_children:
+            await g.delete()
+            if g.id == group_id:
+                group_removed = True
+
+    return {"deleted": deleted, "deferred": deferred, "group_removed": group_removed}
 
 
 async def retry_document(document_id: str, team_id: int, force: bool = False) -> Document:

@@ -582,8 +582,11 @@ class TestProcessDocument:
         from langchain_core.documents import Document as LCDoc
         from maru_lang.enums.documents import DocumentStatus
 
-        db_doc = MagicMock(); db_doc.status = DocumentStatus.PROCESSING
-        mock_doc_model.get_or_none = AsyncMock(return_value=db_doc)
+        processing_doc = MagicMock(); processing_doc.status = DocumentStatus.PROCESSING
+        deleting_doc = MagicMock(); deleting_doc.status = DocumentStatus.DELETING
+        deleting_doc.storage_path = None
+        # 1st get_or_none: early guard (still PROCESSING) / 2nd: _finalize_cancel (DELETING)
+        mock_doc_model.get_or_none = AsyncMock(side_effect=[processing_doc, deleting_doc])
         flt = MagicMock(); flt.delete = AsyncMock(return_value=1)
         mock_doc_model.filter = MagicMock(return_value=flt)
         mock_try_activate.return_value = False  # commit lost the race
@@ -607,6 +610,46 @@ class TestProcessDocument:
         # chunks we wrote + the row are cleaned up
         mock_vdb.delete_all_chunks_by_document_id.assert_called_once_with(1)
         flt.delete.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.try_activate", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.Document")
+    @patch("maru_lang.graph.ingest.nodes.split_documents")
+    @patch("maru_lang.graph.ingest.nodes.make_chunk_uid")
+    async def test_process_commit_race_to_active_leaves_doc_alone(
+        self, mock_uid, mock_split, mock_doc_model, mock_try_activate
+    ):
+        """try_activate False인데 문서가 ACTIVE(중복 잡이 먼저 완료)면 청크/행을
+        절대 건드리지 않는다 — 살아있는 문서를 지우면 안 됨."""
+        from langchain_core.documents import Document as LCDoc
+        from maru_lang.enums.documents import DocumentStatus
+
+        processing_doc = MagicMock(); processing_doc.status = DocumentStatus.PROCESSING
+        active_doc = MagicMock(); active_doc.status = DocumentStatus.ACTIVE
+        mock_doc_model.get_or_none = AsyncMock(side_effect=[processing_doc, active_doc])
+        flt = MagicMock(); flt.delete = AsyncMock(return_value=0)
+        mock_doc_model.filter = MagicMock(return_value=flt)
+        mock_try_activate.return_value = False
+
+        mock_vdb = MagicMock()
+        mock_vdb.get_chunk_ids_by_document_id = MagicMock(return_value=[])
+        mock_emb = MagicMock(); mock_emb.embed_documents = MagicMock(return_value=[[0.1] * 3])
+        mock_split.return_value = [LCDoc(page_content="c1")]
+        mock_uid.side_effect = lambda i, x, c: f"{i}-{x}"
+
+        state = {
+            "document": {"id": 1, "name": "doc", "file_path": "/tmp/doc.txt",
+                         "storage_path": None, "group_id": 10, "metadata": {}},
+            "needs_processing": True,
+            "parsed_docs": [{"content": "x", "metadata": {}}],
+            "team_id": 1,
+        }
+        result = await self._node(mock_vdb, mock_emb)(state)
+
+        assert result.get("skipped") is True
+        assert result.get("cancelled") is not True
+        mock_vdb.delete_all_chunks_by_document_id.assert_not_called()  # 청크 보존
+        flt.delete.assert_not_awaited()  # 행 보존
 
     @pytest.mark.asyncio
     @patch("maru_lang.graph.ingest.nodes.Document")
@@ -729,11 +772,14 @@ class TestParseDocument:
     @patch("maru_lang.graph.ingest.nodes.begin_processing", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.Document")
     async def test_skips_when_delete_in_progress(self, mock_doc_model, mock_begin):
-        """begin_processing False (doc marked DELETING) -> cancelled, no parse."""
+        """begin_processing False + status DELETING -> cancelled, no parse."""
         from maru_lang.graph.ingest.nodes import parse_document
+        from maru_lang.enums.documents import DocumentStatus
 
-        mock_doc_model.get_or_none = AsyncMock(return_value=MagicMock())
-        mock_begin.return_value = False  # already DELETING / gone
+        deleting_doc = MagicMock()
+        deleting_doc.status = DocumentStatus.DELETING
+        mock_doc_model.get_or_none = AsyncMock(return_value=deleting_doc)
+        mock_begin.return_value = False
 
         state = {
             "document": {"id": 1, "name": "doc", "file_path": "/tmp/d.txt",
@@ -744,6 +790,32 @@ class TestParseDocument:
         result = await parse_document(state)
         assert result["parsed_docs"] is None
         assert result["cancelled"] is True
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.begin_processing", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.Document")
+    async def test_claim_fail_on_active_is_skipped_not_cancelled(
+        self, mock_doc_model, mock_begin
+    ):
+        """중복/스테일 잡: claim 실패했지만 DELETING이 아니면(예: ACTIVE) 절대
+        cancelled로 처리하면 안 됨 — cancelled는 문서를 물리 삭제한다."""
+        from maru_lang.graph.ingest.nodes import parse_document
+        from maru_lang.enums.documents import DocumentStatus
+
+        active_doc = MagicMock()
+        active_doc.status = DocumentStatus.ACTIVE
+        mock_doc_model.get_or_none = AsyncMock(return_value=active_doc)
+        mock_begin.return_value = False
+
+        state = {
+            "document": {"id": 1, "name": "doc", "file_path": "/tmp/d.txt",
+                         "storage_path": None, "group_id": 1, "metadata": {}},
+            "needs_processing": True,
+            "team_id": 1,
+        }
+        result = await parse_document(state)
+        assert result.get("skipped") is True
+        assert result.get("cancelled") is not True
 
 
 # ─── Parser routing + KorDoc header strip ────────────────────

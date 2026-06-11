@@ -287,10 +287,19 @@ async def set_document_error(doc: Document, message: str) -> None:
 # count tells us whether we won the race.
 
 async def begin_processing(document_id: str) -> bool:
-    """UPLOADING/PROCESSING -> PROCESSING. False if the doc is gone or DELETING."""
+    """UPLOADING/PROCESSING/ERROR -> PROCESSING; False otherwise (gone/DELETING/
+    ACTIVE/INACTIVE).
+
+    ERROR is claimable so a queued job retry (ARQ retries failed jobs) actually
+    re-attempts the ingest instead of dead-ending on the ERROR it just wrote.
+    """
     n = await Document.filter(
         id=document_id,
-        status__in=[DocumentStatus.UPLOADING, DocumentStatus.PROCESSING],
+        status__in=[
+            DocumentStatus.UPLOADING,
+            DocumentStatus.PROCESSING,
+            DocumentStatus.ERROR,
+        ],
     ).update(status=DocumentStatus.PROCESSING)
     return n > 0
 

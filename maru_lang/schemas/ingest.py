@@ -77,6 +77,13 @@ class DeleteResponse(BaseModel):
     deleted: bool
 
 
+class GroupDeleteResponse(BaseModel):
+    group_id: int
+    deleted: int        # removed immediately (terminal-state docs)
+    deferred: int       # in-flight docs marked DELETING; worker finalizes
+    group_removed: bool  # folder row removed (only when fully empty)
+
+
 # --- Retry ---
 
 class RetryResponse(BaseModel):

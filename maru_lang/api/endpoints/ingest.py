@@ -21,12 +21,14 @@ from maru_lang.schemas.ingest import (
     RetryResponse,
     RetryItem,
     GroupRetryResponse,
+    GroupDeleteResponse,
 )
 from maru_lang.services.ingest import (
     upload_and_ingest,
     run_ingest_for_document,
     retry_document,
     retry_documents_in_group,
+    delete_group_documents,
     get_team_documents,
     check_files_to_upload,
     delete_document_by_id,
@@ -235,6 +237,31 @@ async def retry_group_ingest(
         count=len(docs),
         skipped=skipped,
     )
+
+
+@router.delete("/groups/{group_id}", response_model=GroupDeleteResponse)
+async def delete_group(
+    group_id: int,
+    team_id: int = Query(...),
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
+):
+    """Delete a folder's entire subtree (documents + descendant folders).
+
+    Requires team admin role. Terminal documents are removed immediately
+    (embeddings + storage included); in-flight ones are marked deleting and
+    finalized by the worker shortly after — the folder row survives until then.
+    """
+    try:
+        await _check_admin(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    try:
+        result = await delete_group_documents(group_id, team_id, user.id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return GroupDeleteResponse(group_id=group_id, **result)
 
 
 @router.delete("/{document_id}", response_model=DeleteResponse)

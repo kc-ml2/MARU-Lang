@@ -96,9 +96,22 @@ async def parse_document(state: IngestState) -> dict:
     if not db_doc:
         return {"parsed_docs": None, "messages": [f"Skipped (document deleted): {doc['name']}"]}
 
-    # Atomically claim the doc for processing. False = a delete already marked it
-    # DELETING (or it's gone) → bail; the worker/sweep finalizes the deletion.
+    # Atomically claim the doc for processing.
     if not await begin_processing(doc["id"]):
+        # Disambiguate WHY the claim failed: only a delete (DELETING/row gone)
+        # is a cancellation. Any other state (e.g. ACTIVE after a duplicate job
+        # already finished) must NOT be treated as cancelled — the cancel path
+        # physically deletes the document.
+        current = await Document.get_or_none(id=doc["id"])
+        if current is not None and current.status != DocumentStatus.DELETING:
+            return {
+                "parsed_docs": None,
+                "skipped": True,
+                "messages": [
+                    f"Skipped (not claimable, status="
+                    f"{DocumentStatus(current.status).name}): {doc['name']}"
+                ],
+            }
         return {
             "parsed_docs": None,
             "cancelled": True,
@@ -215,12 +228,13 @@ def make_process_document_node(vdb, embeddings):
             if orphan_ids:
                 await asyncio.to_thread(vdb.delete_chunks_by_ids, list(orphan_ids))
 
-            # Atomic commit: PROCESSING -> ACTIVE. False = a delete cancelled us
-            # mid-embed (now DELETING) or the row is gone → clean up our chunks
-            # and finalize instead of resurrecting the doc to ACTIVE.
+            # Atomic commit: PROCESSING -> ACTIVE. On failure, only a delete
+            # (DELETING/gone) is finalized; if a duplicate run already committed
+            # ACTIVE, leave it (and its chunks) alone.
             if not await try_activate(doc["id"]):
-                await _finalize_cancel(vdb, doc["id"])
-                return {"cancelled": True, "messages": [f"Aborted (delete during processing): {doc['name']}"]}
+                if await _finalize_cancel(vdb, doc["id"]):
+                    return {"cancelled": True, "messages": [f"Aborted (delete during processing): {doc['name']}"]}
+                return {"skipped": True, "messages": [f"Skipped (finalized elsewhere): {doc['name']}"]}
 
             return {
                 "total_chunks": len(chunks),
@@ -238,13 +252,21 @@ def make_process_document_node(vdb, embeddings):
     return process_document
 
 
-async def _finalize_cancel(vdb, document_id: str) -> None:
-    """Finalize a cancelled (DELETING) document: chunks + row + storage dir."""
+async def _finalize_cancel(vdb, document_id: str) -> bool:
+    """Finalize a cancelled (DELETING/gone) document: chunks + row + storage dir.
+
+    Returns False WITHOUT touching anything when the row is in any other state —
+    e.g. ACTIVE because a duplicate/stale job lost the commit race to a finished
+    run; wiping its chunks here would corrupt a live document.
+    """
     doc = await Document.get_or_none(id=document_id)
+    if doc is not None and doc.status != DocumentStatus.DELETING:
+        return False
     try:
         await asyncio.to_thread(vdb.delete_all_chunks_by_document_id, document_id)
     except Exception:
         pass
     await Document.filter(id=document_id, status=DocumentStatus.DELETING).delete()
-    if doc is not None and doc.status == DocumentStatus.DELETING:
+    if doc is not None:
         remove_document_storage(doc.storage_path, document_id)
+    return True

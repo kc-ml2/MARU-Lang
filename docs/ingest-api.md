@@ -10,6 +10,7 @@
 | `POST` | `/ingest/{document_id}/retry` | Re-ingest a failed (or, with force, active) document | Editor |
 | `POST` | `/ingest/groups/{group_id}/retry` | Re-ingest every retryable document in a folder (queue mode only) | Editor |
 | `DELETE` | `/ingest/{document_id}` | Delete a document and its embeddings | Team admin |
+| `DELETE` | `/ingest/groups/{group_id}` | Delete a folder's entire subtree (docs + descendant folders) | Team admin |
 
 ## Processing model (read this first)
 
@@ -228,3 +229,24 @@ Delete a document and its embeddings. Requires **team admin** role.
 
 If the document is mid-ingest, it is marked `deleting` and finalized by the
 worker shortly after (the row disappears from `/ingest/status` once finalized).
+
+## Folder delete (`DELETE /ingest/groups/{group_id}`)
+
+Delete a folder's **entire subtree**: every document in it and in its
+descendant folders, then the empty folder rows themselves. Requires **team
+admin** role.
+
+**Query params:** `team_id` (required)
+
+**Response:**
+
+```json
+{ "group_id": 7, "deleted": 4, "deferred": 1, "group_removed": false }
+```
+
+- `deleted` — documents removed immediately (embeddings + storage included)
+- `deferred` — in-flight documents marked `deleting`; the worker finalizes them
+- `group_removed` — whether the folder row itself was removed. `false` while
+  deferred documents remain; the folder disappears once the worker finishes.
+
+`404` — folder not found in this team.
