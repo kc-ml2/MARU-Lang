@@ -42,6 +42,11 @@ CLI_DEVICE_ID = "maru-cli"
 
 # --- Chat ---
 
+# GET /sessions/last resumes the most recent session only if it was used within
+# this window; after a longer gap a fresh session is started (old ones remain
+# in history). Session.updated_at refreshes on every persisted turn.
+SESSION_MAX_IDLE_DAYS = 7
+
 INTENT_PROMPT = """\
 You are an expert at understanding user intent from conversation context.
 

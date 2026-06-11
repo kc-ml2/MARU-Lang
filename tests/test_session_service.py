@@ -37,3 +37,32 @@ class TestGetSessionForUser:
         session.status = SessionStatus.DELETED
         await session.save()
         assert await get_session_for_user(session.id, user_alice) is None
+
+
+class TestSessionIdleWindow:
+    """GET /sessions/last 동작: 7일 넘게 쉰 세션은 재개하지 않고 새로 만든다."""
+
+    async def test_recent_session_is_resumed(self, user_alice):
+        from maru_lang.services.session import get_or_create_last_session
+        s = await create_session(user_alice)
+        resumed = await get_or_create_last_session(user_alice)
+        assert resumed.id == s.id
+
+    async def test_stale_session_starts_a_new_one(self, user_alice):
+        from datetime import datetime, timedelta, timezone
+        from maru_lang.services.session import get_or_create_last_session
+
+        s = await create_session(user_alice)
+        # 8일 전 사용으로 위장 (queryset update는 auto_now를 덮지 않음)
+        stale = datetime.now(timezone.utc) - timedelta(days=8)
+        await Session.filter(id=s.id).update(updated_at=stale)
+
+        fresh = await get_or_create_last_session(user_alice)
+        assert fresh.id != s.id              # 새 세션 시작
+        assert await Session.get(id=s.id)    # 옛 세션은 히스토리에 보존
+
+    async def test_window_boundary_uses_max_idle_days(self, user_alice):
+        from maru_lang.services.session import get_last_session
+        await create_session(user_alice)
+        # max_idle_days=0 → 방금 만든 세션도 창 밖 → None
+        assert await get_last_session(user_alice, max_idle_days=0) is None

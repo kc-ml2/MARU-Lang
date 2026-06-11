@@ -6,6 +6,7 @@ from typing import Optional
 from tortoise.exceptions import IntegrityError
 
 from maru_lang.configs import get_config
+from maru_lang.constants import ADMIN_EMAIL
 from maru_lang.core.relation_db.models.auth import Team, TeamMember, User, UserRole
 from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
 from maru_lang.dependencies.email import EmailService
@@ -85,7 +86,8 @@ async def get_team_detail(team_id: int, user: User) -> dict:
 
     team = await Team.get(id=team_id)
 
-    # 멤버 목록
+    # 멤버 목록 — 시스템 admin(CLI 부트스트랩 유저)은 사람이 아니므로 제외.
+    # CLI가 닿는 모든 팀에 자동 가입되어, 빼지 않으면 모든 팀의 멤버 목록에 노출된다.
     members_qs = await TeamMember.filter(team_id=team_id).select_related("user")
     members = [
         {
@@ -95,6 +97,7 @@ async def get_team_detail(team_id: int, user: User) -> dict:
             "role": m.role,
         }
         for m in members_qs
+        if m.user.email != ADMIN_EMAIL
     ]
 
     # 폴더(DocumentGroup) 목록 + 문서 수

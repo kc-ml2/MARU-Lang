@@ -4,7 +4,9 @@ A Session is the durable, queryable record of a LangGraph thread
 (``session.id == thread_id``). The server owns session id generation.
 """
 import uuid
+from datetime import datetime, timedelta, timezone
 
+from maru_lang.constants import SESSION_MAX_IDLE_DAYS
 from maru_lang.core.relation_db.models.auth import User
 from maru_lang.core.relation_db.models.chat import Session
 from maru_lang.enums.chat import SessionStatus
@@ -55,10 +57,21 @@ def list_sessions_by_user(user: User):
     return Session.filter(user=user).exclude(status=SessionStatus.DELETED).order_by("-updated_at")
 
 
-async def get_last_session(user: User) -> Session | None:
-    """Return the user's most recently updated non-deleted session, or None."""
+async def get_last_session(
+    user: User,
+    max_idle_days: int = SESSION_MAX_IDLE_DAYS,
+) -> Session | None:
+    """Return the user's most recent non-deleted session — but only if it was
+    used within max_idle_days.
+
+    A conversation shouldn't silently resume after a long gap; past the window
+    this returns None so the caller starts a fresh session (the old one stays
+    in the session list/history). Session.updated_at refreshes on every
+    persisted turn, so it reflects last chat activity.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_idle_days)
     return (
-        await Session.filter(user=user)
+        await Session.filter(user=user, updated_at__gte=cutoff)
         .exclude(status=SessionStatus.DELETED)
         .order_by("-updated_at")
         .first()
@@ -66,5 +79,6 @@ async def get_last_session(user: User) -> Session | None:
 
 
 async def get_or_create_last_session(user: User) -> Session:
-    """Return the user's most recent session, creating a new one if none exists."""
+    """Return the user's most recent session, creating a new one if none exists
+    or the last one has been idle longer than SESSION_MAX_IDLE_DAYS."""
     return await get_last_session(user) or await create_session(user)

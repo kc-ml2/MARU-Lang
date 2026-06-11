@@ -86,6 +86,24 @@ class TestGetTeamDetail:
         assert data["folders"][0]["name"] == "Folder1"
         assert data["folders"][0]["document_count"] == 1
 
+    async def test_system_admin_excluded_from_members(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team
+    ):
+        """CLI 부트스트랩 시스템 admin은 팀 멤버 목록에 노출되지 않는다"""
+        from maru_lang.constants import ADMIN_EMAIL, ADMIN_NAME
+        from maru_lang.core.relation_db.models.auth import TeamMember
+
+        system_admin = await User.create(email=ADMIN_EMAIL, name=ADMIN_NAME)
+        await TeamMember.create(user=system_admin, team=team_with_admin, role="admin")
+
+        resp = await client.get(
+            f"/teams/{team_with_admin.id}", headers=auth_header(user_alice.id)
+        )
+        assert resp.status_code == 200
+        members = resp.json()["members"]
+        assert len(members) == 1  # alice만 (시스템 admin 제외)
+        assert all(m["email"] != ADMIN_EMAIL for m in members)
+
     async def test_non_member_gets_403(
         self, client: AsyncClient, user_bob: User, team_with_admin: Team
     ):
