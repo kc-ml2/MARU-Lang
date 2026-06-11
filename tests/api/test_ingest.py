@@ -164,6 +164,36 @@ class TestStatus:
         assert data["documents"][0]["id"] == "doc-001"
         assert data["documents"][0]["status"] == "active"
 
+    async def test_status_filters_by_group_id(
+        self, client: AsyncClient, team_setup
+    ):
+        """group_id scopes the listing to one folder; cross-team group yields empty."""
+        team, user = team_setup
+        g1 = await DocumentGroup.create(name="folder-a", team=team)
+        g2 = await DocumentGroup.create(name="folder-b", team=team)
+        await Document.create(id="doc-a", name="a", group=g1,
+                              status=DocumentStatus.ACTIVE, file_size=1)
+        await Document.create(id="doc-b", name="b", group=g2,
+                              status=DocumentStatus.ACTIVE, file_size=1)
+
+        resp = await client.get(
+            f"/ingest/status?team_id={team.id}&group_id={g1.id}",
+            headers=auth_header(user.id),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["documents"][0]["id"] == "doc-a"
+        assert data["documents"][0]["group_id"] == g1.id
+
+        # Unknown/foreign group id → empty (team filter intersects), not a leak.
+        resp = await client.get(
+            f"/ingest/status?team_id={team.id}&group_id=999999",
+            headers=auth_header(user.id),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
     async def test_empty_team_returns_empty(
         self, client: AsyncClient, team_setup
     ):

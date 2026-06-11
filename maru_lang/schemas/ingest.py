@@ -36,6 +36,7 @@ class DocumentStatusItem(BaseModel):
     id: str
     name: str
     status: str
+    group_id: Optional[int] = None  # DocumentGroup(folder) id
     folder_path: Optional[str] = None
     file_size: Optional[int] = None
     created_at: datetime

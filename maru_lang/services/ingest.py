@@ -150,11 +150,16 @@ async def run_ingest_for_document(doc: Document, team_id: int) -> None:
         raise
 
 
-async def get_team_documents(team_id: int) -> list[Document]:
-    """Get all documents for a team, ordered by newest first."""
-    return await Document.filter(
-        group__team_id=team_id,
-    ).order_by("-created_at").all()
+async def get_team_documents(team_id: int, group_id: Optional[int] = None) -> list[Document]:
+    """Get a team's documents, newest first; optionally scoped to one folder.
+
+    group_id is intersected with the team filter, so a group belonging to
+    another team simply yields an empty list (no cross-team leak).
+    """
+    query = Document.filter(group__team_id=team_id)
+    if group_id is not None:
+        query = query.filter(group_id=group_id)
+    return await query.order_by("-created_at").all()
 
 
 async def check_files_to_upload(

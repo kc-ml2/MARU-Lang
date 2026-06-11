@@ -94,10 +94,11 @@ async def upload_file(
 @router.get("/status", response_model=StatusResponse)
 async def get_status(
     team_id: int,
+    group_id: int | None = Query(None, description="Filter to one folder (DocumentGroup id)"),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
-    """Get document status for a team."""
-    docs = await get_team_documents(team_id)
+    """Get document status for a team, optionally scoped to one folder."""
+    docs = await get_team_documents(team_id, group_id)
 
     # Fetch audit logs for all documents in one query
     doc_ids = [doc.id for doc in docs]
@@ -121,6 +122,7 @@ async def get_status(
                 id=doc.id,
                 name=doc.name,
                 status=DocumentStatus(doc.status).name.lower(),
+                group_id=doc.group_id,
                 folder_path=folder_path,
                 file_size=doc.file_size,
                 created_at=doc.created_at,

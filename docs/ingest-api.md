@@ -75,6 +75,7 @@ Get all documents for a team with their current status.
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `team_id` | int | Yes | Team ID |
+| `group_id` | int | No | Filter to one folder (DocumentGroup id, e.g. from `GET /teams/{team_id}`). Unknown/foreign ids return an empty list. |
 
 **Response:**
 
@@ -87,6 +88,7 @@ Get all documents for a team with their current status.
       "id": "01J5X...",
       "name": "readme",
       "status": "active",
+      "group_id": 7,
       "folder_path": "my-project",
       "file_size": 12345,
       "created_at": "2026-06-10T10:00:00Z",
