@@ -869,6 +869,16 @@ class TestParserRouting:
             select_parser(".docx", f"d{i}") == PARSER_LANGCHAIN for i in range(50)
         )
 
+    def test_ingestible_extensions_follow_parser_config(self):
+        """GET /config가 쓰는 목록: kordoc off면 hwp 계열 제외."""
+        from maru_lang.graph.ingest.parser import ingestible_extensions
+        self._set_config(kordoc_mcp_enabled=True)
+        assert ".hwp" in ingestible_extensions()
+        self._set_config(kordoc_mcp_enabled=False)
+        exts = ingestible_extensions()
+        assert ".hwp" not in exts and ".hwpx" not in exts
+        assert ".pdf" in exts and ".md" in exts  # langchain 포맷은 유지
+
     def teardown_method(self):
         import maru_lang.configs.manager as mgr
         mgr._config = None  # don't leak injected config into other tests

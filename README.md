@@ -5,53 +5,37 @@
 **MARU** is an open-source **RAG (Retrieval-Augmented Generation) chatbot engine** built for **enterprise environments**.
 The core principle behind MARU is **effective integration with existing corporate data** — the key to any successful enterprise RAG system.
 
-To provide seamless user experiences and easy compatibility with enterprise infrastructure, MARU is designed to align with corporate document management and access systems.
+To provide seamless user experiences and easy compatibility with enterprise infrastructure, MARU is designed to align with corporate document management and access systems — including first-class support for **Korean document formats (HWP/HWPX)**.
 We open-sourced MARU to help developers who face similar real-world challenges in enterprise AI integration.
 
 ---
 
-## 🚀 Features & Architecture
+## 🚀 Features
 
-MARU includes all the essentials to build an enterprise-ready RAG chatbot.
-Once you connect the chatbot web UI, MARU operates through two main pipelines:
+### 📥 Ingest Pipeline (LangGraph: `sync → parse → process`)
 
-### 📥 Ingest Pipeline
+- **Broad format support** — PDF, DOCX, PPTX, XLSX, CSV, HTML, JSON, Markdown, plain text/code, and **Korean documents (HWP / HWPX / HWPML)** parsed via the [KorDoc](https://github.com/chrisryugj/kordoc) MCP server
+- **Pluggable parser routing** — LangChain loaders by default; route any share of dual-support formats (pdf/docx/xls/xlsx) to KorDoc with `kordoc_mcp_ratio` to A/B-compare parsing quality (the parser used is recorded in document metadata)
+- **Change-aware re-upload** — documents are identified by (team, path); re-uploading a modified file **updates the document in place** (embeddings replaced), and `/ingest/check` skips unchanged files by fingerprint
+- **Failure recovery** — failed documents keep their error message and are re-processed via the **retry API** (per document, or per folder in queue mode)
+- **Safe deletion** — single-document and **folder-subtree** deletion with a cooperative-cancel state machine: in-flight ingests are marked `deleting` and finalized by the worker, so deletes never race embedding writes (chunks, DB rows, and storage files are all cleaned up)
+- **Scales out with a task queue (optional)** — offload embedding to ARQ workers over Redis, with a shared **Chroma server** so the API and workers see one consistent vector store
 
-Handles document processing and embedding generation — **core functionality included, fully customizable**:
+### 💬 Chat Pipeline (LangGraph, single compiled graph per team scope)
 
-- **Document Upload & Management**
-
-  - Users upload documents and folders through the web interface
-  - OS-like document system with automatic permission handling
-  - Integrates with existing corporate file structures
-
-- **Customizable Processing Chain**
-  - **Loaders**: Parse different file types (PDF, DOCX, etc.) — extend for proprietary formats
-  - **Chunkers**: Define document splitting strategies — optimize for your use case
-  - **Embedders**: Generate vector embeddings — connect to any embedding provider
-  - Processed documents become instantly available for RAG queries
-
-### 💬 Chat Pipeline
-
-Powers intelligent query processing and response generation — **core functionality included, fully customizable**:
-
-- **Query Understanding**
-
-  - Analyzes user intent and conversation context
-  - Automatically selects the most appropriate tools and workflows
-
-- **Customizable Intelligence Layer**
-  - **RAG Retrieval**: Searches relevant documents with permission-aware filtering
-  - **Rerankers**: Fine-tune search result ranking for improved accuracy
-  - **Agents**: Execute specialized tasks
-  - **MCP (Model Context Protocol)**: Advanced contextual workflows
-  - **LLMs**: Generate responses using your preferred language model
+- **Search/no-search routing** — a classifier node decides whether a question needs document retrieval (biased toward search for fact/regulation questions)
+- **Memory-aware conversations** — user facts/preferences and rolling session summaries are loaded up front; follow-up questions ("그건요?") are rewritten into self-contained search queries using prior context
+- **RAG with self-correction** — intent rewrite → keyword extraction → retrieval → sufficiency evaluation with retry → reranking (optional cross-encoder with `reranker_min_score` filtering)
+- **Per-message team scoping** — document search is restricted to the requester's teams (and optionally a subset per message)
+- **Feedback collection** — interrupt/resume flow for answer scoring and reasons, persisted per conversation
+- **Observability** — every turn carries `user_id` / `team_ids` / `session_id` / `graph_id` into LangSmith traces and checkpoint metadata
 
 ### 🔐 Built-in Infrastructure
 
-- **Authentication**: Token-based system with corporate email verification
-- **Easy Setup**: Run MARU with minimal configuration
-- **Extensibility**: Customize any component while keeping the core stable
+- **Auth** — access (2h) / refresh (30d) token flow, corporate email verification (SMTP OTP), domain allowlist, role hierarchy (anonymous / editor / admin)
+- **Teams** — N:N membership, team-admin-gated destructive actions, invitation flow for not-yet-registered users
+- **Sessions** — server-owned session ids; the last session is resumed only within a 7-day idle window (older conversations stay in history)
+- **Audit trail** — upload / re-upload / delete / ingest success / ingest error per document
 
 ---
 
@@ -72,11 +56,17 @@ graph LR
     API --> RDB[("Relational DB<br/>User · Team · Session<br/>Conversation · UserMemory")]
     Chat --> RDB
     Chat --> CP[("Checkpointer<br/>(turn state)")]
-    Chat --> VDB[("Vector DB")]
-    Ingest["Ingest pipeline<br/>load → chunk → embed"] --> VDB
+    Chat --> VDB[("Vector DB<br/>Chroma (embedded or server)")]
+
+    API -->|queue on: enqueue| Q[("Redis / ARQ")]
+    Q --> Worker["Ingest worker(s)"]
+    Worker --> VDB
+    API -->|queue off: in-process| Ingest["Ingest graph<br/>sync → parse → process"]
+    Ingest --> VDB
 ```
 
 - **Two routing levels**: `graph_router` (L1) picks which graph to run within the team's accessible set; each graph then routes internally (L2).
+- **Ingest graph**: one compiled graph serves every entry point — CLI sync, API upload (in-process or via the ARQ worker), and retries.
 - **Memory loop**: the chat graph reads memory up front (`context_builder`) and writes it back at the end (`summarize`, `memory_extractor`) — see below.
 
 ### Chat graph (auto-generated from the compiled graph)
@@ -136,63 +126,87 @@ graph TD;
 
 ## 🧩 Getting Started
 
+### Requirements
+
+- **Python 3.10+**
+- **Node.js / npx** — for Korean document parsing via KorDoc (set `kordoc_mcp_enabled: false` to run without it)
+- **Docker** *(optional)* — Redis + Chroma server for the task-queue deployment mode
+
 ### 🔧 Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/MARU-Lang.git
+git clone https://github.com/kc-ml2/MARU-Lang.git
 cd MARU-Lang
 
-# Install dependencies
+python -m venv venv && source venv/bin/activate
 pip install -e .
 
-# Initialize MARU
-maru install
+maru install        # scaffolds maru_app/ with maru_config.yaml
 ```
 
-### ⚙️ Configuration
+### ⚙️ Configuration — `maru_app/maru_config.yaml`
 
-Once MARU installed, navigate to the `maru_app/` directory — **everything here is fully customizable**.
+One file configures everything. The keys you'll touch first:
 
-💡 All components come with example `.yaml` templates and sample implementations for easy customization.
+```yaml
+# --- LLM (OpenAI-compatible servers like vLLM work via the openai provider) ---
+llms:
+  - name: my-llm
+    provider: openai          # openai | anthropic | google | ollama | vllm
+    model_name: gpt-4o
+    api_key: ${ENV:OPENAI_API_KEY}
+    # base_url: http://my-vllm:8000/v1
 
-#### Ingest Pipeline
+# --- Embedding & retrieval ---
+embedding_model: BAAI/bge-m3
+retriever_top_k: 5
+reranker_enabled: false       # cross-encoder reranking (+ reranker_min_score filter)
 
-- **`/loaders`** — Document parsers for different file types
-- **`/chunkers`** — Document chunking strategies
-- **`/embedders`** — Embedding model configurations
+# --- Vector store ---
+vector_db_url: chroma://data/chroma/maru          # embedded (single process)
+# vector_db_url: chroma+http://localhost:8001/maru  # Chroma server (required for queue mode)
 
-#### Chat Pipeline
+# --- Ingest task queue (optional) ---
+task_queue_enabled: false     # true → embedding runs on ARQ workers (needs redis_url + Chroma server)
+redis_url: redis://localhost:6379
 
-- **`/llms`** — LLM service connections
-- **`/rerankers`** — Search result ranking configurations
-- **`/agents`** — Agent logic and custom implementations
-- **`/agents/mcps`** — MCP (Model Context Protocol) integrations
+# --- Korean document parser ---
+kordoc_mcp_enabled: true      # hwp/hwpx/hwpml via KorDoc MCP (needs Node/npx)
+# kordoc_mcp_ratio: 0.0       # share of pdf/docx/xls/xlsx routed to KorDoc (A/B comparison)
+```
 
-#### System Configuration
+`${ENV:VAR}` / `${ENV:VAR:default}` interpolation is supported throughout.
 
-- **`rag_config.yaml`** — End-to-end RAG workflow settings
-- **`build_selector.yaml`** — Component selection rules (auto-select agent/MCP)
-- **`system_config.yaml`** — Global system settings (database, storage, services)
+### ▶️ Running
 
-### ▶️ Running MARU
+**Simplest — single process (embedded Chroma, in-process embedding):**
 
 ```bash
-# start running MARU !
-maru serve
+maru run            # API server + interactive chat REPL in one command
 ```
 
-Access MARU at http://localhost:8000
+**Production-style — task queue with shared stores:**
 
-### 💻 Web UI Integration
+```bash
+# one-time: shared infrastructure
+docker run -d --name maru-redis  --restart unless-stopped -p 6379:6379 redis:7
+docker run -d --name maru-chroma --restart unless-stopped -p 8001:8000 \
+  -v $HOME/maru-chroma-data:/data chromadb/chroma
 
-MARU can be connected to a web-based front-end for a full user experience.
-You can integrate any custom UI framework or use our reference implementation.
+# maru_config.yaml: task_queue_enabled: true, vector_db_url: chroma+http://localhost:8001/maru
+maru serve --worker 1          # API + co-launched ARQ ingest worker (use under systemd)
+maru run --attach              # attach a chat REPL to the running server (same machine)
+```
 
-### 📚 API Documentation
+**Chat REPL commands:** `/team` switch teams · `/ingest <path>` upload & embed · `/status` document states · `/retry [force]` re-process failed (or all) docs · `/llms` · `/function feedback` · `/help`
 
-Explore MARU’s REST API endpoints in: `/maru_lang/api/endpoints`
-You can customize these endpoints to integrate MARU seamlessly into your existing systems.
+### 📚 API
+
+- Interactive docs: `http://localhost:8000/docs` (Swagger)
+- Guides for frontend integration:
+  - [`docs/ingest-api.md`](docs/ingest-api.md) — upload / status / check / retry / delete (incl. folder-level operations and the queue processing model)
+  - [`docs/teams-api.md`](docs/teams-api.md) — teams, members, invitations
+- `GET /config` returns client bootstrap data — including `supported_extensions`, computed from the **current parser configuration** (Korean formats appear only when KorDoc is enabled)
 
 ---
 

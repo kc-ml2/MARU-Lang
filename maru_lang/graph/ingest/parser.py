@@ -17,6 +17,7 @@ from pathlib import Path
 from langchain_core.documents import Document
 
 from maru_lang.configs import get_config
+from maru_lang.constants import SUPPORTED_EXTENSIONS
 from maru_lang.graph.ingest.constants import (
     KORDOC_DUAL_EXTENSIONS,
     KORDOC_ONLY_EXTENSIONS,
@@ -25,6 +26,19 @@ from maru_lang.graph.ingest.constants import (
 )
 from maru_lang.graph.ingest.loader import load_file
 from maru_lang.graph.ingest.loader.kordoc_mcp import parse_with_kordoc
+
+
+def ingestible_extensions() -> set[str]:
+    """Formats this server can actually ingest under the current parser config.
+
+    The static SUPPORTED_EXTENSIONS set includes KorDoc-only formats
+    (hwp/hwpx/hwpml); when the KorDoc parser is disabled those would fail at
+    parse time, so they're excluded here. GET /config serves this to clients
+    so upload UIs offer only what will really work.
+    """
+    if get_config().kordoc_mcp_enabled:
+        return set(SUPPORTED_EXTENSIONS)
+    return set(SUPPORTED_EXTENSIONS) - KORDOC_ONLY_EXTENSIONS
 
 
 def select_parser(ext: str, doc_id: str) -> str:
