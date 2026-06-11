@@ -399,6 +399,102 @@ class TestReupload:
 # 5. DELETE /ingest/{document_id}
 # ──────────────────────────────────────────────
 
+class TestRetry:
+
+    @staticmethod
+    async def _make_doc(team, status, doc_id="doc-retry-001"):
+        group = await DocumentGroup.create(name="uploads", team=team)
+        return await Document.create(
+            id=doc_id, name="retryme", group=group,
+            status=status, file_size=100, error_message="boom" if status == DocumentStatus.ERROR else None,
+        )
+
+    async def test_retry_error_doc_enqueues(self, app, client: AsyncClient, team_setup):
+        """ERROR doc + queue on → reset to UPLOADING and enqueued."""
+        from maru_lang.constants import INGEST_TASK_NAME
+        team, user = team_setup
+        await self._make_doc(team, DocumentStatus.ERROR)
+
+        fake_arq = MagicMock()
+        fake_arq.enqueue_job = AsyncMock()
+        app.state.arq = fake_arq
+
+        resp = await client.post(
+            f"/ingest/doc-retry-001/retry?team_id={team.id}",
+            headers=auth_header(user.id),
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "queued"
+        fake_arq.enqueue_job.assert_awaited_once_with(INGEST_TASK_NAME, "doc-retry-001", team.id)
+
+        doc = await Document.get(id="doc-retry-001")
+        assert doc.status == DocumentStatus.UPLOADING
+        assert doc.error_message is None
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    async def test_retry_error_doc_in_process_is_synchronous(
+        self, mock_ingest, client: AsyncClient, team_setup
+    ):
+        """Queue off → runs synchronously and reports the real outcome."""
+        team, user = team_setup
+        await self._make_doc(team, DocumentStatus.ERROR)
+
+        resp = await client.post(
+            f"/ingest/doc-retry-001/retry?team_id={team.id}",
+            headers=auth_header(user.id),
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "active"
+        mock_ingest.assert_awaited_once()
+
+    async def test_retry_active_requires_force(self, client: AsyncClient, team_setup):
+        """ACTIVE doc: 409 without force, allowed with force."""
+        team, user = team_setup
+        await self._make_doc(team, DocumentStatus.ACTIVE)
+
+        resp = await client.post(
+            f"/ingest/doc-retry-001/retry?team_id={team.id}",
+            headers=auth_header(user.id),
+        )
+        assert resp.status_code == 409
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    async def test_retry_active_with_force(self, mock_ingest, client: AsyncClient, team_setup):
+        team, user = team_setup
+        await self._make_doc(team, DocumentStatus.ACTIVE)
+
+        resp = await client.post(
+            f"/ingest/doc-retry-001/retry?team_id={team.id}&force=true",
+            headers=auth_header(user.id),
+        )
+        assert resp.status_code == 200
+        mock_ingest.assert_awaited_once()
+
+    async def test_retry_never_touches_in_flight(self, client: AsyncClient, team_setup):
+        """PROCESSING/DELETING are never retryable, even with force."""
+        team, user = team_setup
+        await self._make_doc(team, DocumentStatus.PROCESSING)
+
+        resp = await client.post(
+            f"/ingest/doc-retry-001/retry?team_id={team.id}&force=true",
+            headers=auth_header(user.id),
+        )
+        assert resp.status_code == 409
+        doc = await Document.get(id="doc-retry-001")
+        assert doc.status == DocumentStatus.PROCESSING  # untouched
+
+    async def test_retry_unknown_doc_404(self, client: AsyncClient, team_setup):
+        team, user = team_setup
+        resp = await client.post(
+            f"/ingest/nope/retry?team_id={team.id}",
+            headers=auth_header(user.id),
+        )
+        assert resp.status_code == 404
+
+
 class TestDelete:
 
     @patch("maru_lang.services.ingest.get_vector_db")

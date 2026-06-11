@@ -223,6 +223,38 @@ async def finalize_document_deletion(document_id: str) -> None:
     await Document.filter(id=document_id).delete()
 
 
+async def retry_document(document_id: str, team_id: int, force: bool = False) -> Document:
+    """Reset one document for re-ingest and return it (caller enqueues/runs).
+
+    - Default: ERROR documents only (failed parse/embed).
+    - force=True: ACTIVE too — full re-parse/re-embed, e.g. after a parser change.
+    In-flight (UPLOADING/PROCESSING), DELETING, and INACTIVE (deliberately
+    disabled) documents are never retried.
+
+    The doc is reset to UPLOADING with error_message cleared, so the ingest
+    graph's begin_processing can claim it again.
+
+    Raises:
+        LookupError: Document not found in this team.
+        ValueError: Document is not in a retryable state.
+    """
+    doc = await Document.get_or_none(id=document_id, group__team_id=team_id)
+    if doc is None:
+        raise LookupError("Document not found")
+
+    allowed = {DocumentStatus.ERROR} | ({DocumentStatus.ACTIVE} if force else set())
+    if doc.status not in allowed:
+        raise ValueError(
+            f"Document is {DocumentStatus(doc.status).name}, not retryable "
+            f"({'ERROR/ACTIVE' if force else 'ERROR only — use force for ACTIVE'})."
+        )
+
+    doc.status = DocumentStatus.UPLOADING
+    doc.error_message = None
+    await doc.save()
+    return doc
+
+
 async def reconcile_deletions() -> int:
     """Finalize documents stuck in DELETING (worker missed them or crashed).
 

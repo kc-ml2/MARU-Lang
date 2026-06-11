@@ -25,7 +25,7 @@ console = Console()
 
 # Slash commands available in the chat REPL (used for autocomplete + help).
 _SLASH_COMMANDS = [
-    "/ingest", "/team", "/status", "/llms", "/function", "/help", "/clear", "/quit", "/exit",
+    "/ingest", "/team", "/status", "/retry", "/llms", "/function", "/help", "/clear", "/quit", "/exit",
 ]
 
 
@@ -381,6 +381,10 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                     await _api_status(base_url, access_token, current_teams, team_map)
                     continue
 
+                elif cmd == "/retry":
+                    await _api_retry(base_url, access_token, args, current_teams, team_map)
+                    continue
+
                 elif cmd == "/llms":
                     await _api_llms(base_url)
                     continue
@@ -504,6 +508,7 @@ def _print_help():
         "  [yellow]/team[/yellow] [name]        — Show or switch team (comma-separated for multiple)\n"
         "  [yellow]/ingest[/yellow] <path>      — Ingest files via API (uses current team)\n"
         "  [yellow]/status[/yellow]             — Show document status via API\n"
+        "  [yellow]/retry[/yellow] [force]      — Re-ingest failed docs (force: ACTIVE too)\n"
         "  [yellow]/llms[/yellow]               — Show available LLM models\n"
         "  [yellow]/function[/yellow] <name>|off  — Enable/disable feedback collection mode\n"
         "  [yellow]/help[/yellow]               — Show this help\n"
@@ -692,6 +697,77 @@ async def _api_status(
                 )
 
             console.print(table)
+
+
+async def _api_retry(
+    base_url: str,
+    access_token: str,
+    args: str,
+    current_teams: list[str],
+    team_map: dict[str, int],
+):
+    """Re-ingest failed documents via POST /ingest/{id}/retry, one per request.
+
+    `/retry` retries the current team's ERROR documents; `/retry force` also
+    re-ingests ACTIVE ones (full re-parse/re-embed). Mirrors /ingest: the client
+    loops documents and each response carries the real per-document outcome.
+    """
+    force = args.strip() == "force"
+    if args.strip() and not force:
+        console.print("[red]Usage: /retry [force][/red]")
+        return
+    if not current_teams:
+        console.print("[red]No team selected. Use /team first.[/red]")
+        return
+
+    headers = _auth_headers(access_token)
+    target_statuses = {"error", "active"} if force else {"error"}
+
+    # Generous timeout: with the queue off the server re-embeds synchronously.
+    async with httpx.AsyncClient(timeout=300) as client:
+        for team_name in current_teams:
+            team_id = team_map.get(team_name)
+            if not team_id:
+                console.print(f"[red]Team '{team_name}' not found.[/red]")
+                continue
+
+            try:
+                resp = await client.get(
+                    f"{base_url}/ingest/status",
+                    headers=headers,
+                    params={"team_id": team_id},
+                )
+                docs = resp.json().get("documents", []) if resp.status_code == 200 else []
+            except Exception as e:
+                console.print(f"[red]Status request failed: {e}[/red]")
+                continue
+
+            targets = [d for d in docs if d.get("status") in target_statuses]
+            if not targets:
+                console.print(f"[green]{team_name}: nothing to retry.[/green]")
+                continue
+
+            console.print(f"[cyan]Retrying {len(targets)} document(s) in '{team_name}'...[/cyan]")
+            ok = failed = 0
+            for d in targets:
+                try:
+                    r = await client.post(
+                        f"{base_url}/ingest/{d['id']}/retry",
+                        headers=headers,
+                        params={"team_id": team_id, "force": str(force).lower()},
+                    )
+                    body = r.json() if r.status_code == 200 else {}
+                    if r.status_code == 200 and body.get("status") != "error":
+                        console.print(f"  [green]OK[/green] {d['name']} ({body.get('status')})")
+                        ok += 1
+                    else:
+                        detail = body.get("error") or r.text
+                        console.print(f"  [red]FAIL[/red] {d['name']}: {detail}")
+                        failed += 1
+                except Exception as e:
+                    console.print(f"  [red]FAIL[/red] {d['name']}: {e}")
+                    failed += 1
+            console.print(f"[{'green' if not failed else 'yellow'}]Retry done: {ok} ok, {failed} failed[/]")
 
 
 async def _api_llms(base_url: str):

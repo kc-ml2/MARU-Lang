@@ -18,10 +18,12 @@ from maru_lang.schemas.ingest import (
     CheckRequest,
     CheckResponse,
     DeleteResponse,
+    RetryResponse,
 )
 from maru_lang.services.ingest import (
     upload_and_ingest,
     run_ingest_for_document,
+    retry_document,
     get_team_documents,
     check_files_to_upload,
     delete_document_by_id,
@@ -151,6 +153,45 @@ async def check_files(
         indices_to_upload=indices,
         total=len(request.files),
     )
+
+
+@router.post("/{document_id}/retry", response_model=RetryResponse)
+async def retry_ingest(
+    request: Request,
+    document_id: str,
+    team_id: int = Query(...),
+    force: bool = Query(False, description="Also allow re-ingesting an ACTIVE document (re-parse/re-embed)"),
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
+):
+    """Re-ingest one document — same semantics as upload.
+
+    Default retries ERROR documents; force=true also re-ingests ACTIVE ones
+    (e.g. after a parser change). With the task queue on the job is enqueued
+    ("queued"); otherwise it runs synchronously and the response carries the
+    real outcome ("active"/"error"). Bulk retry = the client loops documents,
+    exactly like bulk upload.
+    """
+    try:
+        doc = await retry_document(document_id, team_id, force)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    arq = getattr(request.app.state, "arq", None)
+    error: str | None = None
+    if arq is not None:
+        await arq.enqueue_job(INGEST_TASK_NAME, doc.id, team_id)
+        status = "queued"
+    else:
+        try:
+            await run_ingest_for_document(doc, team_id)
+            status = "active"
+        except Exception as e:
+            status = "error"
+            error = str(e)
+
+    return RetryResponse(document_id=doc.id, name=doc.name, status=status, error=error)
 
 
 @router.delete("/{document_id}", response_model=DeleteResponse)

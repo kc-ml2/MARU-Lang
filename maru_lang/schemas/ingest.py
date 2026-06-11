@@ -74,3 +74,12 @@ class CheckResponse(BaseModel):
 class DeleteResponse(BaseModel):
     document_id: str
     deleted: bool
+
+
+# --- Retry ---
+
+class RetryResponse(BaseModel):
+    document_id: str
+    name: str
+    status: str  # "queued" | "active" | "error" — same semantics as upload
+    error: Optional[str] = None  # set when status == "error" (in-process path)
