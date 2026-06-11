@@ -10,7 +10,7 @@ from maru_lang.core.relation_db.models.documents import (
 from maru_lang.enums.documents import DocumentStatus, AuditAction
 from maru_lang.services.document import get_or_create_upload_group, mark_deleting
 from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
-from maru_lang.utils.file_storage import save_upload
+from maru_lang.utils.file_storage import save_upload, remove_document_storage
 from maru_lang.graph.ingest.graph import get_ingest_graph
 from maru_lang.graph.ingest.state import build_ingest_input
 from maru_lang.core.vector_db import get_vector_db
@@ -196,7 +196,12 @@ async def check_files_to_upload(
     indices = []
     for i, f in enumerate(files):
         fingerprint = _upload_fingerprint(team_id, f["absolutePath"], f["size"], f["mtime"])
-        existing = await Document.filter(source_fingerprint=fingerprint).first()
+        # ERROR docs must NOT be skipped: their fingerprint was stored at upload
+        # time but embedding failed, so the same unchanged file should be
+        # re-uploadable to trigger re-processing (issue #15).
+        existing = await Document.filter(
+            source_fingerprint=fingerprint,
+        ).exclude(status=DocumentStatus.ERROR).first()
         if existing is None:
             indices.append(i)
 
@@ -236,12 +241,15 @@ async def delete_document_by_id(
 
 
 async def finalize_document_deletion(document_id: str) -> None:
-    """Physically remove a document's vector chunks and DB row (idempotent)."""
+    """Physically remove a document's chunks, DB row, and storage dir (idempotent)."""
+    doc = await Document.get_or_none(id=document_id)
     try:
         get_vector_db().delete_all_chunks_by_document_id(document_id)
     except Exception as e:
         logger.warning(f"VectorDB chunk deletion failed for {document_id}: {e}")
     await Document.filter(id=document_id).delete()
+    if doc is not None:
+        remove_document_storage(doc.storage_path, document_id)
 
 
 async def retry_document(document_id: str, team_id: int, force: bool = False) -> Document:

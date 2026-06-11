@@ -194,6 +194,29 @@ class TestStatus:
         assert resp.status_code == 200
         assert resp.json()["total"] == 0
 
+    async def test_check_does_not_skip_failed_documents(
+        self, client: AsyncClient, team_setup
+    ):
+        """ERROR 문서는 fingerprint가 같아도 재업로드 대상 (issue #15)."""
+        from maru_lang.services.ingest import _upload_fingerprint
+        team, user = team_setup
+        fp = _upload_fingerprint(team.id, "/docs/fail.md", 100, 1712000000.0)
+        group = await DocumentGroup.create(name="uploads", team=team)
+        await Document.create(
+            id="failed-doc", name="fail", group=group,
+            source_fingerprint=fp, status=DocumentStatus.ERROR, error_message="boom",
+        )
+
+        resp = await client.post(
+            "/ingest/check",
+            headers=auth_header(user.id),
+            json={"team_id": team.id, "files": [
+                {"fileName": "fail.md", "absolutePath": "/docs/fail.md",
+                 "size": 100, "mtime": 1712000000.0},
+            ]},
+        )
+        assert resp.json()["indices_to_upload"] == [0]  # 스킵되지 않음
+
     async def test_empty_team_returns_empty(
         self, client: AsyncClient, team_setup
     ):
@@ -686,6 +709,31 @@ class TestDelete:
         assert n >= 1
         assert await Document.get_or_none(id="doc-deleting") is None
         mock_vdb.delete_all_chunks_by_document_id.assert_any_call("doc-deleting")
+
+    @patch("maru_lang.services.ingest.get_vector_db")
+    async def test_delete_removes_storage_dir(
+        self, mock_get_vdb, client: AsyncClient, team_setup, tmp_path
+    ):
+        """삭제 시 storage 디렉터리(…/<doc_id>/)도 정리된다 (issue #8)."""
+        team, user = team_setup
+        mock_get_vdb.return_value = MagicMock()
+
+        doc_dir = tmp_path / "doc-st-001"
+        doc_dir.mkdir()
+        stored = doc_dir / "original.md"
+        stored.write_text("content")
+
+        group = await DocumentGroup.create(name="uploads", team=team)
+        await Document.create(
+            id="doc-st-001", name="stored", group=group,
+            status=DocumentStatus.ACTIVE, file_size=7, storage_path=str(stored),
+        )
+
+        resp = await client.delete(
+            f"/ingest/doc-st-001?team_id={team.id}", headers=auth_header(user.id),
+        )
+        assert resp.status_code == 200
+        assert not doc_dir.exists()  # 파일 + 디렉터리 제거됨
 
     async def test_delete_nonexistent_returns_404(
         self, client: AsyncClient, team_setup

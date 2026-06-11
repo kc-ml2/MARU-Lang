@@ -288,6 +288,39 @@ class TestLLMEvaluateStrictVerdict:
         assert await self._run("SUFFICIENT") is None
 
 
+# ─── Reranker: low-score filtering (issue #1) ───────────────
+
+
+class TestRerankerMinScore:
+    @staticmethod
+    def _rerank(min_score, scores):
+        from maru_lang.graph.rag.reranker.cross_encoder import CrossEncoderCompressor
+        docs = [Document(page_content=f"doc{i}") for i in range(len(scores))]
+        fake_model = MagicMock()
+        fake_model.predict = MagicMock(return_value=scores)
+        import threading
+        with patch(
+            "maru_lang.graph.rag.reranker.cross_encoder._get_or_load_model",
+            return_value=fake_model,
+        ), patch(
+            "maru_lang.graph.rag.reranker.cross_encoder._get_inference_lock",
+            return_value=threading.Lock(),
+        ):
+            compressor = CrossEncoderCompressor(min_score=min_score)
+            return compressor.compress_documents(docs, "query")
+
+    def test_low_scores_filtered(self):
+        result = self._rerank(min_score=0.5, scores=[0.9, 0.1, 0.7])
+        assert len(result) == 2
+        assert all(d.metadata["reranker_score"] >= 0.5 for d in result)
+        # 점수 내림차순 정렬 유지
+        assert result[0].metadata["reranker_score"] >= result[1].metadata["reranker_score"]
+
+    def test_none_keeps_all(self):
+        result = self._rerank(min_score=None, scores=[0.9, 0.1, 0.7])
+        assert len(result) == 3
+
+
 # ─── Intent node: memory-aware query rewriting (issue #13) ───
 
 

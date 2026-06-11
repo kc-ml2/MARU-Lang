@@ -38,6 +38,19 @@ def save_file(source: Path, team_id: int, doc_id: str) -> str:
     return str(dest.absolute())
 
 
+def remove_document_storage(storage_path: str | None, doc_id: str) -> None:
+    """Best-effort removal of a document's storage dir (…/<team>/<doc_id>/).
+
+    Guarded: only removes when the parent directory is actually named after the
+    document id, so a mis-set storage_path can never wipe an unrelated folder.
+    """
+    if not storage_path:
+        return
+    doc_dir = Path(storage_path).parent
+    if doc_dir.name == doc_id and doc_dir.is_dir():
+        shutil.rmtree(doc_dir, ignore_errors=True)
+
+
 async def save_upload(upload_file: BinaryIO, filename: str, team_id: int, doc_id: str) -> str:
     """Save an uploaded file (from FastAPI UploadFile) to permanent storage.
 

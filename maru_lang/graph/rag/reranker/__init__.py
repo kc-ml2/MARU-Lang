@@ -30,4 +30,5 @@ def build_compressor(cfg):
         model_name=cfg.reranker_model,
         top_k=cfg.reranker_top_k,
         device=cfg.reranker_device or cfg.embedding_device,
+        min_score=cfg.reranker_min_score,
     )

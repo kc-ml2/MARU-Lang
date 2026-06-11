@@ -65,6 +65,9 @@ class CrossEncoderCompressor(BaseDocumentCompressor):
     model_name: str = "BAAI/bge-reranker-v2-m3"
     top_k: Optional[int] = None
     device: Optional[str] = None
+    # Drop documents scoring below this (issue #1). Raw cross-encoder scores are
+    # model-dependent, so the cutoff is opt-in (None = keep all).
+    min_score: Optional[float] = None
 
     def compress_documents(
         self,
@@ -90,6 +93,9 @@ class CrossEncoderCompressor(BaseDocumentCompressor):
             key=lambda x: x[1],
             reverse=True,
         )
+
+        if self.min_score is not None:
+            ranked = [(doc, s) for doc, s in ranked if s >= self.min_score]
 
         if self.top_k is not None:
             ranked = ranked[: self.top_k]

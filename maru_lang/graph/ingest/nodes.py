@@ -17,6 +17,7 @@ from maru_lang.services.document import (
     fail_processing,
 )
 from maru_lang.utils.document import make_chunk_uid
+from maru_lang.utils.file_storage import remove_document_storage
 
 
 async def sync_document(state: IngestState) -> dict:
@@ -238,9 +239,12 @@ def make_process_document_node(vdb, embeddings):
 
 
 async def _finalize_cancel(vdb, document_id: str) -> None:
-    """Finalize a cancelled (DELETING) document: drop its chunks + the row."""
+    """Finalize a cancelled (DELETING) document: chunks + row + storage dir."""
+    doc = await Document.get_or_none(id=document_id)
     try:
         await asyncio.to_thread(vdb.delete_all_chunks_by_document_id, document_id)
     except Exception:
         pass
     await Document.filter(id=document_id, status=DocumentStatus.DELETING).delete()
+    if doc is not None and doc.status == DocumentStatus.DELETING:
+        remove_document_storage(doc.storage_path, document_id)

@@ -144,6 +144,9 @@ class MaruConfig:
     reranker_llm: Optional[str] = None  # llm name (from llms list) for llm reranker
     reranker_top_k: Optional[int] = 5
     reranker_device: Optional[str] = None
+    # Drop reranked docs scoring below this (cross_encoder only). Raw scores are
+    # model-dependent, so it's opt-in; None keeps every reranked doc.
+    reranker_min_score: Optional[float] = None
 
     _DEFAULT_SECRET_KEY: str = field(default="your-secret-key-change-in-production", init=False, repr=False)
 
@@ -240,6 +243,7 @@ class MaruConfig:
             reranker_llm=data.get("reranker_llm"),
             reranker_top_k=data.get("reranker_top_k", cls.reranker_top_k),
             reranker_device=data.get("reranker_device"),
+            reranker_min_score=data.get("reranker_min_score"),
         )
 
     # --- Convenience helpers ---
