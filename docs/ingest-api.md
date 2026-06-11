@@ -180,7 +180,10 @@ A foreign/unknown `group_id` simply requeues nothing (`count: 0`).
 ## Check (`POST /ingest/check`)
 
 Check which files from a list need to be uploaded by comparing fingerprints
-(path + size + mtime).
+(team + path + size + mtime). A match means "this exact version is already
+ingested **for this team**"; a modified file (different size/mtime) needs
+upload again — the upload then **updates the existing document in place**
+(same `document_id`, embeddings replaced), it does not create a sibling.
 
 **Request:**
 

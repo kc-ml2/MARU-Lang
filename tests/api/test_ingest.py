@@ -269,12 +269,12 @@ class TestCheck:
         self, client: AsyncClient, team_setup
     ):
         """Check skips files that already have matching fingerprint."""
-        _, user = team_setup
-        from maru_lang.utils.document import make_source_fingerprint_for_file
+        team, user = team_setup
+        from maru_lang.services.ingest import _upload_fingerprint
 
-        # Pre-create a document with matching fingerprint
-        fp = make_source_fingerprint_for_file("/docs/a.md", 100, int(1712000000.0 * 1e9))
-        group = await DocumentGroup.create(name="uploads", team=(team_setup)[0])
+        # Pre-create a document with matching (team-scoped) fingerprint
+        fp = _upload_fingerprint(team.id, "/docs/a.md", 100, 1712000000.0)
+        group = await DocumentGroup.create(name="uploads", team=team)
         await Document.create(
             id="existing-doc",
             name="a",
@@ -287,7 +287,7 @@ class TestCheck:
             "/ingest/check",
             headers=auth_header(user.id),
             json={
-                "team_id": 1,
+                "team_id": team.id,
                 "files": [
                     {"fileName": "a.md", "absolutePath": "/docs/a.md", "size": 100, "mtime": 1712000000.0},
                     {"fileName": "b.md", "absolutePath": "/docs/b.md", "size": 200, "mtime": 1712000000.0},
@@ -1000,6 +1000,81 @@ class TestCheckUploadFlow:
         data = check_resp.json()
         assert data["indices_to_upload"] == [1, 2], \
             "a.md는 스킵되고 b.md, c.md만 업로드 대상이어야 함"
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_modified_reupload_updates_same_document(
+        self, mock_save, mock_ingest, client: AsyncClient, team_setup, tmp_path,
+    ):
+        """문서 A를 수정해 다시 올리면 새 문서가 생기는 게 아니라 A가 갱신되어야 한다.
+
+        (기존 버그: fingerprint(size/mtime 포함)를 정체성으로 써서, 수정된 파일은
+        fingerprint가 달라져 새 문서가 추가되고 옛 문서가 그대로 남았다.)
+        """
+        team, user = team_setup
+        mock_save.return_value = "/tmp/fake/storage/doc.md"
+
+        f = tmp_path / "doc.md"
+        f.write_text("v1")
+        folder_path = str(tmp_path)
+
+        resp1 = await client.post(
+            "/ingest/upload", headers=auth_header(user.id),
+            data={"team_id": str(team.id), "mtime": str(f.stat().st_mtime),
+                  "folder_path": folder_path},
+            files={"file": ("doc.md", io.BytesIO(b"v1"), "text/markdown")},
+        )
+        doc_id_1 = resp1.json()["document_id"]
+        fp_v1 = (await Document.get(id=doc_id_1)).source_fingerprint
+
+        # 수정: 내용/크기/mtime이 달라진 같은 파일
+        f.write_text("v2 — modified, longer content")
+        resp2 = await client.post(
+            "/ingest/upload", headers=auth_header(user.id),
+            data={"team_id": str(team.id), "mtime": str(f.stat().st_mtime + 10),
+                  "folder_path": folder_path},
+            files={"file": ("doc.md", io.BytesIO(b"v2 modified, longer content"), "text/markdown")},
+        )
+
+        data2 = resp2.json()
+        assert data2["is_reupload"] is True
+        assert data2["document_id"] == doc_id_1  # 같은 문서 갱신, 새 문서 없음
+
+        docs = await Document.filter(group__team_id=team.id).all()
+        assert len(docs) == 1  # 옛 문서가 남지 않음
+        assert docs[0].source_fingerprint != fp_v1  # 변경 표식 갱신됨
+        assert docs[0].status == DocumentStatus.UPLOADING  # 재처리 대기
+
+    @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
+    @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)
+    async def test_same_file_different_team_is_separate_document(
+        self, mock_save, mock_ingest, client: AsyncClient, team_setup, user_bob, tmp_path,
+    ):
+        """다른 팀이 같은 파일(이름/크기/mtime)을 올려도 남의 팀 문서를 덮지 않는다."""
+        from maru_lang.core.relation_db.models.auth import Team, TeamMember, UserRole
+        team, user = team_setup
+        editor = await UserRole.get_or_none(name="editor")  # team_setup이 생성
+        user_bob.role_id = editor.id
+        await user_bob.save()
+        team_b = await Team.create(name="team-b", manager=user_bob, is_private=False)
+        await TeamMember.create(user=user_bob, team=team_b, role="admin")
+        mock_save.return_value = "/tmp/fake/storage/shared.md"
+
+        common = {"mtime": "1712000000.0", "folder_path": "/shared"}
+        r1 = await client.post(
+            "/ingest/upload", headers=auth_header(user.id),
+            data={"team_id": str(team.id), **common},
+            files={"file": ("shared.md", io.BytesIO(b"same"), "text/markdown")},
+        )
+        r2 = await client.post(
+            "/ingest/upload", headers=auth_header(user_bob.id),
+            data={"team_id": str(team_b.id), **common},
+            files={"file": ("shared.md", io.BytesIO(b"same"), "text/markdown")},
+        )
+
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert r2.json()["is_reupload"] is False  # 남의 팀 문서에 안 붙음
+        assert r1.json()["document_id"] != r2.json()["document_id"]
 
     @patch("maru_lang.api.endpoints.ingest.run_ingest_for_document", new_callable=AsyncMock)
     @patch("maru_lang.services.ingest.save_upload", new_callable=AsyncMock)

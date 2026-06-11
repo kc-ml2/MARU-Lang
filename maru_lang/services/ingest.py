@@ -18,6 +18,19 @@ from maru_lang.core.vector_db import get_vector_db
 logger = logging.getLogger(__name__)
 
 
+def _upload_fingerprint(team_id: int, path: str, size: int, mtime: float) -> str:
+    """Change-detector fingerprint for API uploads (used by upload + check).
+
+    Scoped by team so identical files uploaded by different teams never collide
+    on the unique source_fingerprint column (or match each other in check).
+    """
+    return make_source_fingerprint_for_file(
+        file_path=f"{team_id}:{path}",
+        size=size,
+        mtime_ns=int(mtime * 1e9),
+    )
+
+
 async def upload_and_ingest(
     file_obj,
     filename: str,
@@ -41,26 +54,24 @@ async def upload_and_ingest(
     Returns:
         Tuple of (Document, is_reupload).
     """
-    doc_id = new_ulid()
+    abs_path = str(Path(folder_path) / filename) if folder_path else filename
+    fingerprint = _upload_fingerprint(team_id, abs_path, file_size, mtime)
 
-    # Save to permanent storage
+    # Identity = (team, path); the fingerprint is only a change detector.
+    # It embeds size/mtime, so a MODIFIED file gets a new fingerprint — matching
+    # on it (the old behavior) created a sibling document and left the stale one
+    # (and its chunks) behind.
+    existing = await Document.get_or_none(file_path=abs_path, group__team_id=team_id)
+
+    # Re-uploads overwrite the existing document's storage dir; new docs get a
+    # fresh ulid. (Old code always minted a new dir, leaking the previous file.)
+    doc_id = existing.id if existing else new_ulid()
     storage_path = await save_upload(file_obj, filename, team_id, doc_id)
 
-    # Get or create group named after the uploaded folder
-    group = await get_or_create_upload_group(team_id, folder_path)
-
-    # Fingerprint uses client-provided mtime so check() can match
-    abs_path = str(Path(folder_path) / filename) if folder_path else filename
-    fingerprint = make_source_fingerprint_for_file(
-        file_path=abs_path,
-        size=file_size,
-        mtime_ns=int(mtime * 1e9),
-    )
-
-    # Check for existing document with same fingerprint
-    existing = await Document.filter(source_fingerprint=fingerprint).first()
     if existing:
         existing.storage_path = storage_path
+        existing.file_size = file_size
+        existing.source_fingerprint = fingerprint  # latest ingested version mark
         existing.status = DocumentStatus.UPLOADING
         existing.error_message = None
         await existing.save()
@@ -73,6 +84,9 @@ async def upload_and_ingest(
             action=AuditAction.RE_UPLOAD,
         )
         return existing, True
+
+    # Get or create group named after the uploaded folder
+    group = await get_or_create_upload_group(team_id, folder_path)
 
     doc = await Document.create(
         id=doc_id,
@@ -163,11 +177,17 @@ async def get_team_documents(team_id: int, group_id: Optional[int] = None) -> li
 
 
 async def check_files_to_upload(
+    team_id: int,
     files: list[dict],
 ) -> list[int]:
-    """Check which files need uploading by fingerprint comparison.
+    """Check which files need uploading by fingerprint comparison (team-scoped).
+
+    A fingerprint match means "this exact version is already ingested for this
+    team" → skip. The fingerprint embeds team + path + size + mtime, so another
+    team's identical file never causes a false skip.
 
     Args:
+        team_id: Team performing the upload.
         files: List of dicts with absolutePath, size, mtime.
 
     Returns:
@@ -175,11 +195,7 @@ async def check_files_to_upload(
     """
     indices = []
     for i, f in enumerate(files):
-        fingerprint = make_source_fingerprint_for_file(
-            file_path=f["absolutePath"],
-            size=f["size"],
-            mtime_ns=int(f["mtime"] * 1e9),
-        )
+        fingerprint = _upload_fingerprint(team_id, f["absolutePath"], f["size"], f["mtime"])
         existing = await Document.filter(source_fingerprint=fingerprint).first()
         if existing is None:
             indices.append(i)

@@ -152,7 +152,7 @@ async def check_files(
         {"absolutePath": f.absolutePath, "size": f.size, "mtime": f.mtime}
         for f in request.files
     ]
-    indices = await check_files_to_upload(files)
+    indices = await check_files_to_upload(request.team_id, files)
 
     return CheckResponse(
         indices_to_upload=indices,

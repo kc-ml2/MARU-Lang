@@ -621,7 +621,10 @@ async def _api_ingest(
                         files={"file": (fp.name, f)},
                         data={
                             "team_id": str(team_id),
-                            "folder_path": "",
+                            # Real parent dir: upload identity/fingerprint then
+                            # matches /ingest/check's absolutePath, and the group
+                            # is named after the actual folder.
+                            "folder_path": str(fp.resolve().parent),
                             "mtime": str(fp.stat().st_mtime),
                         },
                     )
