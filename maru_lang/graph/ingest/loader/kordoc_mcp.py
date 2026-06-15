@@ -15,7 +15,6 @@ parser is single-threaded CPU work anyway, so this also avoids piling up Node
 processes. The session restarts transparently on transport failure or timeout.
 """
 import asyncio
-import logging
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
@@ -23,8 +22,6 @@ from mcp.client.stdio import stdio_client
 
 from maru_lang.configs import get_config
 from maru_lang.graph.ingest.exceptions import KordocParseError
-
-logger = logging.getLogger(__name__)
 
 # Name of the KorDoc MCP tool we call. Private to this client — kept local rather
 # than in ingest/constants.py since nothing else references it.
@@ -147,10 +144,6 @@ class _KordocClient:
         """Own the MCP session for its whole lifetime and serve parse requests."""
         try:
             cfg = get_config()
-            logger.info(
-                "KorDoc MCP starting: command=%r args=%r",
-                cfg.kordoc_mcp_command, list(cfg.kordoc_mcp_args),
-            )
             params = StdioServerParameters(
                 command=cfg.kordoc_mcp_command,
                 args=list(cfg.kordoc_mcp_args),

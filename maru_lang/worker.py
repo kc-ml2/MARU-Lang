@@ -40,27 +40,9 @@ async def ingest_document_task(ctx, document_id: str, team_id: int) -> None:
     await run_ingest_for_document(doc, team_id)
 
 
-def _configure_logging(cfg) -> None:
-    """Make maru_lang.* logs visible in the worker process.
-
-    The worker runs as `arq maru_lang.worker.WorkerSettings`, and ARQ only
-    configures its own `arq` logger — root/`maru_lang` get no handler, so our
-    INFO logs (parser routing, KorDoc command, etc.) are dropped and only
-    WARNING+ reaches the journal. Attach a root handler and set the maru_lang
-    level from config.server.log_level (default "info").
-    """
-    level = getattr(logging, str(cfg.server.log_level).upper(), logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    logging.getLogger("maru_lang").setLevel(level)
-
-
 async def _on_startup(ctx) -> None:
     """Bring up the worker process: ORM + preloaded embedding model."""
     cfg = get_config()
-    _configure_logging(cfg)
     cm = orm_context()
     await cm.__aenter__()
     ctx["_orm_cm"] = cm
