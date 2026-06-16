@@ -231,6 +231,18 @@ async def _check_admin(team_id: int, user: User) -> TeamMember:
     return membership
 
 
+async def require_team_member(team_id: int, user: User) -> TeamMember:
+    """현재 유저가 해당 팀의 멤버인지 확인. team-scoped 작업의 서버측 검증.
+
+    클라이언트가 보낸 team_id를 그대로 신뢰하지 않기 위한 가드. delete처럼
+    admin 권한까진 필요 없고 멤버 여부만 보면 되는 upload/status/check/retry에 쓴다.
+    """
+    membership = await TeamMember.get_or_none(team_id=team_id, user=user)
+    if not membership:
+        raise PermissionError("해당 팀의 멤버가 아닙니다")
+    return membership
+
+
 async def get_or_create_team(
     name: str,
     manager: User,

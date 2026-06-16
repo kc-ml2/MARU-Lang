@@ -34,7 +34,7 @@ from maru_lang.services.ingest import (
     delete_document_by_id,
     get_audit_logs_for_documents,
 )
-from maru_lang.services.team import _check_admin
+from maru_lang.services.team import _check_admin, require_team_member
 
 router = APIRouter(
     prefix="/ingest",
@@ -60,6 +60,11 @@ async def upload_file(
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
+
+    try:
+        await require_team_member(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
     doc, is_reupload = await upload_and_ingest(
         file_obj=file.file,
@@ -103,6 +108,11 @@ async def get_status(
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
     """Get document status for a team, optionally scoped to one folder."""
+    try:
+        await require_team_member(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     docs = await get_team_documents(team_id, group_id)
 
     # Fetch audit logs for all documents in one query
@@ -150,6 +160,11 @@ async def check_files(
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
     """Check which files need to be uploaded."""
+    try:
+        await require_team_member(request.team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     files = [
         {"absolutePath": f.absolutePath, "size": f.size, "mtime": f.mtime}
         for f in request.files
@@ -178,6 +193,11 @@ async def retry_ingest(
     real outcome ("active"/"error"). Bulk retry = the client loops documents,
     exactly like bulk upload.
     """
+    try:
+        await require_team_member(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     try:
         doc = await retry_document(document_id, team_id, force)
     except LookupError as e:
@@ -218,6 +238,11 @@ async def retry_group_ingest(
     Non-retryable docs (in-flight/deleting/inactive; active without force) are
     skipped, not errors.
     """
+    try:
+        await require_team_member(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     arq = getattr(request.app.state, "arq", None)
     if arq is None:
         # Check BEFORE resetting statuses — never strand docs in UPLOADING.
