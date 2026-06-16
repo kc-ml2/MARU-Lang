@@ -4,6 +4,7 @@ from typing import Optional
 
 class CreateTeamRequest(BaseModel):
     name: str
+    description: Optional[str] = None
 
 
 class InviteMemberRequest(BaseModel):
@@ -30,11 +31,13 @@ class FolderResponse(BaseModel):
 class TeamSummaryResponse(BaseModel):
     id: int
     name: str
+    description: Optional[str] = None
     role: str
 
 
 class TeamDetailResponse(BaseModel):
     id: int
     name: str
+    description: Optional[str] = None
     members: list[TeamMemberResponse]
     folders: list[FolderResponse]

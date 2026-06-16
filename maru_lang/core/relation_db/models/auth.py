@@ -21,6 +21,7 @@ class UserRole(Model):
 class Team(Model):
     id = fields.IntField(pk=True)
     name = fields.CharField(max_length=255, unique=True)
+    description = fields.TextField(null=True)
     manager = fields.ForeignKeyField(
         "models.User",
         related_name="managed_teams",
