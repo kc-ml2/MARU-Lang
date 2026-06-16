@@ -9,6 +9,10 @@ class User(Model):
     email = fields.CharField(max_length=255, index=True, unique=True)
     role = fields.ForeignKeyField(
         "models.UserRole", related_name="users", null=True)
+    # 이 사용자에게 배정된 LLM (가변). null=미배정 -> 기본 fallback 사용.
+    # RESTRICT: 참조되는 Llm 하드삭제 방지(동기화는 soft-disable만 하므로 안전망).
+    assigned_llm = fields.ForeignKeyField(
+        "models.Llm", related_name="users", null=True, on_delete=fields.RESTRICT)
     created_at = fields.DatetimeField(auto_now_add=True)
 
 

@@ -19,6 +19,7 @@ class LLMConfig:
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     enabled: bool = True
+    weight: int = 1  # 가입 시 사용자 배정 목표 비율 (least-filled 밸런싱)
     config: dict[str, Any] = field(default_factory=dict)
     timeout: Optional[float] = None
 
@@ -180,6 +181,7 @@ class MaruConfig:
                     api_key=llm_data.get("api_key"),
                     base_url=llm_data.get("base_url"),
                     enabled=llm_data.get("enabled", True),
+                    weight=int(llm_data.get("weight", 1)),
                     config=llm_data.get("config", {}),
                     timeout=llm_data.get("timeout"),
                 ))

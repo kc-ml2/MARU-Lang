@@ -24,6 +24,7 @@ async def stream_and_send(
     user: User | None = None,
     session: Session | None = None,
     function: str | None = None,
+    llm_name: str | None = None,
     show_thinking: bool = True,
 ) -> bool:
     """Stream chat graph events to a WebSocket client.
@@ -48,6 +49,7 @@ async def stream_and_send(
             function=function,
             session_id=session.id if session else None,
             user_id=user.id if user else None,
+            llm_name=llm_name,
         ):
             if event_type == "token":
                 await websocket.send_json({"type": "stream", "content": event_content})

@@ -54,6 +54,10 @@ class Conversation(Model):
     question = fields.TextField()  # 사용자 질문
     enhanced_question = fields.TextField(null=True)  # 확장된 질문
     answer = fields.TextField()    # AI 답변
+    # 이 턴이 실제로 돌린 LLM (불변 감사 기록). 배정 LLM과 다를 수 있음
+    # (배정 LLM이 비활성화되어 fallback으로 돌면 실제 돌린 LLM이 기록됨).
+    llm_used = fields.ForeignKeyField(
+        "models.Llm", related_name="conversations", null=True, on_delete=fields.RESTRICT)
     summary = fields.TextField(null=True)  # 이 턴(질문+답변)의 요약 - 나중에 채움
     metadata = fields.JSONField(default=dict)  # API 호출 정보, 토큰 수, 처리 시간 등
     feedback_score = fields.IntField(null=True)   # 사용자 피드백 점수 (예: 1-5)

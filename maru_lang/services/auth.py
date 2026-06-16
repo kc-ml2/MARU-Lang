@@ -19,6 +19,7 @@ from maru_lang.core.relation_db.models.auth import (
     TeamMember,
 )
 from maru_lang.enums.auth import UserRoleCode
+from maru_lang.services.llm import assign_balanced_llm
 
 config = get_config()
 
@@ -41,6 +42,7 @@ async def create_or_get_user(email: str) -> User:
         name=name,
         role=editor_role,
     )
+    await assign_balanced_llm(new_user)
     return new_user
 
 

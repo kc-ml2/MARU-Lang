@@ -7,7 +7,7 @@ from langchain_core.language_models import BaseChatModel
 from .client import LLMClient
 from .server_manager import LLMManager
 
-__all__ = ["LLMClient", "LLMManager", "get_model_with_fallbacks"]
+__all__ = ["LLMClient", "LLMManager", "get_model_with_fallbacks", "get_llm_manager"]
 
 _llm_manager: LLMManager | None = None
 _llm_manager_lock = threading.Lock()
@@ -27,3 +27,8 @@ def _get_llm_manager() -> LLMManager:
 def get_model_with_fallbacks(primary_name: Optional[str] = None) -> Optional[BaseChatModel]:
     """Return a ChatModel with fallback chain."""
     return _get_llm_manager().get_model_with_fallbacks(primary_name)
+
+
+def get_llm_manager() -> LLMManager:
+    """Return the process-wide LLMManager singleton (enabled clients loaded from config)."""
+    return _get_llm_manager()

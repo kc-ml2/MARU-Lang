@@ -24,6 +24,7 @@ class RagState(TypedDict, total=False):
     function: Optional[str]                               # e.g. "feedback" mode
     feedback_score: Optional[int]                         # user rating (1-5)
     feedback_reason: Optional[str]                        # reason for a low score
+    llm_name: Optional[str]                               # LLM actually running this turn (for audit/persist)
 
     # ---- retrieval pipeline (per-search working fields) ----
     query: str                                            # search query (from tool_call arg)
@@ -47,6 +48,7 @@ def build_input(
     function: Optional[str] = None,
     session_id: Optional[str] = None,
     user_id: Optional[int] = None,
+    llm_name: Optional[str] = None,
 ) -> RagState:
     """그래프 초기 입력 state를 만든다."""
     return {
@@ -57,4 +59,5 @@ def build_input(
         "user_id": user_id,
         "question": message,
         "function": function,
+        "llm_name": llm_name,
     }
