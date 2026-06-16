@@ -142,7 +142,6 @@ async def create_team(
 async def invite_member(
     team_id: int,
     email: str,
-    name: str,
     inviter: User,
     email_service: Optional[EmailService] = None,
 ) -> dict:
@@ -150,6 +149,10 @@ async def invite_member(
     이메일로 사용자를 팀에 초대. admin만 가능.
     - 미가입 유저: 익명 유저 생성 + invitation 이메일
     - 기존 유저: 팀 추가 + notification 이메일
+
+    초대는 이메일만 받는다. 표시명(User.name)은 각 사용자가 본인 닉네임으로
+    직접 설정하는 전역 값이므로, 초대가 기존 사용자의 이름을 덮어쓰지 않는다
+    (덮어쓰면 그 사용자가 속한 다른 팀에서도 이름이 바뀌는 버그가 됨).
     """
     await _check_admin(team_id, inviter)
 
@@ -160,22 +163,18 @@ async def invite_member(
     target_user = await User.get_or_none(email=email)
 
     if target_user is None:
-        # 익명 유저 생성
+        # 익명 유저 생성 (초기 표시명은 이메일 local-part로 seed; 본인이 추후 변경)
         anonymous_role, _ = await UserRole.get_or_create(
             name=UserRoleCode.ANONYMOUS.value,
             defaults={"description": "초대로 생성된 미가입 유저"},
         )
         target_user = await User.create(
             email=email,
-            name=name or email.split("@")[0],
+            name=email.split("@")[0],
             role=anonymous_role,
         )
         await assign_balanced_llm(target_user)
-    else:
-        # 이름 업데이트 (초대 시 제공된 이름)
-        if name and target_user.name != name:
-            target_user.name = name
-            await target_user.save()
+    # 기존 유저는 멤버십만 추가한다 (이름은 절대 건드리지 않음).
 
     # 유저 롤이 anonymous면 아직 미가입 상태 → pending
     is_anonymous = await _is_anonymous_user(target_user)

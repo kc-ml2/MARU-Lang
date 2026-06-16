@@ -207,16 +207,19 @@ class TestInviteMember:
     async def test_invite_unregistered_email_creates_anonymous_user(
         self, client: AsyncClient, user_alice: User, team_with_admin: Team,
     ):
-        """미가입 이메일로 초대하면 anonymous 롤의 유저를 생성하고 팀에 추가한다"""
+        """미가입 이메일로 초대하면 anonymous 롤의 유저를 생성하고 팀에 추가한다.
+
+        초대는 이메일만 받는다 → 초기 표시명은 이메일 local-part로 seed된다.
+        """
         resp = await client.post(
             f"/teams/{team_with_admin.id}/members",
-            json={"email": "nobody@example.com", "name": "Nobody"},
+            json={"email": "nobody@example.com"},
             headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 201
         data = resp.json()
         assert data["email"] == "nobody@example.com"
-        assert data["name"] == "Nobody"
+        assert data["name"] == "nobody"  # 이메일 local-part로 seed
         assert data["role"] == "pending"
 
         # DB에서 anonymous 유저가 생성되었는지 확인
@@ -230,6 +233,27 @@ class TestInviteMember:
             team=team_with_admin, user=created_user
         )
         assert membership.role == "pending"
+
+    async def test_invite_existing_user_does_not_overwrite_name(
+        self, client: AsyncClient, user_alice: User, user_bob: User,
+        team_with_admin: Team,
+    ):
+        """기존 사용자를 초대해도 그 사용자의 전역 표시명이 바뀌지 않는다.
+
+        과거 버그: 초대 폼의 이름이 기존 User.name을 덮어써 다른 팀에서도
+        이름이 바뀌었다. 이제 초대는 이메일만 받고, 레거시 클라이언트가 name을
+        보내도 무시된다.
+        """
+        resp = await client.post(
+            f"/teams/{team_with_admin.id}/members",
+            json={"email": "bob@example.com", "name": "DIFFERENT"},  # name은 무시됨
+            headers=await auth_header(user_alice.id),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["name"] == "Bob"  # 응답도 기존 이름
+
+        bob = await User.get(id=user_bob.id)
+        assert bob.name == "Bob"  # DB의 전역 이름 불변
 
     async def test_invite_sends_invitation_email_for_new_user(
         self, app, client: AsyncClient, user_alice: User, team_with_admin: Team,

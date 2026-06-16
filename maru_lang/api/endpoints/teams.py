@@ -59,7 +59,7 @@ async def invite_team_member(
     """팀에 멤버 초대 (admin만 가능)"""
     try:
         return await invite_member(
-            team_id, request.email, request.name, user, email_service
+            team_id, request.email, user, email_service
         )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))

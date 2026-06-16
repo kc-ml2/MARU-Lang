@@ -6,6 +6,7 @@ from maru_lang.services.auth import (
     create_or_get_user,
     refresh_token_flow,
     generate_chat_token,
+    update_user_name,
 )
 from maru_lang.services.team import get_or_create_team, add_member_to_team
 from maru_lang.services.admin import (
@@ -17,6 +18,8 @@ from maru_lang.schemas.auth import (
     SignUpRequest,
     LogoutRequest,
     ChatTokenResponse,
+    UserResponse,
+    UpdateMeRequest,
 )
 from maru_lang.dependencies.email import get_email_service_dependency, EmailService
 from typing import Optional
@@ -192,3 +195,18 @@ async def get_chat_token(user=Depends(get_user)) -> ChatTokenResponse:
     """Issue one-time chat token for WebSocket connection."""
     token = await generate_chat_token(user.id)
     return ChatTokenResponse(chat_token=token)
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(user=Depends(get_user)):
+    """내 프로필 조회."""
+    return user
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_me(request: UpdateMeRequest, user=Depends(get_user)):
+    """내 표시명(닉네임) 변경. 본인만 가능."""
+    try:
+        return await update_user_name(user, request.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
