@@ -231,9 +231,13 @@ async def upsert_document_from_file(
     Returns:
         Tuple[Document, bool]: (문서, 재처리필요여부)
     """
-    fp = make_source_fingerprint_for_file(path, size, mtime_ns)
+    # Identity and fingerprint are scoped by team: the same path synced by
+    # different teams must be separate documents (each team sees only its own),
+    # not collide on the global file_path / unique source_fingerprint. This
+    # mirrors the API upload path (services.ingest._upload_fingerprint).
+    fp = make_source_fingerprint_for_file(f"{group.team_id}:{path}", size, mtime_ns)
 
-    doc = await Document.get_or_none(file_path=path)
+    doc = await Document.get_or_none(file_path=path, group__team_id=group.team_id)
 
     if doc:
         if doc.source_fingerprint == fp:
