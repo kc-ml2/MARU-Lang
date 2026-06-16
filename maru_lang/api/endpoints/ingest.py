@@ -1,418 +1,313 @@
-import os
-import json
-import shutil
-import tempfile
+"""Ingest API endpoints - upload, status, check, delete."""
+import logging
 from pathlib import Path
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
-from maru_lang.enums.auth import UserRoleCode
-from maru_lang.dependencies.auth import get_user_with_role, User
-from maru_lang.dependencies.ingest import create_ingest_pipeline
-from maru_lang.pipelines.base import PipelineMessage, PipelineComplete
-from maru_lang.schemas.ingest import (
-    SyncCheckRequest,
-    SyncCheckResponse,
-    SyncUploadResponse,
-)
-from maru_lang.services.ingest import check_files_to_upload, get_or_create_document_group
-from maru_lang.services.document import set_user_group_permissions, get_managed_document_groups_with_stats
-from maru_lang.configs.system_config import get_system_config
 
-config = get_system_config()
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query
+
+from maru_lang.constants import INGEST_TASK_NAME
+from maru_lang.enums.auth import UserRoleCode
+from maru_lang.enums.documents import DocumentStatus, AuditAction
+
+logger = logging.getLogger(__name__)
+from maru_lang.dependencies.auth import get_user_with_role, User
+from maru_lang.schemas.ingest import (
+    UploadResponse,
+    StatusResponse,
+    DocumentStatusItem,
+    AuditLogEntry,
+    CheckRequest,
+    CheckResponse,
+    DeleteResponse,
+    RetryResponse,
+    RetryItem,
+    GroupRetryResponse,
+    GroupDeleteResponse,
+)
+from maru_lang.services.ingest import (
+    upload_and_ingest,
+    run_ingest_for_document,
+    retry_document,
+    retry_documents_in_group,
+    delete_group_documents,
+    get_team_documents,
+    check_files_to_upload,
+    delete_document_by_id,
+    get_audit_logs_for_documents,
+)
+from maru_lang.services.team import _check_admin, require_team_member
 
 router = APIRouter(
-    prefix="/folder",
-    tags=["Ingest"]
+    prefix="/ingest",
+    tags=["Ingest"],
 )
 
 
-@router.post("/sync/check", response_model=SyncCheckResponse)
-async def check_sync_status(
-    request: SyncCheckRequest,
-    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR))
+@router.post("/upload", response_model=UploadResponse)
+async def upload_file(
+    request: Request,
+    file: UploadFile = File(...),
+    team_id: int = Form(...),
+    folder_path: str = Form(""),
+    mtime: float = Form(..., description="Original file modification time (unix timestamp)"),
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
+    """Upload a file and ingest it.
+
+    When the task queue is on (app.state.arq present), embedding is enqueued to
+    an ARQ worker and the response returns immediately (status "queued").
+    Otherwise embedding runs in-process and the response waits for it, so the
+    caller gets the real outcome ("active" / "error") instead of fire-and-forget.
     """
-    Check which files need to be uploaded by comparing with existing files in the database.
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
 
-    Compares fileName, createdAt, and relativePath to determine new or modified files.
-
-    Args:
-        request: Folder path and file information list
-        user: Authenticated user
-
-    Returns:
-        List of files that need to be uploaded
-    """
     try:
-        # Create group name with user identifier: {username}/{folderPath}
-        group_name = f"{user.email.split('@')[0]}/{request.folderPath}"
+        await require_team_member(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
-        # Convert FileInfo objects to dict format for service function
-        files_data = [
-            {
-                "fileName": file_info.fileName,
-                "createdAt": file_info.createdAt,
-                "relativePath": file_info.relativePath,
-                "size": file_info.size
-            }
-            for file_info in request.files
-        ]
+    doc, is_reupload = await upload_and_ingest(
+        file_obj=file.file,
+        filename=file.filename,
+        file_size=file.size or 0,
+        team_id=team_id,
+        folder_path=folder_path,
+        mtime=mtime,
+        user_id=user.id,
+    )
 
-        # Check which files need to be uploaded (using user-scoped group name)
-        files_to_upload = await check_files_to_upload(
-            folder_path=group_name,  # Use {username}/{folderPath}
-            files=files_data
-        )
-
-        return SyncCheckResponse(
-            filesToUpload=files_to_upload,
-            totalFiles=len(request.files),
-            message=f"{len(files_to_upload)}개의 새로운 파일이 있습니다." if files_to_upload else "모든 파일이 최신 상태입니다."
-        )
-
-    except Exception as e:
-        print(f"❌ Sync check error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/sync/upload")
-async def upload_and_ingest(
-    folderPath: str = Form(..., description="프로젝트 폴더명"),
-    files: List[UploadFile] = File(..., description="업로드할 파일 배열 (현재 배치)"),
-    fileMetadata: str = Form(None, description="파일 메타데이터 (JSON 배열: [{fileName, createdAt, relativePath, size}])"),
-    allFilesList: str = Form(None, description="전체 파일 목록 (JSON 배열: [relativePath, ...]) - 배치 업로드 시 삭제 판단용"),
-    userGroupIds: str = Form(None, description="사용자 그룹 ID 목록 (JSON 배열 문자열)"),
-    description: str = Form(None, description="DocumentGroup 설명"),
-    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR))
-):
-    """
-    Upload files and process them with IngestPipeline.
-
-    Batch Upload Support:
-    - Client can send files in batches (e.g., 100 files per batch)
-    - allFilesList should contain the complete file list across all batches
-    - This prevents IngestPipeline from deleting files from previous batches
-    - Fingerprint-based deduplication automatically skips already processed files
-
-    Processing:
-    - Files are uploaded and immediately processed by IngestPipeline
-    - SSE stream provides real-time progress
-
-    Returns SSE stream with the following events:
-    - upload_started: Upload started
-    - upload_progress: File upload progress
-    - ingest_started: Ingestion started
-    - ingest_progress: Ingestion progress messages (info, warning, error)
-    - ingest_completed: Ingestion completed
-    - error: Unrecoverable error
-
-    Args:
-        folderPath: Project folder name (used as document group name)
-        files: Files to upload (current batch)
-        fileMetadata: JSON string of file metadata array (current batch)
-        allFilesList: JSON string of all file paths (across all batches) for deletion detection
-        userGroupIds: JSON string of user group IDs
-        user: Authenticated user
-
-    Returns:
-        SSE stream with real-time progress
-    """
-    async def event_generator():
-        """Generate SSE events for upload and ingestion"""
-        upload_dir = None
+    arq = getattr(request.app.state, "arq", None)
+    error: str | None = None
+    if arq is not None:
+        await arq.enqueue_job(INGEST_TASK_NAME, doc.id, team_id)
+        status = "queued"
+    else:
+        # In-process + synchronous: the response reflects the embedding result,
+        # and sequential uploads embed one-at-a-time (no pile-up). The document
+        # is already marked ERROR + audited inside run_ingest_for_document.
         try:
-            # Parse userGroupIds from JSON string
-            user_group_id_list = []
-            if userGroupIds:
-                try:
-                    user_group_id_list = json.loads(userGroupIds)
-                except json.JSONDecodeError:
-                    error_event = {
-                        "type": "error",
-                        "data": {"message": "Invalid userGroupIds format"}
-                    }
-                    yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
-                    return
-            # Parse fileMetadata from JSON string
-            file_metadata_map = {}
-            if fileMetadata:
-                try:
-                    metadata_list = json.loads(fileMetadata)
-                    # Create map: relativePath -> createdAt
-                    file_metadata_map = {
-                        item["relativePath"]: item["createdAt"]
-                        for item in metadata_list
-                    }
-                except (json.JSONDecodeError, KeyError) as e:
-                    error_event = {
-                        "type": "error",
-                        "data": {"message": f"Invalid fileMetadata format: {str(e)}"}
-                    }
-                    yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
-                    return
-
-            # Parse allFilesList from JSON string (for batch upload deletion detection)
-            all_files_list = []
-            if allFilesList:
-                try:
-                    all_files_list = json.loads(allFilesList)
-                except json.JSONDecodeError as e:
-                    error_event = {
-                        "type": "error",
-                        "data": {"message": f"Invalid allFilesList format: {str(e)}"}
-                    }
-                    yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
-                    return
-
-            # Create group name with user identifier: {username}/{folderPath}
-            group_name = f"{user.email.split('@')[0]}/{folderPath}"
-
-            # Create upload directory
-            upload_base_dir = Path(tempfile.gettempdir()) / "maru_lang_uploads"
-            upload_dir = upload_base_dir / group_name
-            upload_dir.mkdir(parents=True, exist_ok=True)
-
-            # Send upload started event
-            upload_start_event = {
-                "type": "upload_started",
-                "data": {
-                    "folderPath": folderPath,
-                    "groupName": group_name,
-                    "totalFiles": len(files),
-                    "message": f"{len(files)}개 파일 업로드 시작..."
-                }
-            }
-            yield f"data: {json.dumps(upload_start_event, ensure_ascii=False)}\n\n"
-
-            # Upload files
-            uploaded_count = 0
-            for idx, uploaded_file in enumerate(files):
-                try:
-                    filename = uploaded_file.filename
-                    if not filename:
-                        continue
-
-                    # Save file
-                    file_path = upload_dir / filename
-                    file_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    content = await uploaded_file.read()
-                    with open(file_path, "wb") as f:
-                        f.write(content)
-
-                    # Set original mtime if provided
-                    if filename in file_metadata_map:
-                        from datetime import datetime
-                        created_at_str = file_metadata_map[filename]
-                        # Parse ISO format datetime
-                        created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                        timestamp = created_at.timestamp()
-                        # Set both atime and mtime to original created time
-                        os.utime(file_path, (timestamp, timestamp))
-
-                    uploaded_count += 1
-
-                    # Send progress event
-                    progress_event = {
-                        "type": "upload_progress",
-                        "data": {
-                            "filename": filename,
-                            "current": idx + 1,
-                            "total": len(files),
-                            "size": len(content)
-                        }
-                    }
-                    yield f"data: {json.dumps(progress_event, ensure_ascii=False)}\n\n"
-
-                except Exception as e:
-                    error_event = {
-                        "type": "upload_error",
-                        "data": {
-                            "filename": uploaded_file.filename,
-                            "error": str(e)
-                        }
-                    }
-                    yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
-
-            # Upload completed
-            upload_complete_event = {
-                "type": "upload_completed",
-                "data": {
-                    "uploadedCount": uploaded_count,
-                    "totalFiles": len(files),
-                    "message": f"{uploaded_count}개 파일 업로드 완료"
-                }
-            }
-            yield f"data: {json.dumps(upload_complete_event, ensure_ascii=False)}\n\n"
-
-            # Start ingestion
-            ingest_start_event = {
-                "type": "ingest_started",
-                "data": {
-                    "folderPath": folderPath,
-                    "groupName": group_name,
-                    "uploadDir": str(upload_dir),
-                    "message": "문서 처리를 시작합니다..."
-                }
-            }
-            yield f"data: {json.dumps(ingest_start_event, ensure_ascii=False)}\n\n"
-
-            # Create and run IngestPipeline with user-scoped group name
-            pipeline = create_ingest_pipeline(
-                upload_path=upload_dir,
-                group_name=group_name,  # Use {username}/{folderPath}
-                manager_id=user.id,
-                re_embed=False,
-                all_files_list=all_files_list if all_files_list else None,
-                description=description,  # DocumentGroup 설명
-            )
-
-            # Stream IngestPipeline progress
-            async for item in pipeline.run():
-                if isinstance(item, PipelineMessage):
-                    # Progress message
-                    message_event = {
-                        "type": "ingest_progress",
-                        "data": {
-                            "level": item.message_type.value,
-                            "message": item.message,
-                            "data": item.data
-                        }
-                    }
-                    yield f"data: {json.dumps(message_event, ensure_ascii=False)}\n\n"
-
-                elif isinstance(item, PipelineComplete):
-                    # Ingestion completed
-                    result = item.data
-                    # Set permissions if userGroupIds provided
-                    if result and user_group_id_list:
-                        try:
-                            # Get the DocumentGroup that was created/updated
-                            document_group = result.group
-                            # Set permissions using service function (replace mode)
-                            perm_result = await set_user_group_permissions(
-                                document_group=document_group,
-                                user_group_ids=user_group_id_list,
-                                replace=True  # 기존 권한 삭제 후 새로 설정
-                            )
-                            # Send permission setup event
-                            message_parts = []
-                            if perm_result["deleted"] > 0:
-                                message_parts.append(f"{perm_result['deleted']}개 기존 권한 삭제")
-                            if perm_result["created"] > 0:
-                                message_parts.append(f"{perm_result['created']}개 권한 생성")
-                            permission_event = {
-                                "type": "ingest_progress",
-                                "data": {
-                                    "level": "info",
-                                    "message": f"✓ {len(user_group_id_list)}개 사용자 그룹에 권한 설정 완료 ({', '.join(message_parts)})",
-                                    "data": None
-                                }
-                            }
-                            yield f"data: {json.dumps(permission_event, ensure_ascii=False)}\n\n"
-                        except Exception as e:
-                            error_event = {
-                                "type": "ingest_progress",
-                                "data": {
-                                    "level": "warning",
-                                    "message": f"⚠️ 권한 설정 실패: {str(e)}",
-                                    "data": None
-                                }
-                            }
-                            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
-
-                    complete_event = {
-                        "type": "ingest_completed",
-                        "data": {
-                            "success": result is not None,
-                            "totalFiles": result.total_files if result else 0,
-                            "processedFiles": result.processed_files if result else 0,
-                            "skippedFiles": result.skipped_files if result else 0,
-                            "failedFiles": result.failed_files if result else 0,
-                            "failedDetails": result.failed_details if result else None,
-                            "message": "문서 처리가 완료되었습니다."
-                        }
-                    }
-                    yield f"data: {json.dumps(complete_event, ensure_ascii=False)}\n\n"
-
+            await run_ingest_for_document(doc, team_id)
+            status = "active"
         except Exception as e:
-            print(f"❌ Upload/Ingest error: {str(e)}")
-            error_event = {
-                "type": "error",
-                "data": {
-                    "message": str(e)
-                }
-            }
-            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+            status = "error"
+            error = str(e)
 
-            # Send ingest_completed event even on failure so client can finish processing
-            failure_complete_event = {
-                "type": "ingest_completed",
-                "data": {
-                    "success": False,
-                    "totalFiles": 0,
-                    "processedFiles": 0,
-                    "skippedFiles": 0,
-                    "failedFiles": 0,
-                    "failedDetails": None,
-                    "message": f"문서 처리 중 오류가 발생했습니다: {str(e)}"
-                }
-            }
-            yield f"data: {json.dumps(failure_complete_event, ensure_ascii=False)}\n\n"
-
-        finally:
-            # Clean up uploaded files
-            if upload_dir and upload_dir.exists():
-                try:
-                    shutil.rmtree(upload_dir)
-                    print(f"🗑️  Cleaned up upload directory: {upload_dir}")
-                except Exception as e:
-                    print(f"⚠️  Failed to clean up {upload_dir}: {str(e)}")
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+    return UploadResponse(
+        document_id=doc.id,
+        name=doc.name,
+        status=status,
+        is_reupload=is_reupload,
+        error=error,
     )
 
 
-@router.get("/managed-groups")
-async def get_my_managed_document_groups(
-    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR))
+@router.get("/status", response_model=StatusResponse)
+async def get_status(
+    team_id: int,
+    group_id: int | None = Query(None, description="Filter to one folder (DocumentGroup id)"),
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
-    """
-    Get all document groups where the current user is the manager.
+    """Get document status for a team, optionally scoped to one folder."""
+    try:
+        await require_team_member(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
-    Returns document groups with statistics including:
-    - Group ID and name
-    - Base path
-    - Description
-    - Document count
-    - Created timestamp
+    docs = await get_team_documents(team_id, group_id)
 
-    Args:
-        user: Authenticated user
+    # Fetch audit logs for all documents in one query
+    doc_ids = [doc.id for doc in docs]
+    audit_map = await get_audit_logs_for_documents(doc_ids)
 
-    Returns:
-        List of managed document groups with statistics
+    items = []
+    for doc in docs:
+        logs = audit_map.get(doc.id, [])
+        audit_entries = [
+            AuditLogEntry(
+                action=AuditAction(log.action).name.lower(),
+                user_name=log.user.name if log.user else None,
+                detail=log.detail,
+                created_at=log.created_at,
+            )
+            for log in logs
+        ]
+        folder_path = str(Path(doc.file_path).parent) if doc.file_path else None
+        items.append(
+            DocumentStatusItem(
+                id=doc.id,
+                name=doc.name,
+                status=DocumentStatus(doc.status).name.lower(),
+                group_id=doc.group_id,
+                folder_path=folder_path,
+                file_size=doc.file_size,
+                created_at=doc.created_at,
+                updated_at=doc.updated_at,
+                error=doc.error_message,
+                audit_logs=audit_entries,
+            )
+        )
+
+    return StatusResponse(
+        team_id=team_id,
+        documents=items,
+        total=len(items),
+    )
+
+
+@router.post("/check", response_model=CheckResponse)
+async def check_files(
+    request: CheckRequest,
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
+):
+    """Check which files need to be uploaded."""
+    try:
+        await require_team_member(request.team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    files = [
+        {"absolutePath": f.absolutePath, "size": f.size, "mtime": f.mtime}
+        for f in request.files
+    ]
+    indices = await check_files_to_upload(request.team_id, files)
+
+    return CheckResponse(
+        indices_to_upload=indices,
+        total=len(request.files),
+    )
+
+
+@router.post("/{document_id}/retry", response_model=RetryResponse)
+async def retry_ingest(
+    request: Request,
+    document_id: str,
+    team_id: int = Query(...),
+    force: bool = Query(False, description="Also allow re-ingesting an ACTIVE document (re-parse/re-embed)"),
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
+):
+    """Re-ingest one document — same semantics as upload.
+
+    Default retries ERROR documents; force=true also re-ingests ACTIVE ones
+    (e.g. after a parser change). With the task queue on the job is enqueued
+    ("queued"); otherwise it runs synchronously and the response carries the
+    real outcome ("active"/"error"). Bulk retry = the client loops documents,
+    exactly like bulk upload.
     """
     try:
-        managed_groups = await get_managed_document_groups_with_stats(user.id)
+        await require_team_member(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
-        return {
-            "success": True,
-            "message": f"총 {len(managed_groups)}개의 문서 그룹을 관리하고 있습니다.",
-            "data": {
-                "groups": managed_groups,
-                "total": len(managed_groups)
-            }
-        }
+    try:
+        doc = await retry_document(document_id, team_id, force)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
-    except Exception as e:
-        print(f"❌ Error fetching managed document groups: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    arq = getattr(request.app.state, "arq", None)
+    error: str | None = None
+    if arq is not None:
+        await arq.enqueue_job(INGEST_TASK_NAME, doc.id, team_id)
+        status = "queued"
+    else:
+        try:
+            await run_ingest_for_document(doc, team_id)
+            status = "active"
+        except Exception as e:
+            status = "error"
+            error = str(e)
+
+    return RetryResponse(document_id=doc.id, name=doc.name, status=status, error=error)
+
+
+@router.post("/groups/{group_id}/retry", response_model=GroupRetryResponse)
+async def retry_group_ingest(
+    request: Request,
+    group_id: int,
+    team_id: int = Query(...),
+    force: bool = Query(False, description="Also re-ingest ACTIVE documents in the folder"),
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
+):
+    """Re-ingest every retryable document in one folder (bulk convenience).
+
+    Queue-only: jobs are enqueued to the worker and the response lists what was
+    requeued (poll /ingest/status for progress). Without the task queue this
+    returns 409 — retry documents individually via POST /ingest/{id}/retry,
+    whose synchronous response carries real per-document outcomes.
+    Non-retryable docs (in-flight/deleting/inactive; active without force) are
+    skipped, not errors.
+    """
+    try:
+        await require_team_member(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    arq = getattr(request.app.state, "arq", None)
+    if arq is None:
+        # Check BEFORE resetting statuses — never strand docs in UPLOADING.
+        raise HTTPException(
+            status_code=409,
+            detail="Bulk retry requires the task queue (task_queue_enabled). "
+                   "Retry documents individually via POST /ingest/{document_id}/retry.",
+        )
+
+    docs, skipped = await retry_documents_in_group(team_id, group_id, force)
+    for doc in docs:
+        await arq.enqueue_job(INGEST_TASK_NAME, doc.id, team_id)
+
+    return GroupRetryResponse(
+        group_id=group_id,
+        requeued=[RetryItem(document_id=d.id, name=d.name) for d in docs],
+        count=len(docs),
+        skipped=skipped,
+    )
+
+
+@router.delete("/groups/{group_id}", response_model=GroupDeleteResponse)
+async def delete_group(
+    group_id: int,
+    team_id: int = Query(...),
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
+):
+    """Delete a folder's entire subtree (documents + descendant folders).
+
+    Requires team admin role. Terminal documents are removed immediately
+    (embeddings + storage included); in-flight ones are marked deleting and
+    finalized by the worker shortly after — the folder row survives until then.
+    """
+    try:
+        await _check_admin(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    try:
+        result = await delete_group_documents(group_id, team_id, user.id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return GroupDeleteResponse(group_id=group_id, **result)
+
+
+@router.delete("/{document_id}", response_model=DeleteResponse)
+async def delete_document(
+    document_id: str,
+    team_id: int = Query(...),
+    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
+):
+    """Delete a document and its embeddings. Requires team admin role."""
+    try:
+        await _check_admin(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    try:
+        await delete_document_by_id(
+            document_id=document_id,
+            team_id=team_id,
+            user_id=user.id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return DeleteResponse(document_id=document_id, deleted=True)

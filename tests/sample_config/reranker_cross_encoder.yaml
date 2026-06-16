@@ -1,0 +1,31 @@
+# Cross-encoder reranker 활성화 설정
+# 테스트: reranker_type=cross_encoder, 별도 모델 + 디바이스 지정
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: info
+
+database_url: "sqlite://:memory:"
+
+llms:
+  - name: ollama
+    provider: ollama
+    model_name: gpt-oss:20b
+    base_url: http://localhost:11434
+
+system_prompt: |
+  You are MARU. Answer in Korean based on retrieved documents.
+
+embedding_model: BAAI/bge-m3
+
+retriever_top_k: 10
+retriever_search_method: vector
+
+evaluate_method: rule
+
+reranker_enabled: true
+reranker_type: cross_encoder
+reranker_model: BAAI/bge-reranker-v2-m3
+reranker_top_k: 5
+reranker_device: cpu

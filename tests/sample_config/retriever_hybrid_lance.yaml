@@ -1,0 +1,28 @@
+# Hybrid 검색 + LanceDB 설정
+# 테스트: hybrid search method, lance vector DB, reranker 비활성
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: info
+
+database_url: "sqlite://:memory:"
+
+vector_db_url: lance://data/lance/maru
+
+llms:
+  - name: ollama
+    provider: ollama
+    model_name: gpt-oss:20b
+    base_url: http://localhost:11434
+
+system_prompt: |
+  You are MARU, an AI assistant for document Q&A. Respond in Korean.
+
+embedding_model: BAAI/bge-m3
+
+retriever_top_k: 10
+retriever_search_method: hybrid
+
+evaluate_method: rule
+reranker_enabled: false

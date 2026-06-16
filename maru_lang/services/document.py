@@ -1,29 +1,11 @@
-from typing import List
-from maru_lang.core.relation_db.models.documents import (
-    Document,
-    DocumentGroup,
-    DocumentGroupMembership,
-    DocumentGroupInclusion,
-    GroupPermission,
-    PermissionAction,
-)
-from maru_lang.core.relation_db.models.auth import UserGroup
-from maru_lang.utils.document import new_ulid
+from pathlib import Path
+from typing import List, Optional, Tuple
+from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
+from maru_lang.enums.documents import DocumentStatus
+from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
 
 
 # ========== DocumentGroup helpers ==========
-
-async def get_document_group_name(document: Document) -> List[str]:
-    """Return all group names associated with the given document."""
-    group_membership = await DocumentGroupMembership.filter(
-        document=document
-    ).select_related("group")
-
-    if not group_membership:
-        return []
-
-    return [membership.group.name for membership in group_membership]
-
 
 async def get_document_group_descriptions(group_names: List[str]) -> dict[str, str]:
     """
@@ -38,11 +20,8 @@ async def get_document_group_descriptions(group_names: List[str]) -> dict[str, s
     if not group_names:
         return {}
 
-    groups = await DocumentGroup.filter(
-        name__in=group_names
-    ).all()
+    groups = await DocumentGroup.filter(name__in=group_names).all()
 
-    # Filter out groups without descriptions
     return {
         group.name: group.description
         for group in groups
@@ -50,289 +29,312 @@ async def get_document_group_descriptions(group_names: List[str]) -> dict[str, s
     }
 
 
-async def get_managed_document_groups(user_id: int) -> List[DocumentGroup]:
-    """
-    Get all document groups where the user is the manager.
-
-    Args:
-        user_id: User ID to check
-
-    Returns:
-        List of DocumentGroup instances managed by the user
-    """
-    return await DocumentGroup.filter(manager_id=user_id).all()
-
-
-async def get_managed_document_groups_with_stats(user_id: int) -> List[dict]:
-    """
-    Get top-level document groups where the user is the manager with statistics.
-    Only returns groups that are not children of other groups.
-    Document count includes all documents in child groups (recursive sum).
-
-    Args:
-        user_id: User ID to check
-
-    Returns:
-        List of dictionaries containing top-level DocumentGroup info with aggregated stats:
-        [
-            {
-                "id": int,
-                "name": str,
-                "base_path": str,
-                "description": str,
-                "document_count": int,  # Sum of this group and all child groups
-                "created_at": str
-            }
-        ]
-    """
-    # Get all groups managed by user
-    all_managed_groups = await DocumentGroup.filter(manager_id=user_id).all()
-
-    if not all_managed_groups:
-        return []
-
-    managed_group_ids = {group.id for group in all_managed_groups}
-
-    # Find which groups are children of other groups
-    child_group_ids = set()
-    parent_child_map = {}  # parent_id -> [child_ids]
-
-    for group_id in managed_group_ids:
-        # Check if this group is a child of another managed group
-        parent_inclusion = await DocumentGroupInclusion.filter(
-            child_id=group_id,
-            parent_id__in=managed_group_ids
-        ).first()
-
-        if parent_inclusion:
-            child_group_ids.add(group_id)
-
-        # Build parent-child mapping for recursive counting
-        child_inclusions = await DocumentGroupInclusion.filter(
-            parent_id=group_id
-        ).all()
-
-        if child_inclusions:
-            parent_child_map[group_id] = [inc.child_id for inc in child_inclusions]
-
-    # Top-level groups are those that are NOT children of other managed groups
-    top_level_groups = [g for g in all_managed_groups if g.id not in child_group_ids]
-
-    async def get_all_descendant_group_ids(group_id: int, visited: set = None) -> set:
-        """Recursively get all descendant group IDs"""
-        if visited is None:
-            visited = set()
-
-        if group_id in visited:
-            return visited
-
-        visited.add(group_id)
-
-        # Get direct children
-        child_inclusions = await DocumentGroupInclusion.filter(parent_id=group_id).all()
-
-        for inclusion in child_inclusions:
-            if inclusion.child_id not in visited:
-                await get_all_descendant_group_ids(inclusion.child_id, visited)
-
-        return visited
-
-    result = []
-    for group in top_level_groups:
-        # Get all descendant groups (including the group itself)
-        all_group_ids = await get_all_descendant_group_ids(group.id)
-
-        # Sum document counts from all groups (parent + children)
-        total_doc_count = await DocumentGroupMembership.filter(
-            group_id__in=all_group_ids
-        ).count()
-
-        result.append({
-            "id": group.id,
-            "name": group.name,
-            "base_path": group.base_path,
-            "description": group.description,
-            "document_count": total_doc_count,
-            "created_at": group.signature_updated_at.isoformat() if group.signature_updated_at else None
-        })
-
-    return result
-
-
-async def upsert_document_group(
+async def get_or_create_document_group(
+    team_id: int,
     name: str,
-    base_path: str,
-    embedding_model: str,
-    manager_id: int,
-    loader: str = None,
-    chunker: str = None,
-    config_snapshot: dict = None,
-    force_new_version: bool = False,
-    description: str = None
-) -> tuple[DocumentGroup, bool]:
+    parent: Optional[DocumentGroup] = None,
+    description: Optional[str] = None,
+    rag_components: Optional[dict] = None,
+) -> Tuple[DocumentGroup, bool]:
     """
-    DocumentGroup을 upsert (base_path 기준으로 찾아서 업데이트 또는 생성)
+    DocumentGroup을 조회하거나 생성
 
     Args:
-        name: 그룹 이름 (디렉토리명)
-        base_path: 파일시스템 경로 (unique)
-        embedding_model: 임베딩 모델명
-        manager_id: 관리자 User ID
-        loader: 사용된 loader 이름
-        chunker: 사용된 chunker 이름
-        config_snapshot: 사용된 설정의 스냅샷 (변경 감지용)
-        force_new_version: True일 경우 새 version_id 생성 (re-embed, config 변경 등)
-        description: DocumentGroup 설명 (루트 그룹에만 사용)
+        team_id: Team ID
+        name: 그룹 이름
+        parent: 부모 그룹 (없으면 루트)
+        description: 설명
+        rag_components: RAG 설정
 
     Returns:
         Tuple[DocumentGroup, bool]: (그룹 인스턴스, 신규 생성 여부)
     """
-    # base_path가 unique이므로 이걸로 upsert
     defaults = {
-        "name": name.lower(),
-        "embedding_model": embedding_model,
-        "manager_id": manager_id,
+        "description": description,
+        "rag_components": rag_components or {},
     }
 
-    if loader is not None:
-        defaults["loader"] = loader
-    if chunker is not None:
-        defaults["chunker"] = chunker
-    if config_snapshot is not None:
-        defaults["config_snapshot"] = config_snapshot
-    if description is not None:
-        defaults["description"] = description
-
-    doc_group, created = await DocumentGroup.update_or_create(
-        base_path=base_path,
+    group, created = await DocumentGroup.get_or_create(
+        team_id=team_id,
+        name=name,
+        parent=parent,
         defaults=defaults
     )
 
-    # 신규 생성이거나 force_new_version이면 새 version_id 생성
-    if created or force_new_version:
-        if not doc_group.version_id or force_new_version:
-            doc_group.version_id = new_ulid()
-            await doc_group.save()
-
-    return doc_group, created
-
-async def set_document_group_inclusion(
-    parent_group: DocumentGroup, 
-    child_group: DocumentGroup
-):
-    await DocumentGroupInclusion.get_or_create(parent=parent_group, child=child_group)
+    return group, created
 
 
-async def get_all_descendant_group_ids(
-    group_ids: list[int], *, inclusion_model
-) -> set[int]:
+async def get_or_create_group_hierarchy(abs_path: str, team_id: int) -> DocumentGroup:
+    """Create a DocumentGroup hierarchy mirroring an absolute filesystem path.
+
+    Each path segment becomes a nested group (e.g. /usr/local/data -> usr ->
+    local -> data) and the deepest group is returned.
     """
-    Walk the hierarchy and return every descendant group ID, including the originals.
+    current_group = None
+    parent_group = None
+
+    for part in Path(abs_path).parts:
+        if part == "/":
+            continue
+        current_group, _ = await get_or_create_document_group(
+            team_id=team_id, name=part, parent=parent_group,
+        )
+        parent_group = current_group
+
+    assert current_group is not None, f"Invalid absolute path: {abs_path}"
+    return current_group
+
+
+async def get_or_create_upload_group(team_id: int, folder_path: str = "") -> DocumentGroup:
+    """Get or create a single group named after the uploaded folder.
+
+    Uses the last path component as the group name; falls back to 'uploads' when
+    folder_path is empty. (API uploads land in one group, unlike the CLI sync
+    path which mirrors the full directory hierarchy via
+    get_or_create_group_hierarchy.)
     """
-    seen = set(group_ids)
-    queue = list(group_ids)
-
-    while queue:
-        current = queue.pop()
-        children = await inclusion_model.filter(parent_id=current).values_list("child_id", flat=True)
-        for child in children:
-            if child not in seen:
-                seen.add(child)
-                queue.append(child)
-
-    return seen
-
-
-async def get_all_descendant_group_names(
-    group_names: List[str]
-) -> List[str]:
-    """
-    Resolve all descendant group names starting from the given parents (inclusive).
-
-    Args:
-        group_names: Parent group names.
-
-    Returns:
-        List of group names including every descendant.
-    """
-
-    if not group_names:
-        return []
-
-    # 1. Look up DocumentGroup instances by name (convert to lowercase for matching)
-    normalized_names = [name.lower() for name in group_names]
-
-    groups = await DocumentGroup.filter(name__in=normalized_names).all()
-    if not groups:
-        return []
-
-    # 2. Convert to IDs
-    group_ids = [group.id for group in groups]
-
-    # 3. Fetch all descendant IDs
-    all_group_ids = await get_all_descendant_group_ids(
-        group_ids,
-        inclusion_model=DocumentGroupInclusion
+    group_name = Path(folder_path).name if folder_path else "uploads"
+    group, _ = await get_or_create_document_group(
+        team_id=team_id, name=group_name, parent=None,
     )
-
-    # 4. Convert IDs back to names
-    all_groups = await DocumentGroup.filter(id__in=all_group_ids).all()
-    result_names = [group.name for group in all_groups]
-
-    return result_names
+    return group
 
 
-# ========== Permission helpers ==========
-
-async def set_user_group_permissions(
-    document_group: DocumentGroup,
-    user_group_ids: List[int],
-    actions: List[PermissionAction] = None,
-    replace: bool = True
-) -> dict:
+async def get_all_descendant_groups(group: DocumentGroup) -> List[DocumentGroup]:
     """
-    Set permissions for user groups on a document group.
+    주어진 그룹의 모든 하위 그룹을 재귀적으로 조회
 
     Args:
-        document_group: DocumentGroup to set permissions on
-        user_group_ids: List of UserGroup IDs to grant permissions
-        actions: List of permission actions (default: [READ, WRITE])
-        replace: If True, remove existing permissions before adding new ones (default: True)
+        group: 시작 그룹
 
     Returns:
-        Dict with 'created' and 'deleted' counts
+        하위 그룹 리스트 (자신 포함)
     """
-    if actions is None:
-        actions = [PermissionAction.READ, PermissionAction.WRITE]
-    permissions_created = 0
-    permissions_deleted = 0
-    # Replace mode: 기존 권한 삭제
-    try:
-        if replace:
-            deleted_count = await GroupPermission.filter(
-                document_group=document_group
-            ).delete()
-            permissions_deleted = deleted_count
+    result = [group]
+    children = await DocumentGroup.filter(parent=group).all()
 
-        # 새로운 권한 추가
-        for user_group_id in user_group_ids:
-            user_group = await UserGroup.get_or_none(id=user_group_id)
-            if not user_group:
-                continue
-            for action in actions:
-                _, created = await GroupPermission.get_or_create(
-                    user_group=user_group,
-                    document_group=document_group,
-                    action=action
-                )
-                if created:
-                    permissions_created += 1
-    except Exception as e:
-        print(f"Error setting user group permissions: {e}")
-        raise e
-    return {
-        "created": permissions_created,
-        "deleted": permissions_deleted
-    }
+    for child in children:
+        descendants = await get_all_descendant_groups(child)
+        result.extend(descendants)
+
+    return result
 
 
+async def get_all_descendant_group_names(group_names: List[str]) -> List[str]:
+    """
+    주어진 그룹들의 모든 하위 그룹 이름을 재귀적으로 조회
+
+    Args:
+        group_names: 시작 그룹 이름들
+
+    Returns:
+        모든 하위 그룹 이름 리스트 (자신 포함)
+    """
+    result = set()
+
+    for name in group_names:
+        group = await DocumentGroup.get_or_none(name=name)
+        if group:
+            descendants = await get_all_descendant_groups(group)
+            result.update(g.name for g in descendants)
+
+    return list(result)
+
+
+async def get_groups_with_descendants(group_names: List[str]) -> List[DocumentGroup]:
+    """
+    주어진 그룹 이름들의 DocumentGroup 객체와 모든 하위 그룹을 조회
+
+    Args:
+        group_names: 그룹 이름 리스트
+
+    Returns:
+        DocumentGroup 객체 리스트 (하위 그룹 포함)
+    """
+    result = []
+
+    for name in group_names:
+        group = await DocumentGroup.get_or_none(name=name)
+        if group:
+            descendants = await get_all_descendant_groups(group)
+            result.extend(descendants)
+
+    # 중복 제거
+    seen = set()
+    unique_result = []
+    for g in result:
+        if g.id not in seen:
+            seen.add(g.id)
+            unique_result.append(g)
+
+    return unique_result
+
+
+async def get_groups_by_team_id(team_id: int) -> List[DocumentGroup]:
+    """
+    Team ID로 접근 가능한 모든 DocumentGroup 조회
+
+    Args:
+        team_id: Team ID
+
+    Returns:
+        해당 Team의 모든 DocumentGroup 리스트
+    """
+    return await DocumentGroup.filter(team_id=team_id).all()
+
+
+async def get_group_names_by_team_id(team_id: int, with_documents_only: bool = True) -> List[str]:
+    """
+    Team ID로 접근 가능한 DocumentGroup 이름 조회
+
+    Args:
+        team_id: Team ID
+        with_documents_only: True면 문서가 있는 그룹만 반환
+
+    Returns:
+        DocumentGroup 이름 리스트
+    """
+    if with_documents_only:
+        # Only return groups that have at least one document
+        groups = await DocumentGroup.filter(
+            team_id=team_id,
+            documents__isnull=False
+        ).distinct().values_list("name", flat=True)
+    else:
+        groups = await DocumentGroup.filter(team_id=team_id).values_list("name", flat=True)
+    return [str(name) for name in groups]
+
+
+# ========== Document helpers ==========
+
+async def upsert_document_from_file(
+    group: DocumentGroup,
+    name: str,
+    path: str,
+    size: int,
+    mtime_ns: int,
+    metadata: Optional[dict] = None,
+    rag_components: Optional[dict] = None,
+) -> Tuple[Document, bool]:
+    """
+    파일 기반 문서 업서트
+
+    Args:
+        group: 소속 DocumentGroup
+        name: 문서 이름
+        path: 파일 전체 경로
+        size: 파일 크기 (bytes)
+        mtime_ns: 수정 시간 (nanoseconds)
+        metadata: 추가 메타데이터
+        rag_components: RAG 설정 (없으면 자동 감지)
+
+    Returns:
+        Tuple[Document, bool]: (문서, 재처리필요여부)
+    """
+    # Identity and fingerprint are scoped by team: the same path synced by
+    # different teams must be separate documents (each team sees only its own),
+    # not collide on the global file_path / unique source_fingerprint. This
+    # mirrors the API upload path (services.ingest._upload_fingerprint).
+    fp = make_source_fingerprint_for_file(f"{group.team_id}:{path}", size, mtime_ns)
+
+    doc = await Document.get_or_none(file_path=path, group__team_id=group.team_id)
+
+    if doc:
+        if doc.source_fingerprint == fp:
+            doc.name = name or doc.name
+            doc.group = group
+            doc.metadata = {**(doc.metadata or {}), **(metadata or {})}
+            await doc.save()
+            return doc, False
+
+        doc.name = name
+        doc.group = group
+        doc.file_size = size
+        doc.source_fingerprint = fp
+        doc.status = DocumentStatus.PROCESSING
+        doc.metadata = {**(doc.metadata or {}), **(metadata or {})}
+        doc.rag_components = rag_components or {}
+        await doc.save()
+        return doc, True
+
+    new_doc = await Document.create(
+        id=new_ulid(),
+        name=name,
+        group=group,
+        file_path=path,
+        file_size=size,
+        source_fingerprint=fp,
+        status=DocumentStatus.PROCESSING,
+        metadata=metadata or {},
+        rag_components=rag_components or {},
+    )
+    return new_doc, True
+
+
+async def update_document_status(doc: Document, status: DocumentStatus) -> None:
+    """Document 상태 업데이트"""
+    doc.status = status
+    await doc.save()
+
+
+async def set_document_error(doc: Document, message: str) -> None:
+    """Mark a document as ERROR with a failure message."""
+    doc.status = DocumentStatus.ERROR
+    doc.error_message = message
+    await doc.save()
+
+
+# --- Atomic status transitions (race-safe ingest/delete coordination) ---
+#
+# These use a single conditional UPDATE so the check and the transition are
+# atomic — no TOCTOU window between "is it still mine?" and "commit". The row
+# count tells us whether we won the race.
+
+async def begin_processing(document_id: str) -> bool:
+    """UPLOADING/PROCESSING/ERROR -> PROCESSING; False otherwise (gone/DELETING/
+    ACTIVE/INACTIVE).
+
+    ERROR is claimable so a queued job retry (ARQ retries failed jobs) actually
+    re-attempts the ingest instead of dead-ending on the ERROR it just wrote.
+    """
+    n = await Document.filter(
+        id=document_id,
+        status__in=[
+            DocumentStatus.UPLOADING,
+            DocumentStatus.PROCESSING,
+            DocumentStatus.ERROR,
+        ],
+    ).update(status=DocumentStatus.PROCESSING)
+    return n > 0
+
+
+async def try_activate(document_id: str) -> bool:
+    """PROCESSING -> ACTIVE. False if a delete cancelled it (now DELETING) or it's gone."""
+    n = await Document.filter(
+        id=document_id, status=DocumentStatus.PROCESSING,
+    ).update(status=DocumentStatus.ACTIVE)
+    return n > 0
+
+
+async def fail_processing(document_id: str, message: str) -> bool:
+    """PROCESSING -> ERROR(message). False if cancelled (DELETING) or gone —
+    never resurrects a doc the user already asked to delete."""
+    n = await Document.filter(
+        id=document_id, status=DocumentStatus.PROCESSING,
+    ).update(status=DocumentStatus.ERROR, error_message=message)
+    return n > 0
+
+
+async def mark_deleting(document_id: str) -> bool:
+    """Mark an in-flight (UPLOADING/PROCESSING) doc as DELETING for deferred cleanup.
+
+    Returns True if marked (the worker/sweep will finalize), False if the doc is
+    in a terminal state (ACTIVE/ERROR/INACTIVE) and the caller should hard-delete
+    now. Filters by id + status only (no team JOIN — UPDATEs can't JOIN on SQLite;
+    the caller already verified team ownership).
+    """
+    n = await Document.filter(
+        id=document_id,
+        status__in=[DocumentStatus.UPLOADING, DocumentStatus.PROCESSING],
+    ).update(status=DocumentStatus.DELETING)
+    return n > 0

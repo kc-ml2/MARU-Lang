@@ -1,0 +1,45 @@
+# 환경변수 치환 집중 테스트
+# 테스트: ${ENV:VAR}, ${ENV:VAR:default} 패턴
+# 주의: 이 config는 _substitute_env_vars()를 거쳐야 정상 파싱됨 (manager 경유 로딩)
+# YAML safe_load 직접 호출 시 문자열 타입으로 남아 from_dict에서 타입 에러 발생 가능
+
+server:
+  host: "${ENV:MARU_HOST:127.0.0.1}"
+  port: 8000
+  log_level: "${ENV:MARU_LOG_LEVEL:info}"
+
+production: false
+
+database_url: "sqlite://:memory:"
+
+auth:
+  secret_key: "${ENV:SECRET_KEY:test-secret-key-default}"
+  salt: "${ENV:SALT:test-salt-default}"
+  access_token_expire_minutes: 15
+
+vector_db_url: "${ENV:VECTOR_DB_URL:chroma://data/chroma/maru}"
+
+llms:
+  - name: openai
+    provider: openai
+    model_name: "${ENV:OPENAI_MODEL:gpt-4o}"
+    api_key: "${ENV:OPENAI_API_KEY:sk-test-fallback}"
+    config:
+      temperature: 0.7
+
+  - name: anthropic
+    provider: anthropic
+    model_name: "${ENV:ANTHROPIC_MODEL:claude-sonnet-4-20250514}"
+    api_key: "${ENV:ANTHROPIC_API_KEY:sk-ant-test-fallback}"
+
+system_prompt: |
+  You are MARU. Respond in Korean.
+
+embedding_model: "${ENV:EMBEDDING_MODEL:BAAI/bge-m3}"
+
+retriever_top_k: 5
+retriever_search_method: "${ENV:SEARCH_METHOD:vector}"
+
+evaluate_method: "${ENV:EVALUATE_METHOD:rule}"
+
+reranker_enabled: false

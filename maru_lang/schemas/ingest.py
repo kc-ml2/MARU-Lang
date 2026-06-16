@@ -1,33 +1,105 @@
-from typing import List, Optional
+"""Ingest API schemas."""
+from typing import Optional
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class FileInfo(BaseModel):
-    """Individual file information for sync check"""
-    fileName: str = Field(..., description="파일 이름")
-    createdAt: datetime = Field(..., description="파일 생성 시간")
-    relativePath: str = Field(..., description="상대 경로 (프로젝트폴더명/경로/파일명)")
-    size: int = Field(..., description="파일 크기 (bytes)")
+    """File information for ingest pipeline."""
+    fileName: str
+    createdAt: datetime
+    absolutePath: str
+    size: int
+    tempFilePath: Optional[str] = None  # storage path after upload
 
 
-class SyncCheckRequest(BaseModel):
-    """Request for checking which files need to be uploaded"""
-    folderPath: str = Field(..., description="프로젝트 폴더명")
-    files: List[FileInfo] = Field(..., description="폴더 내 파일 정보 목록")
-    description: Optional[str] = Field(None, description="DocumentGroup 설명")
+# --- Upload ---
+
+class UploadResponse(BaseModel):
+    document_id: str
+    name: str
+    status: str  # "queued" | "active" | "error"
+    is_reupload: bool = False
+    error: Optional[str] = None  # set when status == "error" (in-process path)
 
 
-class SyncCheckResponse(BaseModel):
-    """Response for sync check"""
-    filesToUpload: List[str] = Field(..., description="업로드가 필요한 파일의 relativePath 목록")
-    totalFiles: int = Field(..., description="전체 파일 개수")
-    message: str = Field(..., description="상태 메시지")
+# --- Status ---
+
+class AuditLogEntry(BaseModel):
+    action: str
+    user_name: Optional[str] = None
+    detail: dict = {}
+    created_at: datetime
 
 
-class SyncUploadResponse(BaseModel):
-    """Response for batch upload"""
-    success: bool = Field(..., description="업로드 성공 여부")
-    message: str = Field(..., description="상태 메시지 (예: '배치 1/4 업로드 완료')")
-    uploadedCount: int = Field(..., description="업로드된 파일 개수")
-    errors: Optional[List[str]] = Field(default=None, description="에러 메시지 목록 (있는 경우)")
+class DocumentStatusItem(BaseModel):
+    id: str
+    name: str
+    status: str
+    group_id: Optional[int] = None  # DocumentGroup(folder) id
+    folder_path: Optional[str] = None
+    file_size: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+    error: Optional[str] = None
+    audit_logs: list[AuditLogEntry] = []
+
+
+class StatusResponse(BaseModel):
+    team_id: int
+    documents: list[DocumentStatusItem]
+    total: int
+
+
+# --- Check ---
+
+class CheckFileInfo(BaseModel):
+    fileName: str
+    absolutePath: str
+    size: int
+    mtime: float  # unix timestamp
+
+
+class CheckRequest(BaseModel):
+    team_id: int
+    files: list[CheckFileInfo]
+
+
+class CheckResponse(BaseModel):
+    indices_to_upload: list[int]
+    total: int
+
+
+# --- Delete ---
+
+class DeleteResponse(BaseModel):
+    document_id: str
+    deleted: bool
+
+
+class GroupDeleteResponse(BaseModel):
+    group_id: int
+    deleted: int        # removed immediately (terminal-state docs)
+    deferred: int       # in-flight docs marked DELETING; worker finalizes
+    group_removed: bool  # folder row removed (only when fully empty)
+
+
+# --- Retry ---
+
+class RetryResponse(BaseModel):
+    document_id: str
+    name: str
+    status: str  # "queued" | "active" | "error" — same semantics as upload
+    error: Optional[str] = None  # set when status == "error" (in-process path)
+
+
+class RetryItem(BaseModel):
+    document_id: str
+    name: str
+
+
+class GroupRetryResponse(BaseModel):
+    group_id: int
+    requeued: list[RetryItem]  # docs reset + enqueued (poll /ingest/status)
+    count: int
+    skipped: int  # docs in the folder not in a retryable state

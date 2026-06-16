@@ -1,25 +1,49 @@
+import logging
 import chromadb
-import asyncio
 from typing import Any
-from chromadb.api.models.Collection import Collection
-from maru_lang.core.vector_db.base import VectorDB
-from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
-from maru_lang.configs.system_config import get_system_config
 
-config = get_system_config()
+logger = logging.getLogger(__name__)
+from chromadb.api.models.Collection import Collection
+from langchain_core.documents import Document
+from maru_lang.constants import CHROMA_MAX_BATCH_SIZE
+from maru_lang.core.vector_db.base import VectorDB
 
 
 class ChromaVectorDB(VectorDB):
     def __init__(
         self,
-        persist_dir: str,
         collection_name: str,
+        persist_dir: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+        ssl: bool = False,
     ):
-        self.persist_dir: str = persist_dir
-        self.client = chromadb.PersistentClient(path=persist_dir)
+        # Two modes:
+        #  - Embedded (persist_dir): single-process local files. Fine for one
+        #    server doing in-process ingest, NOT for the task queue (the worker's
+        #    writes aren't visible to a separate API process, and concurrent
+        #    writers can corrupt the store).
+        #  - Server (host/port -> HttpClient): one shared store that both the API
+        #    and the ARQ worker connect to — required for queue mode.
+        if host:
+            self.persist_dir = None
+            self.client = chromadb.HttpClient(host=host, port=port or 8000, ssl=ssl)
+        else:
+            self.persist_dir = persist_dir
+            self.client = chromadb.PersistentClient(path=persist_dir)
         self.collection: Collection = self.client.get_or_create_collection(
-            name=collection_name
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"},
         )
+
+        # 기존 collection이 L2로 생성된 경우 경고
+        space = (self.collection.metadata or {}).get("hnsw:space", "l2")
+        if space != "cosine":
+            logger.warning(
+                f"Collection '{collection_name}' uses '{space}' distance (not cosine). "
+                f"Scores may be inaccurate. Re-ingest documents to fix: "
+                f"drop the collection and re-upload."
+            )
 
     def drop_collection(self) -> None:
         """
@@ -40,8 +64,7 @@ class ChromaVectorDB(VectorDB):
             documents: 문서 리스트 (id, content, metadata 포함)
             embeddings: 임베딩 벡터 리스트 (외부에서 생성)
         """
-        # ChromaDB 내부 배치 크기 제한 (5461) 고려
-        CHROMA_MAX_BATCH_SIZE = 5000  # 안전 마진
+
 
         contents = [doc["content"] for doc in documents]
         ids = [doc["id"] for doc in documents]
@@ -116,17 +139,60 @@ class ChromaVectorDB(VectorDB):
                 where={"document_id": {"$eq": document_id}},
                 include=["metadatas"]
             )
-            
+
             chunk_ids = results["ids"]
             if not chunk_ids:
                 return 0
-            
+
             # 모든 청크 삭제
             self.collection.delete(ids=chunk_ids)
             return len(chunk_ids)
-            
+
         except Exception as e:
-            print(f"❌ 벡터DB에서 문서 청크 삭제 실패: {e}")
+            logger.error(f"Failed to delete document chunks from VectorDB: {e}")
+            return 0
+
+    def upsert_documents(
+        self,
+        documents: list[dict],
+        embeddings: list[list[float]],
+    ) -> None:
+        """Add or update documents in VectorDB."""
+
+        contents = [doc["content"] for doc in documents]
+        ids = [doc["id"] for doc in documents]
+        metadatas = [doc["metadata"] for doc in documents]
+
+        total_items = len(documents)
+        for i in range(0, total_items, CHROMA_MAX_BATCH_SIZE):
+            end_idx = min(i + CHROMA_MAX_BATCH_SIZE, total_items)
+
+            self.collection.upsert(
+                documents=contents[i:end_idx],
+                embeddings=embeddings[i:end_idx],
+                ids=ids[i:end_idx],
+                metadatas=metadatas[i:end_idx]
+            )
+
+    def get_chunk_ids_by_document_id(self, document_id: str) -> list[str]:
+        """Get all chunk IDs for a document."""
+        try:
+            results = self.collection.get(
+                where={"document_id": {"$eq": document_id}},
+                include=[]
+            )
+            return results["ids"]
+        except Exception:
+            return []
+
+    def delete_chunks_by_ids(self, chunk_ids: list[str]) -> int:
+        """Delete chunks by their IDs."""
+        if not chunk_ids:
+            return 0
+        try:
+            self.collection.delete(ids=chunk_ids)
+            return len(chunk_ids)
+        except Exception:
             return 0
 
     def count_documents(self) -> int:
@@ -138,7 +204,7 @@ class ChromaVectorDB(VectorDB):
         """
         return self.collection.get(include=["metadatas"])["metadatas"]
 
-    def get_documents(self, document_ids: list[str]) -> list[RetrieveDocument]:
+    def get_documents(self, document_ids: list[str]) -> list[Document]:
         results = self.collection.get(
             where={"document_id": {"$in": document_ids}})
 
@@ -147,7 +213,7 @@ class ChromaVectorDB(VectorDB):
         metadatas = results["metadatas"]
 
         return [
-            RetrieveDocument(
+            Document(
                 id=doc_id,
                 page_content=doc,
                 metadata=metadata
@@ -157,35 +223,33 @@ class ChromaVectorDB(VectorDB):
 
     def get_all_documents(
         self,
-        version_ids: list[str] | None = None
-    ) -> list[RetrieveDocument]:
+        team_ids: list[int]
+    ) -> list[Document]:
         """
-        Get all documents from VectorDB with optional version filter
+        Get all documents from VectorDB filtered by team IDs
 
         Args:
-            version_ids: Optional list of version IDs to filter
+            team_ids: List of Team IDs to filter
 
         Returns:
-            List of all documents (or filtered by version)
+            List of documents filtered by teams
         """
-        # Build filter
-        if version_ids:
-            filter_where = {"version_id": {"$in": version_ids}}
-        else:
-            filter_where = None
+        if not team_ids:
+            return []
 
-        # Get all documents with filter
+        filter_where = {"team_id": {"$in": team_ids}}
+
         results = self.collection.get(
             where=filter_where,
             include=["documents", "metadatas"]
         )
 
-        docs = results["documents"]
-        ids = results["ids"]
-        metadatas = results["metadatas"]
+        docs = results["documents"] or []
+        ids = results["ids"] or []
+        metadatas = results["metadatas"] or []
 
         return [
-            RetrieveDocument(
+            Document(
                 id=doc_id,
                 page_content=doc,
                 metadata=metadata
@@ -197,42 +261,64 @@ class ChromaVectorDB(VectorDB):
         self,
         query_embedding: list[float],
         k: int,
-        version_ids: list[str] | None = None,
+        team_ids: list[int],
         **kwargs: dict[str, Any],
-    ) -> list[RetrieveDocument]:
+    ) -> list[Document]:
         """
-        유사도 검색 (버전 기반)
+        Vector similarity search
 
         Args:
-            query_embedding: 쿼리 임베딩 벡터 (외부에서 생성)
-            k: 반환할 결과 개수
-            version_ids: 버전 ID 필터 (None이면 전체 검색)
+            query_embedding: Query embedding vector
+            k: Number of results to return
+            team_ids: List of Team IDs to filter
         """
-        # 버전 필터 생성
-        if version_ids:
-            filter = {"version_id": {"$in": version_ids}}
-        else:
-            filter = None  # 전체 검색
+        if not team_ids:
+            return []
+
+        exclude_ids = set(kwargs.get("exclude_ids", []))
+        filter_where = {"team_id": {"$in": team_ids}}
+        fetch_k = k + len(exclude_ids) if exclude_ids else k
 
         results = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=k,
-            where=filter
+            n_results=fetch_k,
+            where=filter_where
         )
 
-        docs = results["documents"][0]
-        ids = results["ids"][0]
-        metadatas = results["metadatas"][0]
-        distances = results["distances"][0]
+        docs = results["documents"][0] if results["documents"] else []
+        ids = results["ids"][0] if results["ids"] else []
+        metadatas = results["metadatas"][0] if results["metadatas"] else []
+        distances = results["distances"][0] if results["distances"] else []
 
         return [
-            RetrieveDocument(
+            Document(
                 id=doc_id,
                 page_content=doc,
                 metadata={**metadata, "score": 1 - distance}
             )
             for doc_id, doc, metadata, distance in zip(ids, docs, metadatas, distances)
-        ]
+            if doc_id not in exclude_ids
+        ][:k]
+
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_embedding: list[float],
+        k: int,
+        team_ids: list[int],
+        **kwargs: dict[str, Any]
+    ) -> list[Document]:
+        """
+        Hybrid search - Not supported by ChromaDB
+
+        ChromaDB does not natively support full-text/BM25 search.
+        Use LanceDB for hybrid search capabilities.
+        """
+        raise NotImplementedError(
+            "ChromaDB does not support hybrid search. "
+            "Please use LanceDB for hybrid search capabilities, "
+            "or use only similarity_search with ChromaDB."
+        )
 
     def health_check(self) -> bool:
         """
@@ -247,16 +333,17 @@ class ChromaVectorDB(VectorDB):
         """
         from pathlib import Path
 
-        # 1. 디렉토리 존재 확인
-        persist_path = Path(self.persist_dir)
-        if not persist_path.exists():
-            raise FileNotFoundError(
-                f"ChromaDB directory not found: {persist_path}\n"
-                f"Physical VectorDB files are missing.\n"
-                f"Please check your VectorDB configuration."
-            )
+        # 1. 디렉토리 존재 확인 (embedded 모드에만 해당; HTTP 모드는 서버가 소유)
+        if self.persist_dir is not None:
+            persist_path = Path(self.persist_dir)
+            if not persist_path.exists():
+                raise FileNotFoundError(
+                    f"ChromaDB directory not found: {persist_path}\n"
+                    f"Physical VectorDB files are missing.\n"
+                    f"Please check your VectorDB configuration."
+                )
 
-        # 2. 컬렉션 접근 확인
+        # 2. 컬렉션 접근 확인 (HTTP 모드면 서버 연결까지 검증)
         try:
             _ = self.collection.count()
             return True

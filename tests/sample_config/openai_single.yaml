@@ -1,0 +1,30 @@
+# OpenAI 단독 프로바이더 설정
+# 테스트: OpenAI GPT-4o 단일 LLM, 기본 임베딩, reranker 비활성
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: info
+
+database_url: "sqlite://:memory:"
+
+llms:
+  - name: openai
+    provider: openai
+    model_name: gpt-4o
+    api_key: ${ENV:OPENAI_API_KEY:sk-test-placeholder}
+    config:
+      temperature: 0.7
+      max_tokens: 2000
+
+system_prompt: |
+  You are MARU, an AI assistant for team document search and Q&A.
+  Answer based on document search results. Respond in Korean.
+
+embedding_model: BAAI/bge-m3
+retriever_top_k: 5
+retriever_search_method: vector
+
+evaluate_method: rule
+
+reranker_enabled: false

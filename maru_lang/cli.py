@@ -1,27 +1,43 @@
+from maru_lang.commands.status import show_status
+from maru_lang.commands.install import install_configs
+from maru_lang.commands.run import run_session
+from maru_lang.commands.test import run_test_command
+from maru_lang.core.relation_db.connection import run_with_orm_context
+from maru_lang.constants import PUBLIC_TEAM_NAME
+import asyncio
+import logging
 import sys
 import os
-import re
 import typer
 import uvicorn
 import subprocess
 from pathlib import Path
-from typing import Optional, List
-from maru_lang.configs.system_config import get_system_config
-
-config = get_system_config()
-from maru_lang.core.relation_db.connection import run_with_orm_context
-from maru_lang.commands.ingest import ingest_function
-from maru_lang.commands.remove import remove_function
-from maru_lang.commands.transfer import transfer_function
-from maru_lang.commands.install import install_configs
-from maru_lang.commands.chat import chat_session
-from maru_lang.commands.status import show_status
-from maru_lang.commands.tree import show_group_tree_command
-from maru_lang.configs.diff_checker import check_config_differences
-
-
+from typing import Optional
+from maru_lang.configs import get_config
 
 app = typer.Typer()
+
+
+def _enable_verbose_logging() -> None:
+    """Turn on DEBUG logs for maru_lang.* (quiet by default)."""
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    logging.getLogger("maru_lang").setLevel(logging.DEBUG)
+
+
+@app.callback()
+def common_init(ctx: typer.Context):
+    """Common initialization before all commands"""
+    # Skip for commands that don't need the project config loaded.
+    # (install: not set up yet; test: uses its own temp config)
+    if ctx.invoked_subcommand in ("install", "test"):
+        return
+
+    # Load config (DB, auth, LLM, RAG, Agent, etc.)
+    get_config()
+
 
 @app.command()
 def serve(
@@ -29,14 +45,39 @@ def serve(
                                      help="Application module path (default: main:app)"),
     host: str = typer.Option(None, help="Server host"),
     port: int = typer.Option(None, help="Server port"),
-    reload: bool = typer.Option(None, help="Enable hot-reload when code changes"),
+    reload: bool = typer.Option(
+        None, help="Enable hot-reload when code changes"),
     log_level: str = typer.Option(None, help="Log level"),
     workers: int = typer.Option(1, help="Number of server workers"),
+    skip_migrations: bool = typer.Option(
+        False, "--skip-migrations", help="Skip automatic database migrations"),
+    worker: int = typer.Option(
+        0, "--worker",
+        help="Number of ARQ ingest workers to co-launch (0=none; distinct from --workers, "
+             "which sets uvicorn server workers; needs task_queue_enabled)"),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Enable DEBUG logs for maru_lang (default: quiet)"),
 ):
     """Start the chatbot FastAPI server (default: maru_app/main.py)"""
 
+    if verbose:
+        _enable_verbose_logging()
+
+    config = get_config()
+    _require_queue_for_worker(config, worker)
+
     # Check if installation is complete
     _check_maru_app_installation()
+
+    # Run migrations before starting the server
+    if not skip_migrations:
+        typer.echo("🔄 Checking for pending database migrations...")
+        from maru_lang.core.relation_db.migration_utils import run_migrations_sync
+        success = run_migrations_sync()
+        if not success:
+            typer.echo(
+                "⚠️  Migration check failed, but continuing to start server...")
+        typer.echo("")
 
     # Add current directory and maru_app to Python path
     if '.' not in sys.path:
@@ -47,16 +88,6 @@ def serve(
     if os.path.exists(maru_app_path) and maru_app_path not in sys.path:
         sys.path.insert(0, maru_app_path)
 
-    # Check configuration differences
-    try:
-        diff_report = check_config_differences()
-        if not diff_report.startswith("✓"):
-            typer.echo("\n" + "="*80)
-            typer.echo(diff_report)
-            typer.echo("="*80 + "\n")
-    except Exception as e:
-        typer.echo(f"⚠️  Warning: Could not check config differences: {e}\n")
-
     # Override defaults with CLI arguments when provided
     host = host or config.server.host
     port = port or config.server.port
@@ -65,9 +96,12 @@ def serve(
 
     # Prevent using reload with multiple workers
     if workers > 1 and reload:
-        typer.echo("⚠️  Warning: reload mode cannot be combined with multiple workers.")
-        typer.echo("   Development: use --reload (single worker with code reloading)")
-        typer.echo("   Production: use --workers N (multiple workers, reload disabled)")
+        typer.echo(
+            "⚠️  Warning: reload mode cannot be combined with multiple workers.")
+        typer.echo(
+            "   Development: use --reload (single worker with code reloading)")
+        typer.echo(
+            "   Production: use --workers N (multiple workers, reload disabled)")
         typer.echo("   → Adjusting workers to 1 and running in reload mode.")
         workers = 1
 
@@ -99,127 +133,124 @@ def serve(
     typer.echo(
         f"🚀 Running on {host}:{port} (workers={workers}, reload={reload})")
 
-    if workers > 1:
-        # Execute uvicorn CLI in a subprocess for multi-worker mode
-        typer.echo("🔧 Production mode: running with multiple workers")
+    # Optionally co-launch ARQ ingest worker(s); torn down when the server exits.
+    worker_procs = _start_ingest_workers(config, worker)
 
-        # Set PYTHONPATH to include current directory
-        # env = os.environ.copy()
-        # if 'PYTHONPATH' in env:
-        #     env['PYTHONPATH'] = f"{os.getcwd()}{os.pathsep}{env['PYTHONPATH']}"
-        # else:
-        #     env['PYTHONPATH'] = os.getcwd()
+    try:
+        if workers > 1:
+            # Execute uvicorn CLI in a subprocess for multi-worker mode
+            typer.echo("🔧 Production mode: running with multiple workers")
 
-        cmd = [
-            "uvicorn",
-            target_app_module,
-            "--host", host,
-            "--port", str(port),
-            "--workers", str(workers),
-            "--log-level", log_level,
-        ]
-        typer.echo(f"   Command: {' '.join(cmd)}")
-        subprocess.run(cmd)
-
-        # subprocess.run(cmd, env=env)
-    else:
-        if reload:
-            typer.echo("🔧 Development mode: single worker with code reloading")
+            cmd = [
+                "uvicorn",
+                target_app_module,
+                "--host", host,
+                "--port", str(port),
+                "--workers", str(workers),
+                "--log-level", log_level,
+            ]
+            typer.echo(f"   Command: {' '.join(cmd)}")
+            subprocess.run(cmd)
         else:
-            typer.echo("🔧 Single worker mode: reload disabled")
+            if reload:
+                typer.echo("🔧 Development mode: single worker with code reloading")
+            else:
+                typer.echo("🔧 Single worker mode: reload disabled")
 
-        uvicorn.run(
-            target_app_module,
-            host=host,
-            port=port,
-            reload=reload,
-            log_level=log_level,
+            uvicorn.run(
+                target_app_module,
+                host=host,
+                port=port,
+                reload=reload,
+                log_level=log_level,
+            )
+    finally:
+        for p in worker_procs:
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        if worker_procs:
+            typer.echo(f"✓ Ingest worker(s) stopped ({len(worker_procs)})")
+
+
+def _require_queue_for_worker(config, worker_count: int) -> None:
+    """Fail fast when --worker is requested but the task queue is off.
+
+    A worker without task_queue_enabled+redis_url can never receive jobs, so
+    treat it as a misconfiguration and refuse to start (rather than warn+skip).
+    """
+    if worker_count > 0 and not config.queue_enabled:
+        typer.echo(
+            "❌ --worker requires task_queue_enabled: true and redis_url in maru_config.yaml.\n"
+            "   Enable the queue, or drop --worker to run ingest in-process."
+        )
+        raise typer.Exit(1)
+
+
+def _start_ingest_workers(config, count: int) -> list:
+    """Launch `count` ARQ ingest worker subprocesses (empty list if count<=0)."""
+    if count <= 0:
+        return []
+    from maru_lang.commands.worker import spawn_worker
+    typer.echo(f"🧵 Starting {count} ingest worker(s) (redis={config.redis_url})")
+    return [spawn_worker() for _ in range(count)]
+
+
+@app.command()
+def run(
+    teams: str = typer.Option(None, "--team", "-t",
+                              help="Team names (comma-separated). Default: 'public' (switch in chat with /team)."),
+    host: str = typer.Option(None, help="Server host"),
+    port: int = typer.Option(None, help="Server port"),
+    skip_migrations: bool = typer.Option(
+        False, "--skip-migrations", help="Skip automatic database migrations"),
+    worker: int = typer.Option(
+        0, "--worker",
+        help="Number of ARQ ingest workers to co-launch (0=none; needs task_queue_enabled)"),
+    attach: bool = typer.Option(
+        False, "--attach", "-a",
+        help="Attach the chat REPL to an already-running maru server (e.g. a "
+             "systemd `maru serve`) instead of starting one"),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Enable DEBUG logs for maru_lang (default: quiet)"),
+):
+    """Start server + interactive chat in one command."""
+    if verbose:
+        _enable_verbose_logging()
+
+    if attach and worker:
+        typer.echo("❌ --attach cannot be combined with --worker: the running "
+                   "server (service) owns its workers.")
+        raise typer.Exit(1)
+
+    if not teams:
+        # No --team given: start on the default 'public' team without blocking
+        # on a prompt. Switch any time in chat with /team <name>.
+        teams = PUBLIC_TEAM_NAME
+        typer.echo(
+            f"ℹ️  No --team given; starting on '{PUBLIC_TEAM_NAME}' "
+            "(switch in chat with /team <name>)."
         )
 
-
-@app.command()
-def ingest(
-    path: Path = typer.Argument(..., help="Folder path that contains documents"),
-    user_groups: Optional[List[str]] = typer.Option(
-        None, "--user-group", "-ug", help="User groups that should receive access permission (multiple values allowed)"),
-    batch_size: int = typer.Option(
-        1000, "--batch-size", "-b", help="Maximum memory per batch in MB (default: 1000 MB)"),
-    re_embed: bool = typer.Option(
-        False, "--re-embed", "-r", help="Delete existing embeddings and re-embed all documents from scratch"),
-):
-    """Parse every document in the folder, chunk it, and store it in the database."""
-    group = path.name
-
-    if not path.exists() or not path.is_dir():
-        typer.echo(f"❌ {path} does not exist." )
-        raise typer.Exit(1)
-
-    # Validate group name (disallow characters such as /)
-    if not re.match(r'^[a-zA-Z0-9_]+$', group):
-        typer.echo(f"❌ Group '{group}' may only contain letters, numbers, and underscores.")
-        raise typer.Exit(1)
-
-    typer.echo(
-        f"🚀 Ingesting {path} into group {group}")
-
-    run_with_orm_context(
-        ingest_function,
-        path,
-        user_groups,
-        batch_size,
-        re_embed,
-    )
-
-
-@app.command()
-def remove(
-    group: str = typer.Argument(..., help="DocumentGroup name to delete"),
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Delete without confirmation"
-    ),
-):
-    """Delete a DocumentGroup and all associated data (documents, embeddings, VDB)."""
-    typer.echo(f"🗑️  Removing document group: {group}")
-
-    run_with_orm_context(remove_function, group, force)
-
-
-@app.command()
-def chat(
-    groups: Optional[str] = typer.Option(
-        "all", "--group", "-g",
-        help="Document groups to search (e.g., -g engineering,docs or -g all)"
-    ),
-    max_turns: int = typer.Option(
-        0, "--max-turns", "-m",
-        help="Maximum number of turns to keep in chat history"
-    )
-):
-    """Start an interactive admin chat session with document group selection"""
-
-    # Check if installation is complete
     _check_maru_app_installation()
 
-    # Check configuration differences
-    try:
-        diff_report = check_config_differences()
-        if not diff_report.startswith("✓"):
-            typer.echo("\n" + "="*80)
-            typer.echo(diff_report)
-            typer.echo("="*80 + "\n")
-    except Exception as e:
-        typer.echo(f"⚠️  Warning: Could not check config differences: {e}\n")
+    config = get_config()
+    _require_queue_for_worker(config, worker)
+    host = host or config.server.host
+    port = port or config.server.port
 
-    # Parse group selections
-    if groups == "all":
-        # Search across every group
-        parsed_groups = ["__all__"]  # Indicates all groups
-    else:
-        # Split comma-separated group names
-        parsed_groups = [g.strip() for g in groups.split(",")]
+    team_list = [t.strip() for t in teams.split(",") if t.strip()]
 
-    # Run with ORM context (required for document search)
-    run_with_orm_context(chat_session, parsed_groups, max_turns)
+    asyncio.run(run_session(
+        team_names=team_list,
+        host=host,
+        port=port,
+        skip_migrations=skip_migrations,
+        worker_count=worker,
+        attach=attach,
+    ))
 
 
 @app.command("install")
@@ -275,42 +306,33 @@ def status(
     run_with_orm_context(show_status, verbose)
 
 
-@app.command()
-def tree(
-    name: Optional[str] = typer.Argument(
-        None, help="DocumentGroup name (shows only root groups when omitted)"),
-    depth: int = typer.Option(2, "--depth", "-d", help="Maximum depth to display (default: 2)"),
-):
-    """Show the DocumentGroup hierarchy."""
-    run_with_orm_context(show_group_tree_command, name, depth)
+@app.command("test")
+def test_command():
+    """Run an interactive integration smoke test (pick provider, key/url, model)."""
+    run_test_command()
 
 
-@app.command()
-def transfer(
-    group_name: str = typer.Argument(..., help="DocumentGroup name to transfer"),
-    new_manager_email: str = typer.Argument(..., help="Email of the new manager"),
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Transfer without confirmation"
-    ),
-):
-    """Transfer DocumentGroup manager to another user"""
-    run_with_orm_context(transfer_function, group_name, new_manager_email, force)
+@app.command("worker")
+def worker_command():
+    """Run the ARQ ingest worker (requires task_queue_enabled + redis_url)."""
+    from maru_lang.commands.worker import run_worker_command
+    raise typer.Exit(run_worker_command())
+
+
 
 def _check_maru_app_installation() -> bool:
-    """Check if required files exist and guide user to install if not"""
+    """Check if required files exist and guide user to install if not."""
     maru_app_path = Path.cwd() / "maru_app"
-    main_py = maru_app_path / "main.py"
-    build_selector = maru_app_path / "build_selector.yaml"
 
     missing_items = []
 
     if not maru_app_path.exists():
         missing_items.append("maru_app/ directory")
     else:
-        if not main_py.exists():
+        if not (maru_app_path / "main.py").exists():
             missing_items.append("maru_app/main.py")
-        if not build_selector.exists():
-            missing_items.append("maru_app/build_selector.yaml")
+        if not (maru_app_path / "maru_config.yaml").exists():
+            missing_items.append("maru_app/maru_config.yaml")
 
     if missing_items:
         typer.echo("❌ Error: Installation incomplete!")

@@ -1,7 +1,5 @@
 import base64
 import hashlib
-import os
-import sys
 import time
 import random
 import uuid

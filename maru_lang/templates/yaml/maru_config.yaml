@@ -1,0 +1,89 @@
+# MARU-Lang Configuration
+# All settings have sensible defaults. Only override what you need.
+
+# --- Infrastructure ---
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  reload: false
+  log_level: info
+
+production: false
+
+database_url: sqlite:///chatbot.db
+# database_url: postgres://user:password@localhost:5432/maru
+
+auth:
+  secret_key: ${ENV:SECRET_KEY:your-secret-key-change-in-production}
+  salt: ${ENV:SALT:some-salt}
+  access_token_expire_minutes: 120
+  refresh_token_expire_minutes: 43200
+  # allowed_domains:
+  #   - example.com
+
+# smtp:
+#   host: smtp.gmail.com
+#   port: 587
+#   username: ${ENV:SMTP_USERNAME}
+#   password: ${ENV:SMTP_PASSWORD}
+
+vector_db_url: chroma://data/chroma/maru
+storage_dir: data/storage
+
+# --- LLMs ---
+
+llms:
+  - name: ollama
+    provider: ollama
+    model_name: llama3
+    base_url: http://localhost:11434
+
+  # - name: openai
+  #   provider: openai
+  #   model_name: gpt-4o
+  #   api_key: ${ENV:OPENAI_API_KEY}
+
+  # - name: anthropic
+  #   provider: anthropic
+  #   model_name: claude-sonnet-4-20250514
+  #   api_key: ${ENV:ANTHROPIC_API_KEY}
+
+# --- Chat ---
+
+system_prompt: |
+  You are MARU, an AI assistant for team document search and Q&A.
+
+  ## Role
+  Search internal team documents and answer user questions based on accurate information.
+
+  ## Available Tools
+  - knowledge_search: Search team documents for relevant information.
+
+  ## Rules
+  1. Answer based on document search results. Honestly say you don't know if no results are found.
+  2. Respond in Korean.
+
+# --- AI/ML ---
+
+embedding_model: BAAI/bge-m3
+# embedding_device: null          # query/retrieval device; null=auto (GPU if avail), or "cuda"/"cpu"/"mps"
+# ingest_embedding_device: null   # worker/ingest device; null=follow embedding_device.
+                                  # Split to keep one GPU copy: embedding_device=cpu + ingest_embedding_device=cuda
+retriever_top_k: 5
+retriever_search_method: vector  # "vector" or "hybrid" (hybrid requires LanceDB)
+
+evaluate_method: rule  # "rule" (score/count based) or "llm" (LLM judges sufficiency)
+
+reranker_enabled: false
+reranker_type: cross_encoder
+reranker_model: BAAI/bge-reranker-v2-m3
+reranker_top_k: 5
+
+# --- Ingest task queue (optional) ---
+# When enabled, /ingest/upload offloads embedding to a separate ARQ worker
+# process (run it with `maru worker`). Disabled -> embedding runs in-process
+# via FastAPI BackgroundTasks (identical to default behavior).
+# Enabling REQUIRES redis_url, otherwise startup fails fast.
+task_queue_enabled: false
+# redis_url: redis://localhost:6379

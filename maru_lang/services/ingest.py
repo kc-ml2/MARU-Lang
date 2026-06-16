@@ -1,104 +1,418 @@
-"""
-Ingest service functions for file upload and synchronization
-"""
-from typing import List, Tuple
-from datetime import datetime
+"""Ingest service - file upload, status, change detection, and deletion."""
+import logging
 from pathlib import Path
-from maru_lang.core.relation_db.models.documents import Document, DocumentGroup, DocumentGroupMembership
-from maru_lang.utils.document import make_source_fingerprint_for_file
+from typing import Optional
+
+from maru_lang.core.relation_db.models.documents import (
+    Document,
+    DocumentAuditLog,
+    DocumentGroup,
+)
+from maru_lang.enums.documents import DocumentStatus, AuditAction
+from maru_lang.services.document import get_or_create_upload_group, mark_deleting
+from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
+from maru_lang.utils.file_storage import save_upload, remove_document_storage
+from maru_lang.graph.ingest.graph import get_ingest_graph
+from maru_lang.graph.ingest.state import build_ingest_input
+from maru_lang.core.vector_db import get_vector_db
+
+logger = logging.getLogger(__name__)
+
+
+def _upload_fingerprint(team_id: int, path: str, size: int, mtime: float) -> str:
+    """Change-detector fingerprint for API uploads (used by upload + check).
+
+    Scoped by team so identical files uploaded by different teams never collide
+    on the unique source_fingerprint column (or match each other in check).
+    """
+    return make_source_fingerprint_for_file(
+        file_path=f"{team_id}:{path}",
+        size=size,
+        mtime_ns=int(mtime * 1e9),
+    )
+
+
+async def upload_and_ingest(
+    file_obj,
+    filename: str,
+    file_size: int,
+    team_id: int,
+    folder_path: str = "",
+    mtime: float = 0.0,
+    user_id: Optional[int] = None,
+) -> tuple[Document, bool]:
+    """Save uploaded file, create or update DB record.
+
+    Args:
+        file_obj: File-like object to read from.
+        filename: Original filename.
+        file_size: File size in bytes.
+        team_id: Team ID.
+        folder_path: Optional folder path for group hierarchy.
+        mtime: Original file modification time (unix timestamp from client).
+        user_id: ID of the user performing the upload.
+
+    Returns:
+        Tuple of (Document, is_reupload).
+    """
+    abs_path = str(Path(folder_path) / filename) if folder_path else filename
+    fingerprint = _upload_fingerprint(team_id, abs_path, file_size, mtime)
+
+    # Identity = (team, path); the fingerprint is only a change detector.
+    # It embeds size/mtime, so a MODIFIED file gets a new fingerprint — matching
+    # on it (the old behavior) created a sibling document and left the stale one
+    # (and its chunks) behind.
+    existing = await Document.get_or_none(file_path=abs_path, group__team_id=team_id)
+
+    # Re-uploads overwrite the existing document's storage dir; new docs get a
+    # fresh ulid. (Old code always minted a new dir, leaking the previous file.)
+    doc_id = existing.id if existing else new_ulid()
+    storage_path = await save_upload(file_obj, filename, team_id, doc_id)
+
+    if existing:
+        existing.storage_path = storage_path
+        existing.file_size = file_size
+        existing.source_fingerprint = fingerprint  # latest ingested version mark
+        existing.status = DocumentStatus.UPLOADING
+        existing.error_message = None
+        await existing.save()
+
+        await _record_audit(
+            document_id=existing.id,
+            document_name=existing.name,
+            team_id=team_id,
+            user_id=user_id,
+            action=AuditAction.RE_UPLOAD,
+        )
+        return existing, True
+
+    # Get or create group named after the uploaded folder
+    group = await get_or_create_upload_group(team_id, folder_path)
+
+    doc = await Document.create(
+        id=doc_id,
+        name=Path(filename).stem,
+        group=group,
+        file_path=abs_path,
+        storage_path=storage_path,
+        file_size=file_size,
+        source_fingerprint=fingerprint,
+        status=DocumentStatus.UPLOADING,
+        metadata={"original_filename": filename},
+    )
+
+    await _record_audit(
+        document_id=doc.id,
+        document_name=doc.name,
+        team_id=team_id,
+        user_id=user_id,
+        action=AuditAction.UPLOAD,
+    )
+    return doc, False
+
+
+async def run_ingest_for_document(doc: Document, team_id: int) -> None:
+    """Run the ingest graph for an already-synced (API-uploaded) document.
+
+    The Document record and group already exist (created by upload_and_ingest),
+    so the graph's sync_document step passes through and only parse + embedding
+    run — the same compiled graph the CLI sync path uses.
+    """
+    state = build_ingest_input(
+        team_id,
+        document={
+            "id": doc.id,
+            "name": doc.name,
+            "file_path": doc.file_path,
+            "storage_path": doc.storage_path,
+            "group_id": doc.group_id,
+            "metadata": doc.metadata,
+        },
+        needs_processing=True,
+    )
+
+    try:
+        result = await get_ingest_graph().ainvoke(state)
+
+        if result.get("cancelled"):
+            # A delete landed mid-ingest — ensure chunks + row are gone (the
+            # graph already marked it DELETING). No success/error audit.
+            await finalize_document_deletion(doc.id)
+            return
+
+        if result.get("skipped"):
+            # Duplicate/stale job lost the claim or commit to another run —
+            # the document belongs to that run; record nothing.
+            return
+
+        if result.get("error"):
+            raise RuntimeError(result["error"])
+
+        await _record_audit(
+            document_id=doc.id,
+            document_name=doc.name,
+            team_id=team_id,
+            action=AuditAction.INGEST_SUCCESS,
+        )
+
+    except Exception as e:
+        logger.error(f"Ingest failed for {doc.id}: {e}")
+        # The graph set ERROR atomically (fail_processing won't resurrect a
+        # DELETING doc); here we only audit, and skip if it was deleted.
+        if await Document.exists(id=doc.id):
+            await _record_audit(
+                document_id=doc.id,
+                document_name=doc.name,
+                team_id=team_id,
+                action=AuditAction.INGEST_ERROR,
+                detail={"error": str(e)},
+            )
+        raise
+
+
+async def get_team_documents(team_id: int, group_id: Optional[int] = None) -> list[Document]:
+    """Get a team's documents, newest first; optionally scoped to one folder.
+
+    group_id is intersected with the team filter, so a group belonging to
+    another team simply yields an empty list (no cross-team leak).
+    """
+    query = Document.filter(group__team_id=team_id)
+    if group_id is not None:
+        query = query.filter(group_id=group_id)
+    return await query.order_by("-created_at").all()
 
 
 async def check_files_to_upload(
-    folder_path: str,
-    files: List[dict]  # [{"fileName": str, "createdAt": datetime, "relativePath": str, "size": int}]
-) -> List[str]:
-    """
-    Check which files need to be uploaded by comparing with database.
+    team_id: int,
+    files: list[dict],
+) -> list[int]:
+    """Check which files need uploading by fingerprint comparison (team-scoped).
 
-    Uses same logic as IngestPipeline's upsert_document_from_file:
-    - Compares file_path (relativePath) within the DocumentGroup
-    - Compares source_fingerprint (SHA256 hash of path|size|mtime)
-    - Only checks files in the specified folder's DocumentGroup
+    A fingerprint match means "this exact version is already ingested for this
+    team" → skip. The fingerprint embeds team + path + size + mtime, so another
+    team's identical file never causes a false skip.
 
     Args:
-        folder_path: Project folder name (DocumentGroup name, e.g., "user/project")
-        files: List of file information dicts with fileName, createdAt, relativePath, size
+        team_id: Team performing the upload.
+        files: List of dicts with absolutePath, size, mtime.
 
     Returns:
-        List of relativePaths that need to be uploaded
+        List of indices that need uploading.
     """
-    files_to_upload = []
+    indices = []
+    for i, f in enumerate(files):
+        fingerprint = _upload_fingerprint(team_id, f["absolutePath"], f["size"], f["mtime"])
+        # ERROR docs must NOT be skipped: their fingerprint was stored at upload
+        # time but embedding failed, so the same unchanged file should be
+        # re-uploadable to trigger re-processing (issue #15).
+        existing = await Document.filter(
+            source_fingerprint=fingerprint,
+        ).exclude(status=DocumentStatus.ERROR).first()
+        if existing is None:
+            indices.append(i)
 
-    # Check if DocumentGroup exists for this folder
-    document_group = await DocumentGroup.get_or_none(name=folder_path)
-
-    # If no group exists, all files are new
-    if not document_group:
-        return [file_info["relativePath"] for file_info in files]
-
-    for file_info in files:
-        relative_path = file_info["relativePath"]
-        file_name = file_info["fileName"]
-        created_at = file_info["createdAt"]
-        file_size = file_info.get("size", 0)  # File size in bytes
-
-        # Convert datetime to nanoseconds timestamp
-        if isinstance(created_at, datetime):
-            mtime_ns = int(created_at.timestamp() * 1e9)
-        else:
-            mtime_ns = int(created_at)
-
-        # Generate expected fingerprint
-        # Note: folder_path is already "{username}/{folderPath}"
-        db_file_path = f"{folder_path}/{relative_path}"
-        expected_fingerprint = make_source_fingerprint_for_file(
-            db_file_path, file_size, mtime_ns
-        )
-
-        # Check if document exists in this specific group
-        existing_doc = await Document.filter(
-            file_path=db_file_path,
-            group_memberships__group=document_group
-        ).first()
-
-        if not existing_doc:
-            # New file in this group - needs upload
-            files_to_upload.append(relative_path)
-            continue
-
-        # Compare fingerprint
-        if existing_doc.source_fingerprint != expected_fingerprint:
-            # File modified - needs re-upload
-            files_to_upload.append(relative_path)
-            continue
-
-        # File exists and unchanged - skip
-
-    return files_to_upload
+    return indices
 
 
-async def get_or_create_document_group(
-    folder_path: str,
-    manager_id: int
-) -> DocumentGroup:
+async def delete_document_by_id(
+    document_id: str,
+    team_id: int,
+    user_id: int,
+) -> None:
+    """Delete a document from VectorDB and RDB, recording audit log.
+
+    Raises:
+        ValueError: If document not found or doesn't belong to the team.
     """
-    Get or create a DocumentGroup for the uploaded folder.
+    doc = await Document.get_or_none(id=document_id, group__team_id=team_id)
+    if not doc:
+        raise ValueError("Document not found")
 
-    Args:
-        folder_path: Project folder name
-        manager_id: User ID who manages this group
-
-    Returns:
-        DocumentGroup instance
-    """
-    from maru_lang.services.document import upsert_document_group
-
-    # Use folder_path as both name and base_path
-    # In production, you might want to use absolute paths
-    group = await upsert_document_group(
-        name=folder_path,
-        base_path=folder_path,
-        manager_id=manager_id,
+    # Record the user's intent up front (before any state change).
+    await _record_audit(
+        document_id=doc.id,
+        document_name=doc.name,
+        team_id=team_id,
+        user_id=user_id,
+        action=AuditAction.DELETE,
     )
 
-    return group
+    # If the doc is mid-ingest (UPLOADING/PROCESSING), don't hard-delete — that
+    # races the worker's chunk writes. Atomically mark DELETING; the worker
+    # finalizes at its next checkpoint, and reconcile_deletions is the crash
+    # backstop. mark_deleting returns False for terminal states → finalize now.
+    if await mark_deleting(document_id):
+        return
+    await finalize_document_deletion(document_id)
+
+
+async def finalize_document_deletion(document_id: str) -> None:
+    """Physically remove a document's chunks, DB row, and storage dir (idempotent)."""
+    doc = await Document.get_or_none(id=document_id)
+    try:
+        get_vector_db().delete_all_chunks_by_document_id(document_id)
+    except Exception as e:
+        logger.warning(f"VectorDB chunk deletion failed for {document_id}: {e}")
+    await Document.filter(id=document_id).delete()
+    if doc is not None:
+        remove_document_storage(doc.storage_path, document_id)
+
+
+async def delete_group_documents(
+    group_id: int,
+    team_id: int,
+    user_id: int,
+) -> dict:
+    """Delete a folder's entire subtree: all documents in it and its descendant
+    folders, then the now-empty folder rows themselves.
+
+    Per-document semantics are identical to delete_document_by_id: terminal docs
+    are removed immediately (chunks + row + storage); in-flight docs are marked
+    DELETING and finalized by the worker. Folder rows are removed leaf-first and
+    only when empty — never via FK cascade, which would skip chunk/storage
+    cleanup. A folder holding deferred (DELETING) docs survives until the worker
+    finalizes them.
+
+    Raises:
+        LookupError: Folder not found in this team.
+    """
+    from maru_lang.services.document import get_all_descendant_groups
+
+    group = await DocumentGroup.get_or_none(id=group_id, team_id=team_id)
+    if group is None:
+        raise LookupError("Folder not found")
+
+    groups = await get_all_descendant_groups(group)  # self + subtree (pre-order)
+
+    deleted = deferred = 0
+    for g in groups:
+        for doc in await Document.filter(group_id=g.id).all():
+            await _record_audit(
+                document_id=doc.id,
+                document_name=doc.name,
+                team_id=team_id,
+                user_id=user_id,
+                action=AuditAction.DELETE,
+            )
+            if await mark_deleting(doc.id):
+                deferred += 1
+            else:
+                await finalize_document_deletion(doc.id)
+                deleted += 1
+
+    # Remove empty folder rows, leaves first (reversed pre-order).
+    group_removed = False
+    for g in reversed(groups):
+        has_docs = await Document.filter(group_id=g.id).exists()
+        has_children = await DocumentGroup.filter(parent_id=g.id).exists()
+        if not has_docs and not has_children:
+            await g.delete()
+            if g.id == group_id:
+                group_removed = True
+
+    return {"deleted": deleted, "deferred": deferred, "group_removed": group_removed}
+
+
+async def retry_document(document_id: str, team_id: int, force: bool = False) -> Document:
+    """Reset one document for re-ingest and return it (caller enqueues/runs).
+
+    - Default: ERROR documents only (failed parse/embed).
+    - force=True: ACTIVE too — full re-parse/re-embed, e.g. after a parser change.
+    In-flight (UPLOADING/PROCESSING), DELETING, and INACTIVE (deliberately
+    disabled) documents are never retried.
+
+    The doc is reset to UPLOADING with error_message cleared, so the ingest
+    graph's begin_processing can claim it again.
+
+    Raises:
+        LookupError: Document not found in this team.
+        ValueError: Document is not in a retryable state.
+    """
+    doc = await Document.get_or_none(id=document_id, group__team_id=team_id)
+    if doc is None:
+        raise LookupError("Document not found")
+
+    allowed = {DocumentStatus.ERROR} | ({DocumentStatus.ACTIVE} if force else set())
+    if doc.status not in allowed:
+        raise ValueError(
+            f"Document is {DocumentStatus(doc.status).name}, not retryable "
+            f"({'ERROR/ACTIVE' if force else 'ERROR only — use force for ACTIVE'})."
+        )
+
+    doc.status = DocumentStatus.UPLOADING
+    doc.error_message = None
+    await doc.save()
+    return doc
+
+
+async def retry_documents_in_group(
+    team_id: int,
+    group_id: int,
+    force: bool = False,
+) -> tuple[list[Document], int]:
+    """Reset every retryable document in one folder for re-ingest.
+
+    Same per-document rules as retry_document (ERROR; +ACTIVE with force), but
+    non-retryable docs are silently skipped instead of raising — this is a bulk
+    convenience. Returns (reset_docs, skipped_count).
+    """
+    allowed = {DocumentStatus.ERROR} | ({DocumentStatus.ACTIVE} if force else set())
+
+    docs = await Document.filter(group__team_id=team_id, group_id=group_id).all()
+    targets = [d for d in docs if d.status in allowed]
+    for doc in targets:
+        doc.status = DocumentStatus.UPLOADING
+        doc.error_message = None
+        await doc.save()
+    return targets, len(docs) - len(targets)
+
+
+async def reconcile_deletions() -> int:
+    """Finalize documents stuck in DELETING (worker missed them or crashed).
+
+    Run on worker startup as the backstop for the cooperative-cancel state
+    machine. Returns the number of documents finalized.
+    """
+    stuck = await Document.filter(status=DocumentStatus.DELETING).all()
+    for doc in stuck:
+        await finalize_document_deletion(doc.id)
+    if stuck:
+        logger.info("reconcile_deletions: finalized %d DELETING document(s)", len(stuck))
+    return len(stuck)
+
+
+async def get_audit_logs_for_documents(
+    document_ids: list[str],
+) -> dict[str, list[DocumentAuditLog]]:
+    """Fetch audit logs grouped by document_id."""
+    if not document_ids:
+        return {}
+    logs = await DocumentAuditLog.filter(
+        document_id__in=document_ids,
+    ).prefetch_related("user").all()
+
+    result: dict[str, list[DocumentAuditLog]] = {}
+    for log in logs:
+        result.setdefault(log.document_id, []).append(log)
+    return result
+
+
+async def _record_audit(
+    document_id: str,
+    document_name: str,
+    team_id: int,
+    action: AuditAction,
+    user_id: Optional[int] = None,
+    detail: Optional[dict] = None,
+) -> None:
+    """Record a document audit log entry."""
+    await DocumentAuditLog.create(
+        document_id=document_id,
+        document_name=document_name,
+        team_id=team_id,
+        user_id=user_id,
+        action=action,
+        detail=detail or {},
+    )
+
+

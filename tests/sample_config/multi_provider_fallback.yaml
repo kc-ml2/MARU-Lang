@@ -1,0 +1,46 @@
+# 멀티 프로바이더 fallback chain
+# 테스트: OpenAI → Anthropic → Ollama 순서로 3개 프로바이더, 모두 enabled
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  log_level: info
+
+database_url: "sqlite://:memory:"
+
+llms:
+  - name: openai-primary
+    provider: openai
+    model_name: gpt-4o
+    api_key: ${ENV:OPENAI_API_KEY:sk-test-placeholder}
+    config:
+      temperature: 0.7
+      max_tokens: 2000
+    timeout: 10.0
+
+  - name: anthropic-secondary
+    provider: anthropic
+    model_name: claude-sonnet-4-20250514
+    api_key: ${ENV:ANTHROPIC_API_KEY:sk-ant-test-placeholder}
+    config:
+      temperature: 0.7
+      max_tokens: 2000
+    timeout: 15.0
+
+  - name: ollama-fallback
+    provider: ollama
+    model_name: gpt-oss:20b
+    base_url: http://localhost:11434
+    config:
+      temperature: 0.7
+
+system_prompt: |
+  You are MARU, an AI assistant for team document search and Q&A.
+  Respond in Korean.
+
+embedding_model: BAAI/bge-m3
+retriever_top_k: 5
+retriever_search_method: vector
+
+evaluate_method: rule
+reranker_enabled: false

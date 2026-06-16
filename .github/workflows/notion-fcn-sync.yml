@@ -1,0 +1,29 @@
+name: Sync commits to Notion (FCN + Commit DB)
+
+on:
+  push:
+    branches: ["**"]
+
+jobs:
+  notion_sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Sync to Notion
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_FCN_DATABASE_ID: ${{ secrets.NOTION_FCN_DATABASE_ID }}
+          NOTION_COMMIT_DATABASE_ID: ${{ secrets.NOTION_COMMIT_DATABASE_ID }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python .github/scripts/notion-fcn-sync.py

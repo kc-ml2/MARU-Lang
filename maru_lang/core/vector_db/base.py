@@ -1,6 +1,8 @@
+"""VectorDB abstract base class."""
 from abc import ABC, abstractmethod
 from typing import Any
-from maru_lang.core.vector_db.retrieve_document import RetrieveDocument
+
+from langchain_core.documents import Document
 
 
 class VectorDB(ABC):
@@ -10,7 +12,19 @@ class VectorDB(ABC):
         pass
 
     @abstractmethod
-    def add_documents(self, documents: list[dict]) -> None:
+    def add_documents(self, documents: list[dict], embeddings: list[list[float]]) -> None:
+        pass
+
+    @abstractmethod
+    def upsert_documents(self, documents: list[dict], embeddings: list[list[float]]) -> None:
+        pass
+
+    @abstractmethod
+    def get_chunk_ids_by_document_id(self, document_id: str) -> list[str]:
+        pass
+
+    @abstractmethod
+    def delete_chunks_by_ids(self, chunk_ids: list[str]) -> int:
         pass
 
     @abstractmethod
@@ -31,14 +45,6 @@ class VectorDB(ABC):
 
     @abstractmethod
     def delete_all_chunks_by_document_id(self, document_id: str) -> int:
-        """문서 ID로 해당 문서의 모든 청크를 삭제합니다.
-        
-        Args:
-            document_id: 삭제할 문서의 ID
-            
-        Returns:
-            삭제된 청크의 개수
-        """
         pass
 
     @abstractmethod
@@ -50,23 +56,11 @@ class VectorDB(ABC):
         pass
 
     @abstractmethod
-    def get_documents(self, document_ids: list[str]) -> list[RetrieveDocument]:
+    def get_documents(self, document_ids: list[str]) -> list[Document]:
         pass
 
     @abstractmethod
-    def get_all_documents(
-        self,
-        version_ids: list[str] | None = None
-    ) -> list[RetrieveDocument]:
-        """
-        Get all documents from VectorDB with optional version filter
-
-        Args:
-            version_ids: Optional list of version IDs to filter
-
-        Returns:
-            List of all documents (or filtered by version)
-        """
+    def get_all_documents(self, team_ids: list[int]) -> list[Document]:
         pass
 
     @abstractmethod
@@ -74,32 +68,22 @@ class VectorDB(ABC):
         self,
         query_embedding: list[float],
         k: int,
-        version_ids: list[str] | None = None,
-        **kwargs: dict[str, Any]
-    ) -> list[RetrieveDocument]:
-        """
-        Vector similarity search using query embedding
+        team_ids: list[int],
+        **kwargs: dict[str, Any],
+    ) -> list[Document]:
+        pass
 
-        Args:
-            query_embedding: Query embedding vector
-            k: Number of results to return
-            version_ids: Optional list of version IDs to filter
-            **kwargs: Additional search parameters
-
-        Returns:
-            List of retrieved documents
-        """
+    @abstractmethod
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_embedding: list[float],
+        k: int,
+        team_ids: list[int],
+        **kwargs: dict[str, Any],
+    ) -> list[Document]:
         pass
 
     @abstractmethod
     def health_check(self) -> bool:
-        """
-        VectorDB 헬스체크 (연결 및 접근 가능 여부 확인)
-
-        Returns:
-            bool: 헬스체크 통과 여부
-
-        Raises:
-            Exception: 헬스체크 실패 시 상세 에러
-        """
         pass

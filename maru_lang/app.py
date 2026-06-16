@@ -1,18 +1,27 @@
 import asyncio
-from typing import Dict, Any, Optional, List, Callable
-from contextlib import asynccontextmanager
+import logging
+from typing import Optional, List, Callable
+
+logger = logging.getLogger(__name__)
+from contextlib import asynccontextmanager, AsyncExitStack
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_pagination import add_pagination
 
 from maru_lang.core.relation_db import get_register_orm
-from maru_lang.dependencies.llm import get_llm_manager
-from maru_lang.configs.manager import get_config_manager
+from maru_lang.configs import get_config
+from maru_lang.graph.ingest.embedder import get_embeddings
+from maru_lang.graph.checkpoint import build_checkpointer
+from maru_lang.graph.registry import GRAPH_REGISTRY
+from maru_lang.core.llm import get_model_with_fallbacks
 from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.chat import router as chat_router
+from maru_lang.api.endpoints.config import router as config_router
 from maru_lang.api.endpoints.ingest import router as ingest_router
-from maru_lang.api.endpoints.user_group import router as user_group_router
-
+from maru_lang.api.endpoints.internal import router as internal_router
+from maru_lang.api.endpoints.teams import router as teams_router
+from maru_lang.api.endpoints.session import router as session_router
+from maru_lang.api.endpoints.memory import router as memory_router
 
 
 class MaruLangApp(FastAPI):
@@ -65,9 +74,9 @@ class MaruLangApp(FastAPI):
     def _get_default_cors_origins(self) -> List[str]:
         """Return default CORS origins."""
         return [
-            "*",
+            "http://localhost:5173",  # Vite dev server
+            # Add more default origins as needed
         ]
-
 
     async def _startup_sequence(self):
         """App startup sequence."""
@@ -96,26 +105,54 @@ class MaruLangApp(FastAPI):
     async def _default_startup(self):
         """Default startup routine."""
         # TODO Initialize logging system
-        config_manager = get_config_manager()
-        config_manager.load_all()
+        cfg = get_config()
 
-        # Validate configuration
-        validation_status = config_manager.validate_all()
-        if not validation_status['valid']:
-            print("❌ Configuration validation failed:")
-            for error in validation_status['errors']:
-                print(f"  - {error}")
-            # Critical errors should stop the app
-            if validation_status['errors']:
-                raise RuntimeError("Critical configuration errors found")
+        if not cfg.llms:
+            logger.warning("No LLM configurations found - chat will not work until configured")
 
         # 2. Register ORM
-        print("🗄️ Initializing databases...")
+        print("Initializing databases...")
         register_orm = get_register_orm()
         async with register_orm(self):
 
-            # Store config manager in app state for access in endpoints
-            self.state.config_manager = config_manager
+            # 3. Pre-load embedding model (device from config; None=auto/GPU).
+            #    Pass embedding_device so the cache key matches the ingest path.
+            print(f"Loading embedding model: {cfg.embedding_model}...")
+            await asyncio.to_thread(get_embeddings, cfg.embedding_model, cfg.embedding_device)
+            print(f"✓ Embedding model loaded: {cfg.embedding_model} (device={cfg.embedding_device or 'auto'})")
+
+            # 4. Initialize the LangGraph checkpointer (app-scoped, persistent).
+            #    Kept alive for the whole app lifetime via an AsyncExitStack on
+            #    app.state; closed in _default_shutdown.
+            self.state.exit_stack = AsyncExitStack()
+            self.state.checkpointer = await self.state.exit_stack.enter_async_context(
+                build_checkpointer()
+            )
+            scheme, _ = cfg.resolve_checkpoint_target()
+            print(f"✓ Checkpointer initialized ({scheme})")
+
+            # 5. Compile every registered graph once (app-scoped, shared across
+            #    connections; state lives in the checkpointer keyed by thread_id).
+            #    The graph_router picks among these per request. Empty if no LLM.
+            self.state.graphs = {}
+            self.state.router_model = None
+            try:
+                self.state.router_model = get_model_with_fallbacks()
+                for gid, spec in GRAPH_REGISTRY.items():
+                    self.state.graphs[gid] = spec.factory(checkpointer=self.state.checkpointer)
+                print(f"✓ Graphs compiled: {', '.join(self.state.graphs) or '(none)'}")
+            except RuntimeError as e:
+                logger.warning(f"Graphs not compiled — chat disabled: {e}")
+
+            # 6. Ingest task queue (optional). When task_queue_enabled, create an
+            #    ARQ Redis pool used by /ingest/upload to enqueue embedding jobs.
+            #    Its presence on app.state is the on/off switch for queue mode.
+            self.state.arq = None
+            if cfg.queue_enabled:
+                from arq import create_pool
+                from arq.connections import RedisSettings
+                self.state.arq = await create_pool(RedisSettings.from_dsn(cfg.redis_url))
+                print(f"✓ Ingest task queue enabled (ARQ @ {cfg.redis_url})")
 
             print("=" * 60)
             print("✨ Application startup complete!")
@@ -126,15 +163,22 @@ class MaruLangApp(FastAPI):
         # Clean up resources such as database connections
         print("🔄 Shutting down application...")
 
+        # Close the ingest task queue pool, if it was created.
+        arq = getattr(self.state, "arq", None)
+        if arq is not None:
+            await arq.close()
+            print("✓ Ingest task queue pool closed")
+
+        # Close the LangGraph checkpointer (and its DB connection).
+        exit_stack = getattr(self.state, "exit_stack", None)
+        if exit_stack is not None:
+            await exit_stack.aclose()
+            print("✓ Checkpointer closed")
+
         # Close Tortoise ORM connections
         from tortoise import Tortoise
         await Tortoise.close_connections()
         print("✓ Database connections closed")
-
-        # Reset ChatPipeline singleton
-        from maru_lang.dependencies.chat import ChatPipelineManager
-        ChatPipelineManager.reset()
-        print("✓ ChatPipeline reset")
 
         print("✨ Shutdown complete")
 
@@ -175,8 +219,12 @@ class MaruLangApp(FastAPI):
         if self.include_default_routers:
             self.include_router(chat_router)
             self.include_router(auth_router)
+            self.include_router(config_router)
             self.include_router(ingest_router)
-            self.include_router(user_group_router)
+            self.include_router(internal_router)
+            self.include_router(teams_router)
+            self.include_router(session_router)
+            self.include_router(memory_router)
 
         # Run custom router hooks
         for hook in self._router_hooks:

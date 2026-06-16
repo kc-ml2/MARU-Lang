@@ -1,10 +1,13 @@
-from enum import Enum
+"""Chat-related enums."""
+from enum import IntEnum
 
 
-class ChatProcessStep(str, Enum):
-    """채팅 처리 단계"""
-    START = "start"
-    AGENT_SELECTION = "agent_selection"
-    AGENT_EXECUTION = "agent_execution"
-    ANSWER_GENERATION = "answer_generation"
-    COMPLETED = "completed"
+class SessionStatus(IntEnum):
+    ACTIVE   = 1   # Open, accepting messages
+    ARCHIVED = 2   # Closed by the user
+    DELETED  = 3   # Soft-deleted
+
+
+class UserMemoryKind(IntEnum):
+    FACT       = 1   # 사용자 사실 (예: 이름=김지훈)
+    PREFERENCE = 2   # 사용자 선호 (예: 짧은 말투)

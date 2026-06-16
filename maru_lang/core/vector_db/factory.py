@@ -1,69 +1,68 @@
+"""VectorDB factory - URL-based instance creation.
+
+URL format: {scheme}://{path}/{collection_or_table}
+  chroma://data/chroma/maru                 # embedded (local files, single process)
+  chroma+http://localhost:8000/maru         # server mode (shared; needed for the queue)
+  chroma+https://chroma.internal:8000/maru  # server mode over TLS
+  lance://data/lance/maru
+  milvus://user:pass@host:port/collection
 """
-VectorDB 팩토리 - VectorDB 인스턴스 생성
-"""
-from typing import Optional
+from pathlib import Path
+
+from maru_lang.configs import get_config
 from maru_lang.core.vector_db.base import VectorDB
-from maru_lang.models.vector_db import (
-    BaseVectorDBConfig,
-    ChromaDBConfig,
-    MilvusConfig,
-    PineconeConfig,
-    get_vector_db_config_from_settings,
-)
+from maru_lang.core.vector_db.chroma import ChromaVectorDB
 
 
-def get_vector_db(config: Optional[BaseVectorDBConfig] = None) -> VectorDB:
-    """
-    VectorDB 인스턴스 생성
+def get_vector_db(url: str | None = None) -> VectorDB:
+    """Create a VectorDB instance from a URL.
 
     Args:
-        config: VectorDB 설정 (None이면 system_config.yaml의 vector_db.type에 따라 자동 생성)
+        url: VectorDB URL. If None, reads from config.
 
     Returns:
-        VectorDB: VectorDB 인스턴스
-
-    Raises:
-        ValueError: 지원하지 않는 VectorDB 타입인 경우
-
-    Examples:
-        # system_config.yaml의 vector_db.type에 따라 자동 생성
-        vdb = get_vector_db()  # type이 'chroma'면 ChromaDB, 'milvus'면 Milvus
-
-        # 커스텀 ChromaDB 생성
-        config = ChromaDBConfig(
-            persist_dir="/path/to/chromadb",
-            collection_name="my_collection",
-        )
-        vdb = get_vector_db(config)
+        VectorDB instance.
     """
-    # config가 없으면 system_config에서 자동으로 적절한 타입 선택
-    if config is None:
-        config = get_vector_db_config_from_settings()
+    if url is None:
+        cfg = get_config()
+        url = cfg.vector_db_url
 
-    # ChromaDB
-    if isinstance(config, ChromaDBConfig):
-        from maru_lang.core.vector_db.chroma import ChromaVectorDB
+    scheme, path, name = _parse_url(url)
+
+    if scheme == "chroma":
+        # Embedded: path is a local directory.
+        persist_dir = str((Path.cwd() / path).absolute()) if not Path(path).is_absolute() else path
+        return ChromaVectorDB(collection_name=name, persist_dir=persist_dir)
+
+    if scheme in ("chroma+http", "chroma+https"):
+        # Server mode: path is host[:port]. Both the API and the ARQ worker point
+        # at the same Chroma server, so the worker's writes are visible to the API
+        # (unlike embedded Chroma) — this is the multi-process / queue setup.
+        host, port = _parse_host_port(path)
         return ChromaVectorDB(
-            persist_dir=config.persist_dir,
-            collection_name=config.collection_name,
+            collection_name=name, host=host, port=port, ssl=(scheme == "chroma+https"),
         )
 
-    # Milvus
-    elif isinstance(config, MilvusConfig):
-        from maru_lang.core.vector_db.milvus import MilvusVectorDB
-        return MilvusVectorDB(
-            host=config.host,
-            port=config.port,
-            user=config.user,
-            password=config.password,
-            collection_name=config.collection_name,
-        )
+    raise ValueError(
+        f"Unsupported vector_db scheme: {scheme}. "
+        f"Supported: chroma, chroma+http, chroma+https"
+    )
 
-    # Pinecone (향후 확장)
-    elif isinstance(config, PineconeConfig):
-        # from maru_lang.core.vector_db.pinecone import PineconeVectorDB
-        # return PineconeVectorDB(...)
-        raise NotImplementedError("Pinecone support is not yet implemented")
 
-    else:
-        raise ValueError(f"Unsupported VectorDB config type: {type(config)}")
+def _parse_url(url: str) -> tuple[str, str, str]:
+    """Parse a VectorDB URL into (scheme, path, name)."""
+    if "://" not in url:
+        raise ValueError(f"Invalid vector_db URL: {url}. Expected scheme://path/name")
+    scheme, rest = url.split("://", 1)
+    parts = rest.rsplit("/", 1)
+    if len(parts) == 2:
+        return scheme, parts[0], parts[1]
+    return scheme, "", parts[0]
+
+
+def _parse_host_port(authority: str) -> tuple[str, int]:
+    """Split "host:port" into (host, port); default port 8000 when omitted."""
+    if ":" in authority:
+        host, port_s = authority.rsplit(":", 1)
+        return host, int(port_s)
+    return authority, 8000

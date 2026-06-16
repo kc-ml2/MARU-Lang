@@ -1,208 +1,212 @@
-import asyncio
-import json
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
-from starlette.requests import ClientDisconnect
-from fastapi_pagination.ext.tortoise import apaginate
-from fastapi_pagination import Page
-from maru_lang.enums.auth import UserRoleCode
-from maru_lang.dependencies.auth import get_user_with_role, User
-from maru_lang.dependencies.chat import get_chat_pipeline
-from maru_lang.pipelines.chat import ChatPipeline
-from maru_lang.pipelines.base import PipelineMessage
-from maru_lang.schemas.chat import (
-    ChatRequest,
-    ChatResponse,
-    ConversationResponse,
-)
-from maru_lang.services.chat import (
-    fetch_conversation_queryset_by_user,
-    fetch_conversation_by_user_and_date,
-    create_conversation,
-)
-from maru_lang.services.user_group import get_user_accessible_document_groups
-from maru_lang.models.chat import ChatHistory
-from maru_lang.models.agents import ChatProcess, ChatResult
-from maru_lang.enums.chat import ChatProcessStep
+"""Chat WebSocket endpoint."""
+import logging
+import uuid
 
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from langgraph.types import Command
+from starlette.websockets import WebSocketState
+
+logger = logging.getLogger(__name__)
+
+from maru_lang.services.auth import verify_chat_token
+from maru_lang.dependencies.auth import User
+from maru_lang.services.team import list_teams_by_user, resolve_user_graph_ids, scope_team_ids
+from maru_lang.services.session import get_session_for_user
+from maru_lang.core.relation_db.models.chat import Session
+from maru_lang.graph.router import select_graph
+from maru_lang.api.ws.chat import stream_and_send
 
 router = APIRouter(
     prefix="/chat",
-    tags=["Chat"]
+    tags=["Chat"],
 )
 
 
-@router.post("/request")
-async def handle_chat_request(
-    request: ChatRequest,
-    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
-    chat_pipeline: ChatPipeline | None = Depends(get_chat_pipeline)
-):
+@router.websocket("/connect")
+async def chat_websocket(websocket: WebSocket):
+    """WebSocket chat endpoint.
+
+    The session lifecycle (create/list/delete) is handled by a separate REST API.
+    The client always supplies an existing session_id at auth time; the socket
+    validates ownership and persists each completed turn under that session.
+
+    Each message starts a fresh LangGraph thread (one graph run = one thread),
+    reused only across that turn's interrupt/resume. Completed turns are stored
+    as Conversation rows grouped by the session.
+
+    On each message the graph_router selects which graph (among the user's teams'
+    accessible graphs) handles the request; resume reuses that turn's graph.
+
+    Protocol:
+        1. Client sends: {"type": "auth", "chat_token": "...", "session_id": "..."}
+        2. Server authenticates + validates session ownership
+        3. (Optional) Client sends: {"type": "configure", "function": "legal", ...}
+        4. Client sends: {"type": "message", "content": "...", "team_ids": [1, 2]}
+           - team_ids is optional; it scopes document search to those teams
+             (intersected with the user's own teams). Omit/empty -> all the
+             user's teams.
+        5. Server streams: {"type": "routed"|"thinking"|"stream"|"retrieve"|"interrupt"|"complete"|"error", ...}
+        6. On interrupt, client sends: {"type": "resume", "content": ...}
     """
-    Handle chat request with streaming response (SSE)
+    await websocket.accept()
 
-    Returns Server-Sent Events stream with the following event types:
+    user: User | None = None
+    authenticated = False
+    all_user_teams: list[dict] = []
+    all_user_team_ids: list[int] = []
+    all_user_team_names: list[int] = []
 
-    1. process_step events (with "step" field indicating progress):
-       - start: Request processing started
-       - agent_selection: Agent selection completed
-       - agent_execution: Agent execution completed
-       - answer_generation: Final answer generated
-       - completed: Request completed
+    active_session: Session | None = None
+    allowed_graph_ids: list[str] = []
+    active_graph_id: str | None = None  # graph chosen for the current turn
+    active_team_ids: list[int] = []     # team scope for the current turn
+    active_team_names: list[str] = []
+    config = {}
+    session_function: str | None = None
 
-    2. error events:
-       - Unrecoverable errors
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.pop("type", None)
 
-    Note: Progress messages (info/warning/error from PipelineMessage) are logged
-    on the server side and not sent to the client.
-    """
-    async def event_generator():
-        """Generate SSE events from chat pipeline"""
-        try:
-            # Send initial START event (consistent with ChatProcessStep)
-            start_event = {
-                "type": "process_step",
-                "step": ChatProcessStep.START.value,
-                "data": {
-                    "question": request.content,
-                    "session_start_time": request.session_start_time.isoformat() if request.session_start_time else None,
-                    "message": "작업을 시작합니다..."
+            if not authenticated:
+                if msg_type != "auth":
+                    await websocket.send_json({"type": "error", "content": "Authentication required"})
+                    break
+
+                chat_token = data.get("chat_token")
+                if not chat_token:
+                    await websocket.send_json({"type": "error", "content": "chat_token is required"})
+                    break
+
+                user = await verify_chat_token(chat_token)
+                if not user:
+                    await websocket.send_json({"type": "error", "content": "Invalid or expired chat_token"})
+                    break
+
+                session_id = data.get("session_id")
+                if not session_id:
+                    await websocket.send_json({"type": "error", "content": "session_id is required"})
+                    break
+
+                active_session = await get_session_for_user(session_id, user)
+                if active_session is None:
+                    await websocket.send_json({"type": "error", "content": "Invalid or unauthorized session_id"})
+                    break
+
+                all_user_teams = await list_teams_by_user(user)
+                all_user_team_ids = [t["id"] for t in all_user_teams]
+                all_user_team_names = [t["name"] for t in all_user_teams]
+                allowed_graph_ids = await resolve_user_graph_ids(user)
+
+                authenticated = True
+                await websocket.send_json({"type": "authenticated", "session_id": active_session.id})
+                continue
+
+            if msg_type == "configure":
+                session_function = data.pop("function", session_function)
+                config.update(**data)
+                await websocket.send_json({"type": "configured"})
+                continue
+
+            if msg_type == "message":
+                content = data.get("content")
+                if not content:
+                    await websocket.send_json({"type": "error", "content": "message content is required"})
+                    break
+                if not all_user_teams:
+                    await websocket.send_json({"type": "error", "content": "User does not belong to any team"})
+                    break
+
+                # Per-message team scoping: the client may send `team_ids` to limit
+                # document search to a subset of its teams. Unset/empty -> all of the
+                # user's teams. scope_team_ids intersects with the user's own teams so
+                # an inaccessible team can't be searched (returns None if none match).
+                scoped = scope_team_ids(data.get("team_ids"), all_user_teams)
+                if scoped is None:
+                    await websocket.send_json({"type": "error", "content": "None of the requested team_ids are accessible"})
+                    break
+                active_team_ids, active_team_names = scoped
+
+                graphs = getattr(websocket.app.state, "graphs", {}) or {}
+                if not graphs or not allowed_graph_ids:
+                    await websocket.send_json({"type": "error", "content": "Chat is unavailable (no LLM configured)."})
+                    break
+
+                # L1 routing: pick which graph handles this request (team-scoped).
+                router_model = getattr(websocket.app.state, "router_model", None)
+                active_graph_id = await select_graph(content, allowed_graph_ids, router_model)
+                graph = graphs.get(active_graph_id)
+                if graph is None:
+                    await websocket.send_json({"type": "error", "content": "Selected graph is unavailable."})
+                    break
+                await websocket.send_json({"type": "routed", "graph_id": active_graph_id})
+
+                # One graph run = one thread; fresh thread_id per turn.
+                config["configurable"] = {"thread_id": f"{active_session.id}:{uuid.uuid4().hex}"}
+                # Per-turn trace metadata. config["metadata"] is inherited by all
+                # child runs and lands in LangSmith (configurable only auto-copies
+                # scalars, so lists like team_ids must go here explicitly).
+                # Resume reuses this turn's config, so it carries over.
+                config["metadata"] = {
+                    "session_id": active_session.id,
+                    "user_id": user.id,
+                    "team_ids": active_team_ids,
+                    "team_names": active_team_names,
+                    "graph_id": active_graph_id,
                 }
-            }
-            yield f"data: {json.dumps(start_event, ensure_ascii=False)}\n\n"
 
-            # 대화 기록 조회 및 ChatHistory 생성
-            conversations = await fetch_conversation_by_user_and_date(
-                user=user,
-                start_date=request.session_start_time,
-                limit=3
-            )
-
-            chat_history = ChatHistory.from_conversations(
-                conversations) if conversations else ChatHistory()
-
-            # Get user's accessible document groups for security
-            accessible_groups = await get_user_accessible_document_groups(user.id)
-
-            # Variables to store for final conversation save
-            final_answer = None
-            final_documents = []
-            # Process stream and yield events
-            async for step_result in chat_pipeline.process_stream(
-                question=request.content,
-                chat_history=chat_history,
-                forced_groups=accessible_groups
-            ):
-                # Handle different message types
-                if isinstance(step_result, PipelineMessage):
-                    # Log progress messages on server side only (not sent to client)
-                    message_type = step_result.message_type.value
-                    message = step_result.message
-
-                    if message_type == "error":
-                        print(f"❌ [Chat Pipeline] {message}")
-                    elif message_type == "warning":
-                        print(f"⚠️  [Chat Pipeline] {message}")
-                    else:  # info
-                        print(f"ℹ️  [Chat Pipeline] {message}")
-
-                    # Continue to next iteration without sending to client
-                    continue
-
-                elif isinstance(step_result, ChatProcess):
-                    step = step_result.step
-
-                    if step == ChatProcessStep.AGENT_SELECTION:
-                        # Agent selection completed
-                        selection_data = step_result.data
-                        event_data = {
-                            "type": "process_step",
-                            "step": step.value,
-                            "data": selection_data.to_dict() if hasattr(selection_data, 'to_dict') else {}
-                        }
-                        yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
-
-                    elif step == ChatProcessStep.AGENT_EXECUTION:
-                        # Agent execution completed
-                        execution_data = step_result.data
-                        event_data = {
-                            "type": "process_step",
-                            "step": step.value,
-                            "data": execution_data.to_dict() if hasattr(execution_data, 'to_dict') else {}
-                        }
-                        yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
-
-                    elif step == ChatProcessStep.ANSWER_GENERATION:
-                        # Answer generation completed
-                        data: ChatResult = step_result.data
-                        final_answer = data.answer
-                        final_documents = []
-                        for group_docs in data.internal_documents:
-                            for doc in group_docs:
-                                final_documents.append(doc)
-                        event_data = {
-                            "type": "process_step",
-                            "step": step.value,
-                            "data": {
-                                "answer": data.answer,
-                                "internal_documents": [doc.to_reference_response() for doc in final_documents]
-                            }
-                        }
-                        yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
-
-            # Save conversation to database
-            if final_answer:
-                await create_conversation(
+                await stream_and_send(
+                    websocket,
+                    content,
+                    active_team_ids,
+                    active_team_names,
+                    graph,
+                    config,
                     user=user,
-                    question=request.content,
-                    answer=final_answer,
-                    references=final_documents,
-                    enhanced_question=request.content,
+                    session=active_session,
+                    function=session_function,
                 )
 
-            # Send completion event (consistent with process_step format)
-            completion_data = {
-                "type": "process_step",
-                "step": ChatProcessStep.COMPLETED.value,
-                "data": {
-                    # TODO some debug DATA
-                }
-            }
-            yield f"data: {json.dumps(completion_data, ensure_ascii=False)}\n\n"
+            elif msg_type == "resume":
+                graphs = getattr(websocket.app.state, "graphs", {}) or {}
+                graph = graphs.get(active_graph_id) if active_graph_id else None
+                if graph is None or "configurable" not in config:
+                    await websocket.send_json({"type": "error", "content": "No active turn to resume"})
+                    break
 
-        except asyncio.CancelledError:
-            print(f"🔔 Request cancelled by client: {user.email}")
-            error_data = {
-                "type": "error",
-                "message": "Client disconnected"
-            }
-            yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+                # Reuse the current turn's thread_id + team scope (set when the message arrived).
+                await stream_and_send(
+                    websocket,
+                    Command(resume=data.get("content")),
+                    active_team_ids,
+                    active_team_names,
+                    graph,
+                    config,
+                    user=user,
+                    session=active_session,
+                    show_thinking=False,
+                )
 
-        except ClientDisconnect:
-            print(f"🔔 Client disconnected: {user.email}")
+            else:
+                await websocket.send_json({"type": "error", "content": "Unknown message type"})
+                break
 
-        except Exception as e:
-            print(f"❌ Error in chat stream: {str(e)}")
-            error_data = {
-                "type": "error",
-                "message": str(e)
-            }
-            yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # Disable buffering in nginx
-        }
-    )
-
-
-@router.get("/conversation", response_model=Page[ConversationResponse])
-async def get_conversation(
-    user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
-):
-    conversations = fetch_conversation_queryset_by_user(user)
-    return await apaginate(conversations)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.exception("Chat websocket handler error")
+        try:
+            await websocket.send_json({"type": "error", "content": f"Server error: {type(e).__name__}: {e}"})
+        except Exception:
+            pass
+    finally:
+        # Guard on application_state (did *we* already send a close?), not
+        # client_state — otherwise a re-close after the socket is already closed
+        # raises 'Cannot call "send" once a close message has been sent.' The
+        # try/except absorbs a close racing with a client disconnect.
+        if websocket.application_state != WebSocketState.DISCONNECTED:
+            try:
+                await websocket.close()
+            except RuntimeError:
+                pass

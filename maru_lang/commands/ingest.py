@@ -1,203 +1,90 @@
-"""
-Ingest 명령어: IngestPipeline을 사용한 파일 ingest
-"""
+"""Ingest command - process local files via LangGraph pipeline."""
+import time
 import typer
-from typing import List, Optional
+from datetime import datetime
 from pathlib import Path
 
-from maru_lang.pipelines.ingest import IngestPipeline
-from maru_lang.pipelines.base import PipelineMessage, PipelineComplete, MessageType
-from maru_lang.models.vector_db import get_vector_db_config_from_settings
-from maru_lang.services.user_group import (
-    link_user_groups_to_document_groups,
-    validate_user_groups_exist,
-)
-from maru_lang.services.document import get_all_descendant_group_names
-from maru_lang.core.relation_db.models.documents import PermissionAction
+from maru_lang.graph.ingest import stream_ingest
+from maru_lang.utils.file_scanner import scan_directory
+from maru_lang.utils.file_storage import save_file
+from maru_lang.utils.document import new_ulid
 from maru_lang.services.admin import get_or_create_admin_user
+from maru_lang.services.team import get_or_create_team
+from maru_lang.schemas.ingest import FileInfo
 
 
 async def ingest_function(
     path: Path,
-    user_groups: Optional[List[str]] = None,
-    max_batch_size_mb: int = 1000,
+    team: str,
     re_embed: bool = False,
 ):
-    """
-    디렉토리를 ingest (파싱, 청킹, 임베딩, VDB 저장)
-
-    Args:
-        path: ingest할 디렉토리 경로 (폴더 이름이 DocumentGroup 이름으로 사용됨)
-        user_groups: 권한을 부여할 UserGroup 리스트
-        max_batch_size_mb: 배치당 최대 메모리 크기 (MB, 기본: 10MB)
-        re_embed: 기존 임베딩을 삭제하고 처음부터 다시 임베딩할지 여부
-    """
-    # ========== 입력 검증 ==========
-    if not path.exists() or not path.is_dir():
-        typer.secho(
-            f"🚫 폴더가 존재하지 않거나 유효하지 않습니다: {path}",
-            fg=typer.colors.RED,
-        )
+    """Ingest files: save to storage, then load/split/embed/store."""
+    if not path.exists():
+        typer.secho(f"Path does not exist: {path}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    # 폴더 이름을 group 이름으로 사용
-    group = path.name
-
-    # ========== UserGroup 검증 및 확인 ==========
-    existing_groups = []
-    if user_groups is None or len(user_groups) == 0:
-        typer.echo("\n" + "=" * 50)
-        typer.secho(
-            "⚠️  경고: UserGroup이 지정되지 않았습니다!",
-            fg=typer.colors.YELLOW,
-            bold=True,
-        )
-        typer.secho(
-            "   문서가 생성되지만 어떤 사용자 그룹도 접근할 수 없습니다.",
-            fg=typer.colors.YELLOW,
-        )
-        typer.echo("=" * 50)
-
-        confirm = typer.confirm("UserGroup 없이 계속 진행하시겠습니까?")
-        if not confirm:
-            typer.secho("\n❌ Ingest 작업이 취소되었습니다.", fg=typer.colors.RED)
-            raise typer.Exit(0)
-        typer.echo()
-    else:
-        # UserGroup 검증
-        existing_groups, missing_groups = await validate_user_groups_exist(user_groups)
-
-        if missing_groups:
-            typer.echo("\n" + "=" * 50)
-            typer.secho(
-                f"⚠️  경고: 다음 UserGroup들이 존재하지 않습니다:",
-                fg=typer.colors.YELLOW,
-                bold=True,
-            )
-            for mg in missing_groups:
-                typer.secho(f"   - {mg}", fg=typer.colors.YELLOW)
-            typer.echo("=" * 50)
-
-            if not existing_groups:
-                typer.secho(
-                    "\n❌ 유효한 UserGroup이 없습니다. 작업을 중단합니다.",
-                    fg=typer.colors.RED,
-                )
-                raise typer.Exit(1)
-
-            confirm = typer.confirm(
-                f"존재하는 {len(existing_groups)}개 그룹으로 계속 진행하시겠습니까?"
-            )
-            if not confirm:
-                typer.secho("\n❌ Ingest 작업이 취소되었습니다.", fg=typer.colors.RED)
-                raise typer.Exit(0)
-            typer.echo()
-
-    # ========== Admin 사용자 가져오기 ==========
     admin_user = await get_or_create_admin_user()
+    team_obj, team_created = await get_or_create_team(name=team, manager=admin_user)
+    if team_created:
+        typer.echo(f"Team '{team}' created")
 
-    # ========== IngestPipeline 실행 ==========
-    typer.echo("\n" + "=" * 50)
-    typer.secho("🚀 Starting Ingest Pipeline", fg=typer.colors.CYAN, bold=True)
-    typer.echo("=" * 50)
-    typer.echo(f"📂 Path: {path}")
-    typer.echo(f"📦 Group: {group}")
-    typer.echo(f"👤 Manager: {admin_user.name} ({admin_user.email})")
-    typer.echo(f"🧠 Batch size: {max_batch_size_mb}MB")
+    # Collect files
+    if path.is_file():
+        file_paths = [path]
+    else:
+        typer.secho("\nScanning files...", fg=typer.colors.CYAN, bold=True)
+        file_paths = scan_directory(path, recursive=True)
+    typer.echo(f"Found {len(file_paths)} file(s)\n")
+
+    typer.secho("Starting Ingest Pipeline", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  Path: {path}")
+    typer.echo(f"  Team: {team_obj.name}")
+    typer.echo(f"  Files: {len(file_paths)}")
     if re_embed:
-        typer.echo(f"🔄 Re-embed: True (기존 임베딩 삭제 후 재생성)")
+        typer.echo("  Re-embed: True")
     typer.echo()
 
-    import time
     start_time = time.time()
+    processed = 0
+    failed = 0
 
     try:
-        # ========== VectorDB 설정 ==========
-        # VectorDB 설정 생성 (system_config.yaml의 vector_db.type에 따라 자동 선택)
-        vdb_config = get_vector_db_config_from_settings()
+        for fp in file_paths:
+            # Save to permanent storage
+            doc_id = new_ulid()
+            storage_path = save_file(fp, team_obj.id, doc_id)
 
-        # ========== IngestPipeline 실행 (config-driven) ==========
-        pipeline = IngestPipeline(
-            path=path,
-            group_name=group,
-            vdb_config=vdb_config,
-            manager_id=admin_user.id,
-            max_batch_size_mb=max_batch_size_mb,
-            re_embed=re_embed,
-        )
+            file_info = FileInfo(
+                fileName=fp.name,
+                createdAt=datetime.fromtimestamp(fp.stat().st_ctime),
+                absolutePath=str(fp.resolve()),
+                size=fp.stat().st_size,
+                tempFilePath=storage_path,
+            )
 
-        result = None
-        async for item in pipeline.run():
-            # 완료 신호 확인
-            if isinstance(item, PipelineComplete):
-                result = item.data
-                break
-
-            # PipelineMessage 처리
-            if isinstance(item, PipelineMessage):
-                if item.message_type == MessageType.INFO:
-                    typer.secho(f"  {item.message}", fg=typer.colors.CYAN)
-                elif item.message_type == MessageType.WARNING:
-                    typer.secho(f"  ⚠️  {item.message}", fg=typer.colors.YELLOW)
-                elif item.message_type == MessageType.ERROR:
-                    typer.secho(f"  ❌ {item.message}", fg=typer.colors.RED)
-
-        if result is None:
-            raise ValueError("Pipeline did not return a result")
+            async for node_name, messages in stream_ingest(
+                file=file_info,
+                team_id=team_obj.id,
+                re_embed=re_embed,
+            ):
+                for msg in messages:
+                    if "ERROR" in msg:
+                        typer.secho(f"  {msg}", fg=typer.colors.RED)
+                        failed += 1
+                    else:
+                        typer.secho(f"  {msg}", fg=typer.colors.CYAN)
+            processed += 1
 
     except ValueError as e:
-        typer.secho(f"\n❌ Ingest 실패: {str(e)}", fg=typer.colors.RED)
+        typer.secho(f"\nIngest failed: {e}", fg=typer.colors.RED)
         raise typer.Exit(1)
     except Exception as e:
-        typer.secho(f"\n❌ 예상치 못한 오류: {str(e)}", fg=typer.colors.RED)
-        import traceback
-
-        traceback.print_exc()
+        typer.secho(f"\nUnexpected error: {e}", fg=typer.colors.RED)
         raise typer.Exit(1)
 
-    # ========== UserGroup 권한 연결 ==========
-    if existing_groups:
-        typer.echo("\n" + "=" * 50)
-        typer.secho("🔐 Linking UserGroups", fg=typer.colors.CYAN, bold=True)
-        typer.echo("=" * 50)
-
-        # 생성된 모든 DocumentGroup 이름 가져오기 (하위 그룹 포함)
-        all_doc_group_names = await get_all_descendant_group_names([group])
-
-        typer.echo(
-            f"📊 Linking {len(existing_groups)} UserGroup(s) to {len(all_doc_group_names)} DocumentGroup(s)..."
-        )
-        typer.echo(f"   UserGroups: {', '.join(existing_groups)}")
-        typer.echo(f"   Permissions: READ, WRITE, MANAGE")
-
-        perm_result = await link_user_groups_to_document_groups(
-            user_group_names=existing_groups,
-            document_group_names=all_doc_group_names,
-            actions=[
-                PermissionAction.READ,
-                PermissionAction.WRITE,
-                PermissionAction.MANAGE,
-            ],
-            link_descendants=True,
-        )
-
-        typer.secho(
-            f"✅ {perm_result['permissions_created']}개 권한 생성됨",
-            fg=typer.colors.GREEN,
-        )
-
-    # ========== 완료 메시지 ==========
     elapsed_time = time.time() - start_time
-
-    typer.echo("\n" + "=" * 50)
-    typer.secho("✅ Ingest 완료!", fg=typer.colors.GREEN, bold=True)
-    typer.echo("=" * 50)
-    typer.echo(f"📊 전체 파일: {result.total_files}개")
-    typer.echo(f"✅ 처리됨: {result.processed_files}개 (신규 또는 수정됨)")
-    typer.echo(f"⏭️  스킵됨: {result.skipped_files}개 (변경 없음)")
-    typer.echo(f"📦 DocumentGroup: {result.group.name}")
-    typer.echo(f"⏱️  소요 시간: {elapsed_time:.2f}초")
     typer.secho(
-        "🎉 모든 문서가 임베딩되어 검색 가능합니다!", fg=typer.colors.GREEN
+        f"\nIngest Complete! {processed}/{len(file_paths)} files ({elapsed_time:.2f}s)",
+        fg=typer.colors.GREEN,
+        bold=True,
     )
-    typer.echo()

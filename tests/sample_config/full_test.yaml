@@ -1,0 +1,90 @@
+# 전체 필드 채운 OpenAI 기반 풀 테스트 config
+# 모든 설정 항목을 빠짐없이 명시. OpenAI 모델 사용.
+
+# --- Infrastructure ---
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  reload: false
+  log_level: info
+
+production: false
+
+database_url: "sqlite://:memory:"
+
+auth:
+  secret_key: test-full-secret-key-2024
+  salt: test-full-salt-2024
+  algorithm: HS256
+  access_token_expire_minutes: 30
+  refresh_token_expire_minutes: 43200
+  default_validation_code: "456123"
+  allowed_domains:
+    - example.com
+    - test.org
+
+smtp:
+  host: smtp.gmail.com
+  port: 587
+  username: test@example.com
+  password: test-smtp-password
+
+vector_db_url: chroma://data/chroma/maru_full_test
+storage_dir: data/storage
+
+# --- LLMs ---
+
+llms:
+  - name: openai-main
+    provider: openai
+    model_name: gpt-4o
+    api_key: "${ENV:OPENAI_API_KEY}"
+    enabled: true
+    config:
+      temperature: 0.7
+      max_tokens: 4096
+      top_p: 0.9
+    timeout: 30.0
+
+  - name: openai-mini
+    provider: openai
+    model_name: gpt-4o-mini
+    api_key: "${ENV:OPENAI_API_KEY}"
+    enabled: true
+    config:
+      temperature: 0.0
+      max_tokens: 2048
+    timeout: 15.0
+
+# --- Chat ---
+
+system_prompt: |
+  당신은 MARU입니다. 기업 내부 문서 검색 및 Q&A AI 어시스턴트입니다.
+
+  ## 역할
+  팀 내부 문서를 검색하고, 사용자의 질문에 정확한 정보를 기반으로 답변합니다.
+
+  ## 사용 가능한 도구
+  - knowledge_search: 팀 문서에서 관련 정보를 검색합니다.
+
+  ## 규칙
+  1. 문서 검색 결과를 기반으로 답변하세요.
+  2. 검색 결과가 없으면 솔직하게 모른다고 말하세요.
+  3. 한국어로 응답하세요.
+  4. 답변에 출처 문서명을 포함하세요.
+
+# --- AI/ML ---
+
+embedding_model: BAAI/bge-m3
+embedding_device: cpu
+
+retriever_top_k: 10
+retriever_search_method: vector
+
+evaluate_method: llm
+
+reranker_enabled: true
+reranker_type: llm
+reranker_llm: openai-mini
+reranker_top_k: 5

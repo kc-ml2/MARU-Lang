@@ -1,9 +1,0 @@
-# Embedder Configuration
-# Configure embedding models and device preferences
-
-# Default embedding model for all document groups
-# Can be overridden per-group in rag_config.yaml
-default_model: BAAI/bge-m3
-
-# Device selection (null => auto-detect: cuda > mps > cpu)
-device: null

@@ -3,10 +3,9 @@ Email service dependency for FastAPI
 """
 from abc import ABC, abstractmethod
 from typing import Optional
-from fastapi import Depends
-from maru_lang.configs.system_config import get_system_config
+from maru_lang.configs import get_config
 
-config = get_system_config()
+config = get_config()
 
 
 class EmailService(ABC):
@@ -20,74 +19,76 @@ class EmailService(ABC):
     def send_otp(self, recipient: str, code: str) -> bool:
         pass
 
+    @abstractmethod
+    def send_invitation(self, recipient: str, team_name: str, inviter_name: str) -> bool:
+        pass
 
-class O365EmailManager(EmailService):
-    """Office 365 email service implementation"""
+    @abstractmethod
+    def send_notification(self, recipient:
+         str, team_name: str, inviter_name: str) -> bool:
+        pass
+
+
+class SMTPEmailManager(EmailService):
+    """SMTP email service implementation"""
 
     def __init__(self):
-        self.sender_email = config.email.sender_email
-        self.client_id = config.email.o365.client_id
-        self.client_secret = config.email.o365.client_secret
-        self.tenant_id = config.email.o365.tenant_id
+        self.host = config.smtp.host
+        self.port = config.smtp.port
+        self.username = config.smtp.username
+        self.password = config.smtp.password
 
     def send_email(self, recipient: str, subject: str, body: str) -> bool:
         try:
-            from O365 import Account
+            import smtplib
+            from email.mime.text import MIMEText
 
-            credentials = (self.client_id, self.client_secret)
-            scopes = ["https://graph.microsoft.com/.default"]
-            account = Account(
-                credentials,
-                auth_flow_type="credentials",
-                tenant_id=self.tenant_id
-            )
+            message = MIMEText(body, "plain")
+            message["From"] = self.username
+            message["To"] = recipient
+            message["Subject"] = subject
 
-            if not account.is_authenticated:
-                account.authenticate(scopes=scopes)
-
-            mailbox = account.mailbox(resource=self.sender_email)
-            message = mailbox.new_message()
-            message.to.add(recipient)
-            message.subject = subject
-            message.body = body
-            message.body_type = "HTML"
-            message.send()
+            with smtplib.SMTP(self.host, self.port) as server:
+                server.starttls()
+                server.login(self.username, self.password)
+                server.sendmail(self.username, recipient, message.as_string())
             return True
         except Exception as e:
-            print(f"Failed to send email: {e}")
+            print(f"Failed to send email via SMTP: {e}")
             return False
 
     def send_otp(self, recipient: str, code: str) -> bool:
-        subject = f"{code} - Maru Lang Verification Code"
-        body = f"""
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; text-align: center; padding: 40px; background-color: #f9f9f9;">
-            <div style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 400px; margin: auto;">
-                <h2 style="color: #333; font-weight: 600;">Your Verification Code</h2>
-                <p style="color: #666; font-size: 16px;">Use this code to verify your email address:</p>
-                <div style="font-size: 28px; font-weight: bold; color: #007AFF; letter-spacing: 4px; padding: 12px 20px; border-radius: 8px; background: #f2f2f7; display: inline-block; margin: 20px 0;">
-                    {code}
-                </div>
-                <p style="color: #999; font-size: 14px;">This code expires in 10 minutes.</p>
-            </div>
-        </div>
-        """
+        subject = f"{code} - Maru Lang Code"
+        body = f"Your verification code is: {code}\n\nThis code expires in 5 minutes."
+        return self.send_email(recipient, subject, body)
+
+    def send_invitation(self, recipient: str, team_name: str, inviter_name: str) -> bool:
+        subject = f"Maru Lang - {team_name} 팀 초대"
+        body = (
+            f"{inviter_name}님이 {team_name} 팀에 초대했습니다.\n\n"
+            f"Maru Lang에 가입하여 팀에 참여하세요.\n"
+            f"가입 후 자동으로 팀에 소속됩니다."
+        )
+        return self.send_email(recipient, subject, body)
+
+    def send_notification(self, recipient: str, team_name: str, inviter_name: str) -> bool:
+        subject = f"Maru Lang - {team_name} 팀에 추가되었습니다"
+        body = (
+            f"{inviter_name}님이 {team_name} 팀에 추가했습니다.\n\n"
+            f"로그인하여 팀을 확인하세요."
+        )
         return self.send_email(recipient, subject, body)
 
 
 def get_email_manager() -> Optional[EmailService]:
     """Get email service instance based on settings"""
-    if not config.email.service_type:
-        return None
-
-    if config.email.service_type == "o365":
-        if all([config.email.o365.client_id, config.email.o365.client_secret, config.email.o365.tenant_id, config.email.sender_email]):
-            try:
-                return O365EmailManager()
-            except Exception as e:
-                print(f"Failed to initialize O365 Email Manager: {e}")
-                return None
-
-    # TODO: smtp 타입 지원 추가
+    smtp = config.smtp
+    if all([smtp.host, smtp.username, smtp.password]):
+        try:
+            return SMTPEmailManager()
+        except Exception as e:
+            print(f"Failed to initialize SMTP Email Manager: {e}")
+            return None
     return None
 
 
@@ -98,7 +99,7 @@ def get_email_service_dependency() -> Optional[EmailService]:
 
 __all__ = [
     "EmailService",
-    "O365EmailManager",
+    "SMTPEmailManager",
     "get_email_manager",
     "get_email_service_dependency",
 ]

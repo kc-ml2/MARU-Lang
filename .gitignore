@@ -1,4 +1,6 @@
 .DS_Store
+.claude/
+CLAUDE.md
 data/*
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -218,5 +220,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-docs/*
 maru_app/*
+# LangGraph sqlite checkpointer sidecar files
+*.checkpoints
+
+# Sample/test binary documents (e.g. dropped into docs/ for ingest testing)
+*.hwp
+*.hwpx
