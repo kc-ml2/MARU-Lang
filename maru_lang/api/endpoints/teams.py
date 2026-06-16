@@ -41,8 +41,10 @@ async def get_team(team_id: int, user=Depends(get_user)):
 async def create_new_team(request: CreateTeamRequest, user=Depends(get_user)):
     """새 팀 생성 (생성자는 자동 admin)"""
     try:
-        team = await create_team(request.name, user)
-        return TeamSummaryResponse(id=team.id, name=team.name, role="admin")
+        team = await create_team(request.name, user, request.description)
+        return TeamSummaryResponse(
+            id=team.id, name=team.name, description=team.description, role="admin"
+        )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 

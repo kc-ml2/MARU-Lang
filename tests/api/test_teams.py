@@ -141,6 +141,35 @@ class TestCreateTeam:
         )
         assert membership.role == "admin"
 
+    async def test_create_team_with_description(
+        self, client: AsyncClient, user_alice: User
+    ):
+        """description을 함께 보내면 저장되고 응답/조회에 반영된다"""
+        resp = await client.post(
+            "/teams",
+            json={"name": "DescTeam", "description": "영업팀 문서 모음"},
+            headers=await auth_header(user_alice.id),
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["description"] == "영업팀 문서 모음"
+
+        # DB에도 저장되었는지 확인
+        team = await Team.get(id=data["id"])
+        assert team.description == "영업팀 문서 모음"
+
+    async def test_create_team_without_description_is_null(
+        self, client: AsyncClient, user_alice: User
+    ):
+        """description을 생략하면 null로 저장된다"""
+        resp = await client.post(
+            "/teams",
+            json={"name": "NoDescTeam"},
+            headers=await auth_header(user_alice.id),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["description"] is None
+
     async def test_duplicate_name_returns_409(
         self, client: AsyncClient, user_alice: User, team_with_admin: Team
     ):

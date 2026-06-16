@@ -21,7 +21,12 @@ async def list_teams_by_user(user: User) -> list[dict]:
     """
     memberships = await TeamMember.filter(user=user).select_related("team")
     return [
-        {"id": m.team.id, "name": m.team.name, "role": m.role}
+        {
+            "id": m.team.id,
+            "name": m.team.name,
+            "description": m.team.description,
+            "role": m.role,
+        }
         for m in memberships
     ]
 
@@ -110,12 +115,15 @@ async def get_team_detail(team_id: int, user: User) -> dict:
     return {
         "id": team.id,
         "name": team.name,
+        "description": team.description,
         "members": members,
         "folders": folders,
     }
 
 
-async def create_team(name: str, creator: User) -> Team:
+async def create_team(
+    name: str, creator: User, description: Optional[str] = None
+) -> Team:
     """
     새 팀 생성. 생성자는 자동으로 admin.
     동일 이름 중복 방지.
@@ -123,7 +131,9 @@ async def create_team(name: str, creator: User) -> Team:
     if await Team.exists(name=name):
         raise ValueError(f"'{name}' 팀이 이미 존재합니다")
 
-    team = await Team.create(name=name, manager=creator, is_private=True)
+    team = await Team.create(
+        name=name, description=description, manager=creator, is_private=True
+    )
     await TeamMember.create(user=creator, team=team, role="admin")
     return team
 
