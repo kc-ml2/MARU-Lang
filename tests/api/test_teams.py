@@ -31,7 +31,7 @@ class TestListTeams:
         self, client: AsyncClient, user_alice: User, team_with_admin: Team
     ):
         """팀에 소속된 사용자가 요청하면 팀 이름과 본인의 역할(admin)이 포함된 목록을 반환한다"""
-        resp = await client.get("/teams", headers=auth_header(user_alice.id))
+        resp = await client.get("/teams", headers=await auth_header(user_alice.id))
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
@@ -42,7 +42,7 @@ class TestListTeams:
         self, client: AsyncClient, user_bob: User
     ):
         """어떤 팀에도 소속되지 않은 사용자는 빈 목록을 받는다"""
-        resp = await client.get("/teams", headers=auth_header(user_bob.id))
+        resp = await client.get("/teams", headers=await auth_header(user_bob.id))
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -70,7 +70,7 @@ class TestGetTeamDetail:
         )
 
         resp = await client.get(
-            f"/teams/{team_with_admin.id}", headers=auth_header(user_alice.id)
+            f"/teams/{team_with_admin.id}", headers=await auth_header(user_alice.id)
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -97,7 +97,7 @@ class TestGetTeamDetail:
         await TeamMember.create(user=system_admin, team=team_with_admin, role="admin")
 
         resp = await client.get(
-            f"/teams/{team_with_admin.id}", headers=auth_header(user_alice.id)
+            f"/teams/{team_with_admin.id}", headers=await auth_header(user_alice.id)
         )
         assert resp.status_code == 200
         members = resp.json()["members"]
@@ -109,7 +109,7 @@ class TestGetTeamDetail:
     ):
         """팀에 소속되지 않은 사용자가 요청하면 403 Forbidden을 반환한다"""
         resp = await client.get(
-            f"/teams/{team_with_admin.id}", headers=auth_header(user_bob.id)
+            f"/teams/{team_with_admin.id}", headers=await auth_header(user_bob.id)
         )
         assert resp.status_code == 403
 
@@ -128,7 +128,7 @@ class TestCreateTeam:
         resp = await client.post(
             "/teams",
             json={"name": "NewTeam"},
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 201
         data = resp.json()
@@ -148,7 +148,7 @@ class TestCreateTeam:
         resp = await client.post(
             "/teams",
             json={"name": "TestTeam"},
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 409
 
@@ -168,7 +168,7 @@ class TestInviteMember:
         resp = await client.post(
             f"/teams/{team_with_admin.id}/members",
             json={"email": "bob@example.com", "name": "Bob"},
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 201
         data = resp.json()
@@ -182,7 +182,7 @@ class TestInviteMember:
         resp = await client.post(
             f"/teams/{team_with_admin.id}/members",
             json={"email": "nobody@example.com", "name": "Nobody"},
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 201
         data = resp.json()
@@ -215,7 +215,7 @@ class TestInviteMember:
             resp = await client.post(
                 f"/teams/{team_with_admin.id}/members",
                 json={"email": "newuser@example.com", "name": "NewUser"},
-                headers=auth_header(user_alice.id),
+                headers=await auth_header(user_alice.id),
             )
             assert resp.status_code == 201
             mock_email.send_invitation.assert_called_once_with(
@@ -239,7 +239,7 @@ class TestInviteMember:
             resp = await client.post(
                 f"/teams/{team_with_admin.id}/members",
                 json={"email": "bob@example.com", "name": "Bob"},
-                headers=auth_header(user_alice.id),
+                headers=await auth_header(user_alice.id),
             )
             assert resp.status_code == 201
             mock_email.send_notification.assert_called_once_with(
@@ -260,7 +260,7 @@ class TestInviteMember:
         resp = await client.post(
             f"/teams/{team_with_admin.id}/members",
             json={"email": "new@example.com", "name": "New"},
-            headers=auth_header(user_bob.id),
+            headers=await auth_header(user_bob.id),
         )
         assert resp.status_code == 403
 
@@ -275,7 +275,7 @@ class TestInviteMember:
         resp = await client.post(
             f"/teams/{team_with_admin.id}/members",
             json={"email": "bob@example.com", "name": "Bob"},
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 400
 
@@ -291,7 +291,7 @@ class TestInviteMember:
         resp = await client.post(
             f"/teams/{team_with_admin.id}/members",
             json={"email": "user@blocked.com", "name": "Blocked"},
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 400
         assert "허용되지 않은 이메일 도메인" in resp.json()["detail"]
@@ -308,7 +308,7 @@ class TestInviteMember:
         resp = await client.post(
             f"/teams/{team_with_admin.id}/members",
             json={"email": "bob@example.com", "name": "Bob"},
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 201
 
@@ -320,7 +320,7 @@ class TestInviteMember:
         resp = await client.post(
             f"/teams/{team_with_admin.id}/members",
             json={"email": "reinvite@example.com", "name": "ReInvite"},
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 201
         assert resp.json()["role"] == "pending"
@@ -329,7 +329,7 @@ class TestInviteMember:
         # 멤버 제거
         resp = await client.delete(
             f"/teams/{team_with_admin.id}/members/{user_id}",
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 204
 
@@ -337,7 +337,7 @@ class TestInviteMember:
         resp = await client.post(
             f"/teams/{team_with_admin.id}/members",
             json={"email": "reinvite@example.com", "name": "ReInvite"},
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 201
         assert resp.json()["role"] == "pending"
@@ -360,7 +360,7 @@ class TestRemoveMember:
         )
         resp = await client.delete(
             f"/teams/{team_with_admin.id}/members/{user_bob.id}",
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 204
 
@@ -375,7 +375,7 @@ class TestRemoveMember:
         """admin이 본인을 제거하려고 하면 403 Forbidden을 반환한다"""
         resp = await client.delete(
             f"/teams/{team_with_admin.id}/members/{user_alice.id}",
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 403
 
@@ -389,7 +389,7 @@ class TestRemoveMember:
         )
         resp = await client.delete(
             f"/teams/{team_with_admin.id}/members/{user_alice.id}",
-            headers=auth_header(user_bob.id),
+            headers=await auth_header(user_bob.id),
         )
         assert resp.status_code == 403
 
@@ -403,7 +403,7 @@ class TestRemoveMember:
         )
         resp = await client.delete(
             f"/teams/{team_with_admin.id}/members/{user_bob.id}",
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 204
 
@@ -413,6 +413,6 @@ class TestRemoveMember:
         """존재하지 않는 사용자 ID로 제거를 시도하면 400 Bad Request를 반환한다"""
         resp = await client.delete(
             f"/teams/{team_with_admin.id}/members/9999",
-            headers=auth_header(user_alice.id),
+            headers=await auth_header(user_alice.id),
         )
         assert resp.status_code == 400

@@ -38,7 +38,7 @@ async def client(app: FastAPI) -> AsyncClient:
 
 class TestCreateSession:
     async def test_creates_session(self, client, user_alice):
-        resp = await client.post("/sessions", json={"title": "hello"}, headers=auth_header(user_alice.id))
+        resp = await client.post("/sessions", json={"title": "hello"}, headers=await auth_header(user_alice.id))
         assert resp.status_code == 201
         body = resp.json()
         assert len(body["id"]) == 32
@@ -47,7 +47,7 @@ class TestCreateSession:
         assert await Session.get(id=body["id"])
 
     async def test_title_optional(self, client, user_alice):
-        resp = await client.post("/sessions", json={}, headers=auth_header(user_alice.id))
+        resp = await client.post("/sessions", json={}, headers=await auth_header(user_alice.id))
         assert resp.status_code == 201
         assert resp.json()["title"] is None
 
@@ -58,7 +58,7 @@ class TestCreateSession:
 class TestGetLastSession:
     async def test_creates_when_none_exists(self, client, user_alice):
         assert await Session.filter(user=user_alice).count() == 0
-        resp = await client.get("/sessions/last", headers=auth_header(user_alice.id))
+        resp = await client.get("/sessions/last", headers=await auth_header(user_alice.id))
         assert resp.status_code == 200
         sid = resp.json()["id"]
         assert await Session.filter(user=user_alice).count() == 1
@@ -67,13 +67,13 @@ class TestGetLastSession:
     async def test_returns_most_recent(self, client, user_alice):
         first = await create_session(user_alice)
         last = await create_session(user_alice)  # newer updated_at
-        resp = await client.get("/sessions/last", headers=auth_header(user_alice.id))
+        resp = await client.get("/sessions/last", headers=await auth_header(user_alice.id))
         assert resp.status_code == 200
         assert resp.json()["id"] == last.id
 
     async def test_ignores_other_users_sessions(self, client, user_alice, user_bob):
         await create_session(user_bob)
-        resp = await client.get("/sessions/last", headers=auth_header(user_alice.id))
+        resp = await client.get("/sessions/last", headers=await auth_header(user_alice.id))
         assert resp.status_code == 200
         sid = resp.json()["id"]
         assert (await Session.get(id=sid).prefetch_related("user")).user_id == user_alice.id
@@ -82,7 +82,7 @@ class TestGetLastSession:
         deleted = await create_session(user_alice)
         deleted.status = SessionStatus.DELETED
         await deleted.save()
-        resp = await client.get("/sessions/last", headers=auth_header(user_alice.id))
+        resp = await client.get("/sessions/last", headers=await auth_header(user_alice.id))
         assert resp.status_code == 200
         assert resp.json()["id"] != deleted.id
 
@@ -95,7 +95,7 @@ class TestListSessions:
         await gone.save()
         await create_session(user_bob)  # other user
 
-        resp = await client.get("/sessions", headers=auth_header(user_alice.id))
+        resp = await client.get("/sessions", headers=await auth_header(user_alice.id))
         assert resp.status_code == 200
         items = resp.json()["items"]
         assert len(items) == 1
@@ -108,12 +108,12 @@ class TestSessionConversations:
         await create_conversation(user=user_alice, session=session, question="q1", answer="a1", references=[])
         await create_conversation(user=user_alice, session=session, question="q2", answer="a2", references=[])
 
-        resp = await client.get(f"/sessions/{session.id}/conversations", headers=auth_header(user_alice.id))
+        resp = await client.get(f"/sessions/{session.id}/conversations", headers=await auth_header(user_alice.id))
         assert resp.status_code == 200
         items = resp.json()["items"]
         assert [c["question"] for c in items] == ["q1", "q2"]  # chronological
 
     async def test_404_for_other_users_session(self, client, user_alice, user_bob):
         session = await create_session(user_bob)
-        resp = await client.get(f"/sessions/{session.id}/conversations", headers=auth_header(user_alice.id))
+        resp = await client.get(f"/sessions/{session.id}/conversations", headers=await auth_header(user_alice.id))
         assert resp.status_code == 404

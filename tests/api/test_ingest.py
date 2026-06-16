@@ -60,7 +60,7 @@ class TestUpload:
 
         resp = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data={"team_id": str(team.id), "mtime": "1712000000.0"},
             files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
         )
@@ -92,7 +92,7 @@ class TestUpload:
 
         resp = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data={"team_id": str(team.id), "mtime": "1712000000.0"},
             files={"file": ("queued.md", io.BytesIO(b"# Hi"), "text/markdown")},
         )
@@ -114,7 +114,7 @@ class TestUpload:
 
         resp = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data={"team_id": str(team.id), "mtime": "0"},
         )
         # No file attached → 422 validation error
@@ -154,7 +154,7 @@ class TestStatus:
 
         resp = await client.get(
             f"/ingest/status?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
 
         assert resp.status_code == 200
@@ -178,7 +178,7 @@ class TestStatus:
 
         resp = await client.get(
             f"/ingest/status?team_id={team.id}&group_id={g1.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -189,7 +189,7 @@ class TestStatus:
         # Unknown/foreign group id → empty (team filter intersects), not a leak.
         resp = await client.get(
             f"/ingest/status?team_id={team.id}&group_id=999999",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         assert resp.status_code == 200
         assert resp.json()["total"] == 0
@@ -209,7 +209,7 @@ class TestStatus:
 
         resp = await client.post(
             "/ingest/check",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             json={"team_id": team.id, "files": [
                 {"fileName": "fail.md", "absolutePath": "/docs/fail.md",
                  "size": 100, "mtime": 1712000000.0},
@@ -225,7 +225,7 @@ class TestStatus:
 
         resp = await client.get(
             f"/ingest/status?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
 
         assert resp.status_code == 200
@@ -250,7 +250,7 @@ class TestStatus:
 
         resp = await client.get(
             f"/ingest/status?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
 
         data = resp.json()
@@ -273,7 +273,7 @@ class TestCheck:
 
         resp = await client.post(
             "/ingest/check",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             json={
                 "team_id": 1,
                 "files": [
@@ -308,7 +308,7 @@ class TestCheck:
 
         resp = await client.post(
             "/ingest/check",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             json={
                 "team_id": team.id,
                 "files": [
@@ -339,7 +339,7 @@ class TestUploadGroupNaming:
 
         resp = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data={
                 "team_id": str(team.id),
                 "mtime": "1712000000.0",
@@ -365,7 +365,7 @@ class TestUploadGroupNaming:
 
         resp = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data={"team_id": str(team.id), "mtime": "1712000000.0"},
             files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
         )
@@ -398,7 +398,7 @@ class TestReupload:
         # First upload
         resp1 = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data=upload_data,
             files=file_payload,
         )
@@ -409,7 +409,7 @@ class TestReupload:
         file_payload2 = {"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")}
         resp2 = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data=upload_data,
             files=file_payload2,
         )
@@ -431,13 +431,13 @@ class TestReupload:
 
         await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data=upload_data,
             files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
         )
         await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data=upload_data,
             files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
         )
@@ -474,7 +474,7 @@ class TestRetry:
 
         resp = await client.post(
             f"/ingest/doc-retry-001/retry?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
 
         assert resp.status_code == 200
@@ -496,7 +496,7 @@ class TestRetry:
 
         resp = await client.post(
             f"/ingest/doc-retry-001/retry?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
 
         assert resp.status_code == 200
@@ -510,7 +510,7 @@ class TestRetry:
 
         resp = await client.post(
             f"/ingest/doc-retry-001/retry?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         assert resp.status_code == 409
 
@@ -521,7 +521,7 @@ class TestRetry:
 
         resp = await client.post(
             f"/ingest/doc-retry-001/retry?team_id={team.id}&force=true",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         assert resp.status_code == 200
         mock_ingest.assert_awaited_once()
@@ -533,7 +533,7 @@ class TestRetry:
 
         resp = await client.post(
             f"/ingest/doc-retry-001/retry?team_id={team.id}&force=true",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         assert resp.status_code == 409
         doc = await Document.get(id="doc-retry-001")
@@ -543,7 +543,7 @@ class TestRetry:
         team, user = team_setup
         resp = await client.post(
             f"/ingest/nope/retry?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         assert resp.status_code == 404
 
@@ -598,7 +598,7 @@ class TestGroupRetry:
 
         resp = await client.post(
             f"/ingest/groups/{group.id}/retry?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
 
         assert resp.status_code == 200
@@ -622,7 +622,7 @@ class TestGroupRetry:
 
         resp = await client.post(
             f"/ingest/groups/{group.id}/retry?team_id={team.id}&force=true",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         data = resp.json()
         assert data["count"] == 2          # error + active
@@ -636,7 +636,7 @@ class TestGroupRetry:
 
         resp = await client.post(
             f"/ingest/groups/{group.id}/retry?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         assert resp.status_code == 409
         assert (await Document.get(id="g-err")).status == DocumentStatus.ERROR
@@ -661,7 +661,7 @@ class TestGroupDelete:
 
         resp = await client.delete(
             f"/ingest/groups/{parent.id}?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -688,7 +688,7 @@ class TestGroupDelete:
 
         resp = await client.delete(
             f"/ingest/groups/{group.id}?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         data = resp.json()
         assert data["deferred"] == 1 and data["deleted"] == 0
@@ -702,7 +702,7 @@ class TestGroupDelete:
         team, user = team_setup
         resp = await client.delete(
             f"/ingest/groups/999999?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         assert resp.status_code == 404
 
@@ -729,7 +729,7 @@ class TestDelete:
 
         resp = await client.delete(
             f"/ingest/doc-del-001?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
 
         assert resp.status_code == 200
@@ -766,7 +766,7 @@ class TestDelete:
         )
 
         resp = await client.delete(
-            f"/ingest/doc-inflight?team_id={team.id}", headers=auth_header(user.id),
+            f"/ingest/doc-inflight?team_id={team.id}", headers=await auth_header(user.id),
         )
         assert resp.status_code == 200
 
@@ -821,7 +821,7 @@ class TestDelete:
         )
 
         resp = await client.delete(
-            f"/ingest/doc-st-001?team_id={team.id}", headers=auth_header(user.id),
+            f"/ingest/doc-st-001?team_id={team.id}", headers=await auth_header(user.id),
         )
         assert resp.status_code == 200
         assert not doc_dir.exists()  # 파일 + 디렉터리 제거됨
@@ -834,7 +834,7 @@ class TestDelete:
 
         resp = await client.delete(
             f"/ingest/nonexistent?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
         assert resp.status_code == 404
 
@@ -866,7 +866,7 @@ class TestDelete:
 
         resp = await client.delete(
             f"/ingest/doc-no-perm?team_id={team.id}",
-            headers=auth_header(user_bob.id),
+            headers=await auth_header(user_bob.id),
         )
         assert resp.status_code == 403
 
@@ -889,7 +889,7 @@ class TestStatusWithAudit:
         # Upload a file (creates UPLOAD audit log)
         resp = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data={"team_id": str(team.id), "mtime": "1712000000.0"},
             files={"file": ("test.md", io.BytesIO(b"# Hello"), "text/markdown")},
         )
@@ -898,7 +898,7 @@ class TestStatusWithAudit:
         # Check status
         resp = await client.get(
             f"/ingest/status?team_id={team.id}",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
         )
 
         assert resp.status_code == 200
@@ -941,7 +941,7 @@ class TestCheckUploadFlow:
         # 1단계: check — 새 파일이므로 업로드 필요
         check_resp = await client.post(
             "/ingest/check",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             json={
                 "team_id": team.id,
                 "files": [
@@ -960,7 +960,7 @@ class TestCheckUploadFlow:
 
         resp = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data={
                 "team_id": str(team.id),
                 "mtime": str(file_mtime),
@@ -974,7 +974,7 @@ class TestCheckUploadFlow:
         # 3단계: check 재호출 — 이미 업로드했으므로 스킵되어야 함
         check_resp2 = await client.post(
             "/ingest/check",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             json={
                 "team_id": team.id,
                 "files": [
@@ -1005,7 +1005,7 @@ class TestCheckUploadFlow:
 
         resp = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data={
                 "team_id": str(team.id),
                 "mtime": str(stat.st_mtime),
@@ -1023,7 +1023,7 @@ class TestCheckUploadFlow:
         # check — 수정된 파일은 다시 업로드 대상
         check_resp = await client.post(
             "/ingest/check",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             json={
                 "team_id": team.id,
                 "files": [
@@ -1058,7 +1058,7 @@ class TestCheckUploadFlow:
         relative_folder = "my-project"
         resp = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data={
                 "team_id": str(team.id),
                 "mtime": str(stat.st_mtime),
@@ -1071,7 +1071,7 @@ class TestCheckUploadFlow:
         # check: 절대경로 사용 (원래 파일 위치)
         check_resp = await client.post(
             "/ingest/check",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             json={
                 "team_id": team.id,
                 "files": [
@@ -1113,7 +1113,7 @@ class TestCheckUploadFlow:
         # a.md만 업로드
         resp = await client.post(
             "/ingest/upload",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             data={
                 "team_id": str(team.id),
                 "mtime": str(files_info[0]["mtime"]),
@@ -1126,7 +1126,7 @@ class TestCheckUploadFlow:
         # check 3개 파일 — a.md는 스킵, b.md/c.md는 업로드 필요
         check_resp = await client.post(
             "/ingest/check",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             json={
                 "team_id": team.id,
                 "files": [
@@ -1158,7 +1158,7 @@ class TestCheckUploadFlow:
         folder_path = str(tmp_path)
 
         resp1 = await client.post(
-            "/ingest/upload", headers=auth_header(user.id),
+            "/ingest/upload", headers=await auth_header(user.id),
             data={"team_id": str(team.id), "mtime": str(f.stat().st_mtime),
                   "folder_path": folder_path},
             files={"file": ("doc.md", io.BytesIO(b"v1"), "text/markdown")},
@@ -1169,7 +1169,7 @@ class TestCheckUploadFlow:
         # 수정: 내용/크기/mtime이 달라진 같은 파일
         f.write_text("v2 — modified, longer content")
         resp2 = await client.post(
-            "/ingest/upload", headers=auth_header(user.id),
+            "/ingest/upload", headers=await auth_header(user.id),
             data={"team_id": str(team.id), "mtime": str(f.stat().st_mtime + 10),
                   "folder_path": folder_path},
             files={"file": ("doc.md", io.BytesIO(b"v2 modified, longer content"), "text/markdown")},
@@ -1201,12 +1201,12 @@ class TestCheckUploadFlow:
 
         common = {"mtime": "1712000000.0", "folder_path": "/shared"}
         r1 = await client.post(
-            "/ingest/upload", headers=auth_header(user.id),
+            "/ingest/upload", headers=await auth_header(user.id),
             data={"team_id": str(team.id), **common},
             files={"file": ("shared.md", io.BytesIO(b"same"), "text/markdown")},
         )
         r2 = await client.post(
-            "/ingest/upload", headers=auth_header(user_bob.id),
+            "/ingest/upload", headers=await auth_header(user_bob.id),
             data={"team_id": str(team_b.id), **common},
             files={"file": ("shared.md", io.BytesIO(b"same"), "text/markdown")},
         )
@@ -1239,13 +1239,13 @@ class TestCheckUploadFlow:
 
         # 첫 업로드
         await client.post(
-            "/ingest/upload", headers=auth_header(user.id),
+            "/ingest/upload", headers=await auth_header(user.id),
             data=upload_data,
             files={"file": ("memo.md", io.BytesIO(content), "text/markdown")},
         )
         # 재업로드
         resp2 = await client.post(
-            "/ingest/upload", headers=auth_header(user.id),
+            "/ingest/upload", headers=await auth_header(user.id),
             data=upload_data,
             files={"file": ("memo.md", io.BytesIO(content), "text/markdown")},
         )
@@ -1254,7 +1254,7 @@ class TestCheckUploadFlow:
         # check — 여전히 스킵
         check_resp = await client.post(
             "/ingest/check",
-            headers=auth_header(user.id),
+            headers=await auth_header(user.id),
             json={
                 "team_id": team.id,
                 "files": [

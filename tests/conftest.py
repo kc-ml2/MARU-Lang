@@ -47,8 +47,8 @@ from tortoise import Tortoise
 from fastapi import FastAPI
 from datetime import timedelta
 
-from maru_lang.core.relation_db.models.auth import User, Team, TeamMember
-from maru_lang.utils.security import create_jwt_token
+from maru_lang.core.relation_db.models.auth import User, Team, TeamMember, UserToken
+from maru_lang.utils.security import create_jwt_token, hash_token
 
 MODELS = ["maru_lang.core.relation_db.models"]
 
@@ -84,18 +84,29 @@ async def client(app: FastAPI) -> AsyncClient:
         yield ac
 
 
-def make_token(user_id: int) -> str:
-    """Generate a test JWT token."""
-    token, _ = create_jwt_token(
+async def make_token(user_id: int) -> str:
+    """Generate a test JWT token and persist its UserToken session row.
+
+    get_user now verifies the access token against UserToken so that
+    logout/revocation takes effect (mirrors services.auth.generate_token), so a
+    usable test token must have a matching live UserToken row.
+    """
+    token, expires_at = create_jwt_token(
         data={"sub": str(user_id)},
         expires_delta=timedelta(minutes=30),
+    )
+    await UserToken.create(
+        user_id=user_id,
+        device_id="test-device",
+        token_hash=hash_token(token),
+        expires_at=expires_at,
     )
     return token
 
 
-def auth_header(user_id: int) -> dict[str, str]:
-    """Return an Authorization header dict."""
-    return {"Authorization": f"Bearer {make_token(user_id)}"}
+async def auth_header(user_id: int) -> dict[str, str]:
+    """Return an Authorization header dict for an authenticated test session."""
+    return {"Authorization": f"Bearer {await make_token(user_id)}"}
 
 
 @pytest.fixture()

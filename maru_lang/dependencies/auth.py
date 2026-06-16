@@ -1,7 +1,8 @@
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from maru_lang.enums.auth import UserRoleCode
-from maru_lang.core.relation_db.models.auth import User, UserRole
+from maru_lang.core.relation_db.models.auth import User, UserRole, UserToken
+from maru_lang.services.auth import is_token_valid
 from maru_lang.utils.security import decode_token
 
 oauth2_scheme = OAuth2PasswordBearer(
@@ -48,6 +49,15 @@ async def get_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"message": "User not found", "code": "USER_NOT_FOUND"},
+        )
+
+    # JWT 서명/만료만으로는 logout을 반영할 수 없다. logout은 UserToken.revoked_at을
+    # 설정하므로, DB에 저장된 access token이 폐기/만료되지 않았는지 함께 확인한다.
+    if not await is_token_valid(token, UserToken):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"message": "Token revoked", "code": "TOKEN_REVOKED"},
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     return user
