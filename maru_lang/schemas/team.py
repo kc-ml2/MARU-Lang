@@ -8,8 +8,9 @@ class CreateTeamRequest(BaseModel):
 
 
 class InviteMemberRequest(BaseModel):
+    # 초대는 이메일만 받는다. 표시명은 각 사용자가 본인 닉네임(User.name)으로
+    # 직접 설정하며, 초대 시 다른 사용자의 이름을 덮어쓰지 않는다.
     email: str
-    name: str
 
 
 class TeamMemberResponse(BaseModel):

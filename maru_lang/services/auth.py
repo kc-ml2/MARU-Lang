@@ -46,6 +46,20 @@ async def create_or_get_user(email: str) -> User:
     return new_user
 
 
+async def update_user_name(user: User, name: str) -> User:
+    """사용자가 본인의 전역 표시명(닉네임)을 변경한다. 본인만 호출 (엔드포인트에서 get_user).
+
+    Raises:
+        ValueError: 이름이 비어있을 때.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("이름은 비어 있을 수 없습니다")
+    user.name = name
+    await user.save(update_fields=["name"])
+    return user
+
+
 async def _activate_anonymous_user(user: User) -> None:
     """익명 유저가 최초 로그인하면 anonymous → editor 롤 변경 + pending 멤버십을 member로 변경"""
     if not user.role_id:
