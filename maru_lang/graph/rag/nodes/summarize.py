@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 
 from maru_lang.constants import TURN_SUMMARY_PROMPT, SESSION_SUMMARY_PROMPT
 from maru_lang.core.relation_db.models.auth import User
+from maru_lang.core.relation_db.models.llm import Llm
 from maru_lang.services.chat import create_conversation
 from maru_lang.services.session import get_session, update_session_summary
 from maru_lang.graph.rag.state import RagState
@@ -42,6 +43,10 @@ def make_summarize_node(llm: BaseChatModel):
             question = humans[0].content if humans else ""
         answer = state.get("answer") or ""
 
+        # 이 턴이 실제로 돌린 LLM (감사 기록). name -> Llm row.
+        llm_name = state.get("llm_name")
+        llm_used = await Llm.get_or_none(name=llm_name) if llm_name else None
+
         turn_summary = await _summarize(
             TURN_SUMMARY_PROMPT.format(question=question, answer=answer)
         )
@@ -59,6 +64,7 @@ def make_summarize_node(llm: BaseChatModel):
             summary=turn_summary or None,
             feedback_score=state.get("feedback_score"),
             feedback_reason=state.get("feedback_reason"),
+            llm_used=llm_used,
         )
 
         await update_session_summary(session, session_summary)

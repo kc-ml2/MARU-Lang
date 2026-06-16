@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 from maru_lang.services.auth import verify_chat_token
 from maru_lang.dependencies.auth import User
 from maru_lang.services.team import list_teams_by_user, resolve_user_graph_ids, scope_team_ids
+from maru_lang.services.llm import resolve_user_llm_name
 from maru_lang.services.session import get_session_for_user
 from maru_lang.core.relation_db.models.chat import Session
 from maru_lang.graph.router import select_graph
@@ -59,6 +60,7 @@ async def chat_websocket(websocket: WebSocket):
     active_session: Session | None = None
     allowed_graph_ids: list[str] = []
     active_graph_id: str | None = None  # graph chosen for the current turn
+    active_llm_name: str | None = None  # LLM resolved for the current turn (per-user)
     active_team_ids: list[int] = []     # team scope for the current turn
     active_team_names: list[str] = []
     config = {}
@@ -133,10 +135,22 @@ async def chat_websocket(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "content": "Chat is unavailable (no LLM configured)."})
                     break
 
+                # Per-user LLM: resolve the user's assigned LLM (falls back to the
+                # default when unassigned/disabled) and pick that LLM's graph map so
+                # every node runs on it. active_llm_name is the *actual* LLM used and
+                # is recorded on the turn's Conversation.
+                graphs_by_llm = getattr(websocket.app.state, "graphs_by_llm", {}) or {}
+                default_llm_name = getattr(websocket.app.state, "default_llm_name", None)
+                active_llm_name = await resolve_user_llm_name(user, set(graphs_by_llm), default_llm_name)
+                graph_map = graphs_by_llm.get(active_llm_name) or graphs
+
                 # L1 routing: pick which graph handles this request (team-scoped).
-                router_model = getattr(websocket.app.state, "router_model", None)
+                # Route with the user's resolved LLM too, so the whole turn (routing
+                # + all graph nodes) runs on one LLM. Falls back to the shared model.
+                models_by_llm = getattr(websocket.app.state, "models_by_llm", {}) or {}
+                router_model = models_by_llm.get(active_llm_name) or getattr(websocket.app.state, "router_model", None)
                 active_graph_id = await select_graph(content, allowed_graph_ids, router_model)
-                graph = graphs.get(active_graph_id)
+                graph = graph_map.get(active_graph_id)
                 if graph is None:
                     await websocket.send_json({"type": "error", "content": "Selected graph is unavailable."})
                     break
@@ -154,6 +168,7 @@ async def chat_websocket(websocket: WebSocket):
                     "team_ids": active_team_ids,
                     "team_names": active_team_names,
                     "graph_id": active_graph_id,
+                    "llm_used": active_llm_name,
                 }
 
                 await stream_and_send(
@@ -166,11 +181,15 @@ async def chat_websocket(websocket: WebSocket):
                     user=user,
                     session=active_session,
                     function=session_function,
+                    llm_name=active_llm_name,
                 )
 
             elif msg_type == "resume":
+                # Reuse the same per-user LLM graph chosen when the message arrived.
                 graphs = getattr(websocket.app.state, "graphs", {}) or {}
-                graph = graphs.get(active_graph_id) if active_graph_id else None
+                graphs_by_llm = getattr(websocket.app.state, "graphs_by_llm", {}) or {}
+                graph_map = graphs_by_llm.get(active_llm_name) or graphs
+                graph = graph_map.get(active_graph_id) if active_graph_id else None
                 if graph is None or "configurable" not in config:
                     await websocket.send_json({"type": "error", "content": "No active turn to resume"})
                     break
@@ -185,6 +204,7 @@ async def chat_websocket(websocket: WebSocket):
                     config,
                     user=user,
                     session=active_session,
+                    llm_name=active_llm_name,
                     show_thinking=False,
                 )
 

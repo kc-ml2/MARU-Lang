@@ -184,11 +184,13 @@ async def run_rag(
     function: str | None = None,
     session_id: str | None = None,
     user_id: int | None = None,
+    llm_name: str | None = None,
 ) -> str:
     """Run the graph once and return the final answer text."""
     input_state = build_input(
         message, team_ids, team_names,
         function=function, session_id=session_id, user_id=user_id,
+        llm_name=llm_name,
     )
     result = await graph.ainvoke(input_state, config=config)
     return result["messages"][-1].content
@@ -204,6 +206,7 @@ async def stream_rag(
     function: str | None = None,
     session_id: str | None = None,
     user_id: int | None = None,
+    llm_name: str | None = None,
 ) -> AsyncIterator[tuple[str, str | list]]:
     """Stream the graph execution as (event_type, content) tuples.
 
@@ -221,6 +224,7 @@ async def stream_rag(
         input_state = build_input(
             message, team_ids, team_names,
             function=function, session_id=session_id, user_id=user_id,
+            llm_name=llm_name,
         )
 
     async for mode, event in graph.astream(

@@ -11,6 +11,7 @@ from maru_lang.core.relation_db.models.auth import Team, TeamMember, User, UserR
 from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
 from maru_lang.dependencies.email import EmailService
 from maru_lang.enums.auth import UserRoleCode
+from maru_lang.services.llm import assign_balanced_llm
 
 config = get_config()
 
@@ -169,6 +170,7 @@ async def invite_member(
             name=name or email.split("@")[0],
             role=anonymous_role,
         )
+        await assign_balanced_llm(target_user)
     else:
         # 이름 업데이트 (초대 시 제공된 이름)
         if name and target_user.name != name:

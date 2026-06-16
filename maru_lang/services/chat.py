@@ -2,6 +2,7 @@ from typing import List
 from maru_lang.core.relation_db.models.chat import Conversation, ConversationReference, Session
 from maru_lang.core.relation_db.models.documents import Document
 from maru_lang.core.relation_db.models.auth import User
+from maru_lang.core.relation_db.models.llm import Llm
 from tortoise.queryset import QuerySet
 from datetime import datetime
 from datetime import timezone
@@ -65,6 +66,7 @@ async def create_conversation(
     summary: str | None = None,
     feedback_score: int | None = None,
     feedback_reason: str | None = None,
+    llm_used: "Llm | None" = None,
 ) -> Conversation:
     """
     Create a conversation (one completed graph turn) with its references.
@@ -79,6 +81,7 @@ async def create_conversation(
         enhanced_question: Enhanced/rewritten question (optional)
         feedback_score: User feedback score for this turn (optional)
         feedback_reason: User feedback reason for this turn (optional)
+        llm_used: LLM that actually ran this turn (audit record, optional)
     """
     conversation = await Conversation.create(
         user=user,
@@ -89,6 +92,7 @@ async def create_conversation(
         summary=summary,
         feedback_score=feedback_score,
         feedback_reason=feedback_reason,
+        llm_used=llm_used,
     )
 
     # Use a set to avoid creating duplicate references
