@@ -28,6 +28,16 @@ auth:
 #   username: ${ENV:SMTP_USERNAME}
 #   password: ${ENV:SMTP_PASSWORD}
 
+# --- Observability (optional) ---
+# Langfuse LLM tracing. When enabled with valid keys, every chat-graph LLM node
+# (route/intent/keywords/generate/summarize/...) is traced automatically, grouped
+# by session and attributed to the user. Disabled by default.
+# langfuse:
+#   enabled: true
+#   public_key: ${ENV:LANGFUSE_PUBLIC_KEY}
+#   secret_key: ${ENV:LANGFUSE_SECRET_KEY}
+#   host: https://cloud.langfuse.com   # self-hosted: http://localhost:3000
+
 vector_db_url: chroma://data/chroma/maru
 storage_dir: data/storage
 
@@ -55,14 +65,16 @@ system_prompt: |
   You are MARU, an AI assistant for team document search and Q&A.
 
   ## Role
-  Search internal team documents and answer user questions based on accurate information.
-
-  ## Available Tools
-  - knowledge_search: Search team documents for relevant information.
+  Answer user questions based on accurate information. When internal team document
+  search results are provided, ground your answer in them.
 
   ## Rules
-  1. Answer based on document search results. Honestly say you don't know if no results are found.
+  1. If document search results are provided, answer based on them and honestly say
+     you don't know if they are insufficient.
   2. Respond in Korean.
+  3. Document context may be labeled with internal reference IDs in square brackets
+     (e.g. [doc_001]). These are internal markers only - never repeat them in your
+     answer. Refer to sources by their document name in natural language instead.
 
 # --- AI/ML ---
 
@@ -87,3 +99,17 @@ reranker_top_k: 5
 # Enabling REQUIRES redis_url, otherwise startup fails fast.
 task_queue_enabled: false
 # redis_url: redis://localhost:6379
+
+# --- KorDoc MCP parser (optional) ---
+# When enabled, KorDoc-supported formats are parsed via the KorDoc MCP server
+# (run locally; requires Node/npx) instead of the LangChain loaders.
+#   - hwp/hwpx/hwpml -> always KorDoc (no LangChain loader exists)
+#   - pdf/docx/xls/xlsx -> split between KorDoc and LangChain by kordoc_mcp_ratio
+#     (decided deterministically per document) so parsing quality can be compared
+#   - everything else -> LangChain loaders
+kordoc_mcp_enabled: true
+# kordoc_mcp_command: npx
+# kordoc_mcp_args: ["-y", "kordoc", "mcp"]
+# kordoc_mcp_ratio: 0.0    # share of pdf/docx/xls/xlsx routed to KorDoc
+#                          # (default 0.0 = LangChain; raise for A/B, needs pdfjs-dist for PDF)
+# kordoc_mcp_timeout: 120  # seconds; bounds the per-document MCP call

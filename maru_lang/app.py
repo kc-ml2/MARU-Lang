@@ -187,6 +187,12 @@ class MaruLangApp(FastAPI):
                 self.state.arq = await create_pool(RedisSettings.from_dsn(cfg.redis_url))
                 print(f"✓ Ingest task queue enabled (ARQ @ {cfg.redis_url})")
 
+            # 7. Observability (optional). Initialize Langfuse eagerly so key/
+            #    install problems surface at startup, not on the first chat turn.
+            from maru_lang.core.observability import get_langfuse_handler
+            if get_langfuse_handler() is not None:
+                print(f"✓ Langfuse tracing enabled (@ {cfg.langfuse.host})")
+
             print("=" * 60)
             print("✨ Application startup complete!")
             print("=" * 60)
@@ -212,6 +218,10 @@ class MaruLangApp(FastAPI):
         from tortoise import Tortoise
         await Tortoise.close_connections()
         print("✓ Database connections closed")
+
+        # Flush any buffered Langfuse traces (no-op when disabled).
+        from maru_lang.core.observability import flush_langfuse
+        flush_langfuse()
 
         print("✨ Shutdown complete")
 

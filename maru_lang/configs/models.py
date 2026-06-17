@@ -72,6 +72,25 @@ class SMTPConfig:
     password: Optional[str] = None
 
 
+@dataclass
+class LangfuseConfig:
+    """Langfuse observability (LLM tracing) configuration.
+
+    Disabled by default. When enabled with valid keys, a CallbackHandler is
+    attached to each chat-graph run so every LLM node (route/intent/generate/
+    summarize/...) is traced automatically.
+    """
+    enabled: bool = False
+    public_key: Optional[str] = None
+    secret_key: Optional[str] = None
+    host: str = "https://cloud.langfuse.com"
+
+    @property
+    def is_active(self) -> bool:
+        """True only when turned on AND both keys are present."""
+        return bool(self.enabled and self.public_key and self.secret_key)
+
+
 # --- Unified Config ---
 
 @dataclass
@@ -86,6 +105,7 @@ class MaruConfig:
     database_url: str = "sqlite:///chatbot.db"
     auth: AuthConfig = field(default_factory=AuthConfig)
     smtp: SMTPConfig = field(default_factory=SMTPConfig)
+    langfuse: LangfuseConfig = field(default_factory=LangfuseConfig)
     vector_db_url: str = "chroma://data/chroma/maru"
     storage_dir: str = "data/storage"
     # LangGraph checkpointer. If None, derived from database_url
@@ -216,12 +236,22 @@ class MaruConfig:
             password=smtp_data.get("password"),
         )
 
+        # Langfuse (observability)
+        lf_data = data.get("langfuse", {}) or {}
+        langfuse = LangfuseConfig(
+            enabled=bool(lf_data.get("enabled", False)),
+            public_key=lf_data.get("public_key"),
+            secret_key=lf_data.get("secret_key"),
+            host=lf_data.get("host", LangfuseConfig.host),
+        )
+
         return cls(
             server=server,
             production=bool(data.get("production", False)),
             database_url=data.get("database_url", cls.database_url),
             auth=auth,
             smtp=smtp,
+            langfuse=langfuse,
             vector_db_url=data.get("vector_db_url", cls.vector_db_url),
             storage_dir=data.get("storage_dir", cls.storage_dir),
             checkpoint_db_url=data.get("checkpoint_db_url"),
