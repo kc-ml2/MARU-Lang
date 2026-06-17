@@ -40,10 +40,15 @@ def get_langfuse_handler():
     try:
         from langfuse import Langfuse
         from langfuse.langchain import CallbackHandler
-    except ImportError:
+    except ImportError as e:
+        # Surface the real cause: besides 'langfuse' itself, its langchain
+        # integration imports the umbrella 'langchain' package (for version
+        # detection), which a langchain-core-only install lacks.
         logger.warning(
-            "langfuse.enabled=true but the 'langfuse' package is not installed. "
-            "Install it (`pip install langfuse`) or set langfuse.enabled=false."
+            "langfuse.enabled=true but the Langfuse langchain integration is "
+            "unavailable (%s). Install the observability deps "
+            "(`pip install langfuse langchain`) or set langfuse.enabled=false.",
+            e,
         )
         return None
 

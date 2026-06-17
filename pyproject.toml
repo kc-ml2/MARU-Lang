@@ -60,7 +60,10 @@ dependencies = [
     "mcp>=1.0.0",
     # Observability (LLM tracing; activated by langfuse.enabled). Inactive
     # unless configured, but the LangChain callback import lives in the package.
+    # langfuse's langchain integration imports the umbrella `langchain` package
+    # (for version detection), so it's required alongside langchain-core.
     "langfuse>=3.0.0",
+    "langchain>=0.3.0",
     # Document parsers
     "unstructured[pdf]>=0.10.0",
     "msoffcrypto-tool>=5.0.0",
