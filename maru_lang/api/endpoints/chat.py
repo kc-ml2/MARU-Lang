@@ -16,6 +16,7 @@ from maru_lang.services.session import get_session_for_user
 from maru_lang.core.relation_db.models.chat import Session
 from maru_lang.graph.router import select_graph
 from maru_lang.api.ws.chat import stream_and_send
+from maru_lang.core.observability import get_langfuse_handler, langfuse_trace_metadata
 
 router = APIRouter(
     prefix="/chat",
@@ -170,6 +171,18 @@ async def chat_websocket(websocket: WebSocket):
                     "graph_id": active_graph_id,
                     "llm_used": active_llm_name,
                 }
+
+                # Langfuse tracing (no-op when disabled): one callback on the run
+                # config traces every LLM node in the graph. Set per turn (not
+                # appended) so the reused `config` dict can't accumulate handlers.
+                handler = get_langfuse_handler()
+                if handler is not None:
+                    config["callbacks"] = [handler]
+                    config["metadata"].update(langfuse_trace_metadata(
+                        session_id=active_session.id,
+                        user_id=user.id,
+                        tags=[active_graph_id, active_llm_name],
+                    ))
 
                 await stream_and_send(
                     websocket,

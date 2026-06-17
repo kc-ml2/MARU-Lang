@@ -58,6 +58,9 @@ dependencies = [
     # MCP (KorDoc parser; activated by kordoc_mcp_enabled). The KorDoc server
     # itself runs via `npx -y kordoc mcp`; this is the Python stdio client.
     "mcp>=1.0.0",
+    # Observability (LLM tracing; activated by langfuse.enabled). Inactive
+    # unless configured, but the LangChain callback import lives in the package.
+    "langfuse>=3.0.0",
     # Document parsers
     "unstructured[pdf]>=0.10.0",
     "msoffcrypto-tool>=5.0.0",
