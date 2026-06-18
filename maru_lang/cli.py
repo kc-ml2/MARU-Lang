@@ -193,9 +193,12 @@ def _start_ingest_workers(config, count: int) -> list:
     """Launch `count` ARQ ingest worker subprocesses (empty list if count<=0)."""
     if count <= 0:
         return []
-    from maru_lang.commands.worker import spawn_worker
-    typer.echo(f"🧵 Starting {count} ingest worker(s) (redis={config.redis_url})")
-    return [spawn_worker() for _ in range(count)]
+    from maru_lang.commands.worker import plan_worker_gpus, spawn_worker
+    gpus = plan_worker_gpus(count, config.resolve_ingest_embedding_device())
+    pinned = [g for g in gpus if g is not None]
+    suffix = f", gpus={pinned}" if pinned else ""
+    typer.echo(f"🧵 Starting {count} ingest worker(s) (redis={config.redis_url}{suffix})")
+    return [spawn_worker(gpu_id=g) for g in gpus]
 
 
 @app.command()
