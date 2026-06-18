@@ -20,6 +20,7 @@ class RagState(TypedDict, total=False):
     question: Optional[str]                               # this turn's user question
     answer: Optional[str]                                 # this turn's generated answer
     memory_context: Optional[str]                         # assembled prior-conversation context
+    style_directive: Optional[str]                        # user style preferences as an instruction (built by context_builder, consumed by generate)
     retrieved_documents: list[dict]                       # surfaced to API/persistence
     function: Optional[str]                               # e.g. "feedback" mode
     feedback_score: Optional[int]                         # user rating (1-5)

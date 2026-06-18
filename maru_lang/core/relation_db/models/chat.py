@@ -30,7 +30,7 @@ class UserMemory(Model):
     user = fields.ForeignKeyField(
         "models.User", related_name="memories", on_delete=fields.CASCADE, index=True)
     kind = fields.IntEnumField(UserMemoryKind)
-    key = fields.CharField(max_length=255, null=True)  # FACT upsert 키 (예: "name")
+    key = fields.CharField(max_length=255, null=True)  # upsert 키. FACT=자유 키(예: "name"), PREFERENCE=닫힌 카테고리(tone/language/format/length/persona)
     content = fields.TextField()
     created_at = fields.DatetimeField(auto_now_add=True)
     updated_at = fields.DatetimeField(auto_now=True)

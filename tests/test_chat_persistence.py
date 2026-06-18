@@ -93,8 +93,10 @@ class TestContextBuilder:
         await upsert_user_memory(user_alice.id, UserMemoryKind.FACT, "김지훈", key="name")
         await upsert_user_memory(user_alice.id, UserMemoryKind.PREFERENCE, "짧은 말투 선호")
         out = await make_context_builder_node()({"user_id": user_alice.id})
+        # facts → passive memory_context; preferences → separate style_directive (consumed by generate)
         assert "김지훈" in out["memory_context"]
-        assert "짧은 말투" in out["memory_context"]
+        assert "짧은 말투" not in out["memory_context"]
+        assert "짧은 말투" in out["style_directive"]
 
 
 class TestUserMemoryService:
@@ -115,6 +117,16 @@ class TestUserMemoryService:
         await upsert_user_memory(user_alice.id, UserMemoryKind.PREFERENCE, "짧은 말투")
         assert len(await list_user_memories(user_alice.id)) == 1
 
+    async def test_preference_upsert_by_key(self, user_alice):
+        # issue #22: 같은 범주(tone) 선호는 최신값으로 덮어써야 한다.
+        from maru_lang.enums.chat import UserMemoryKind
+        from maru_lang.services.memory import upsert_user_memory, list_user_memories
+
+        await upsert_user_memory(user_alice.id, UserMemoryKind.PREFERENCE, "반말", key="tone")
+        await upsert_user_memory(user_alice.id, UserMemoryKind.PREFERENCE, "존댓말", key="tone")
+        tones = [m for m in await list_user_memories(user_alice.id) if m.key == "tone"]
+        assert len(tones) == 1 and tones[0].content == "존댓말"
+
 
 class TestMemoryExtractor:
     async def test_extracts_and_upserts(self, user_alice):
@@ -126,7 +138,7 @@ class TestMemoryExtractor:
 
         model = MagicMock(spec=BaseChatModel)
         model.ainvoke = AsyncMock(return_value=AIMessage(
-            content='[{"kind":"fact","key":"name","content":"김지훈"},{"kind":"preference","content":"짧은 말투"}]'
+            content='[{"kind":"fact","key":"name","content":"김지훈"},{"kind":"preference","key":"tone","content":"짧은 말투"}]'
         ))
         node = make_memory_extractor_node(model)
         await node({"user_id": user_alice.id, "messages": [HumanMessage(content="내 이름은 김지훈이야")]})
@@ -134,6 +146,42 @@ class TestMemoryExtractor:
         mems = await list_user_memories(user_alice.id)
         assert len(mems) == 2
         assert any(m.key == "name" and m.content == "김지훈" for m in mems)
+
+    async def test_drops_preference_without_valid_key(self, user_alice):
+        # issue #22: 닫힌 카테고리(PREFERENCE_KEYS) 밖이거나 키 없는 선호는 버린다.
+        from unittest.mock import MagicMock, AsyncMock
+        from langchain_core.language_models import BaseChatModel
+        from langchain_core.messages import AIMessage, HumanMessage
+        from maru_lang.graph.rag.nodes.memory import make_memory_extractor_node
+        from maru_lang.services.memory import list_user_memories
+
+        model = MagicMock(spec=BaseChatModel)
+        model.ainvoke = AsyncMock(return_value=AIMessage(
+            content='[{"kind":"preference","content":"반말"},'
+                    '{"kind":"preference","key":"vibe","content":"~잉 말투"}]'
+        ))
+        node = make_memory_extractor_node(model)
+        await node({"user_id": user_alice.id, "messages": [HumanMessage(content="반말로 해줘")]})
+        assert await list_user_memories(user_alice.id) == []
+
+    async def test_contradictory_preference_overwrites_by_key(self, user_alice):
+        # issue #22 재현: 반말→존댓말(둘 다 tone)이면 누적되지 않고 최신만 남는다.
+        from unittest.mock import MagicMock, AsyncMock
+        from langchain_core.language_models import BaseChatModel
+        from langchain_core.messages import AIMessage, HumanMessage
+        from maru_lang.graph.rag.nodes.memory import make_memory_extractor_node
+        from maru_lang.services.memory import list_user_memories
+
+        model = MagicMock(spec=BaseChatModel)
+        model.ainvoke = AsyncMock(side_effect=[
+            AIMessage(content='[{"kind":"preference","key":"tone","content":"반말"}]'),
+            AIMessage(content='[{"kind":"preference","key":"tone","content":"존댓말"}]'),
+        ])
+        node = make_memory_extractor_node(model)
+        await node({"user_id": user_alice.id, "messages": [HumanMessage(content="반말로 해줘")]})
+        await node({"user_id": user_alice.id, "messages": [HumanMessage(content="존댓말로 해줘")]})
+        mems = await list_user_memories(user_alice.id)
+        assert len(mems) == 1 and mems[0].content == "존댓말"
 
     async def test_noop_without_user_id(self):
         from unittest.mock import MagicMock, AsyncMock

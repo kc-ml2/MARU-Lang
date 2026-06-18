@@ -22,6 +22,11 @@ def make_generate_node(llm: BaseChatModel, system_prompt: str = ""):
             prompt_msgs.append(SystemMessage(
                 content=f"다음은 내부 문서 검색 결과다. 이를 근거로 답하라:\n\n{result}"
             ))
+        # Stored style preferences as their own instruction (built by context_builder),
+        # kept separate from the passive "이전 대화 맥락" so they apply even in a fresh session.
+        style = state.get("style_directive")
+        if style:
+            prompt_msgs.append(SystemMessage(content=style))
         prompt_msgs += history
 
         response = await llm.ainvoke(prompt_msgs)

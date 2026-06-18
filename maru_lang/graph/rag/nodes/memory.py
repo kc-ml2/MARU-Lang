@@ -9,7 +9,7 @@ import re
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
-from maru_lang.constants import MEMORY_EXTRACT_PROMPT
+from maru_lang.constants import MEMORY_EXTRACT_PROMPT, PREFERENCE_KEYS
 from maru_lang.enums.chat import UserMemoryKind
 from maru_lang.services.memory import upsert_user_memory
 from maru_lang.graph.rag.state import RagState
@@ -33,6 +33,11 @@ def _parse_items(text: str) -> list[dict]:
 
 def make_memory_extractor_node(llm: BaseChatModel):
     """Extract facts/preferences from the user message and upsert into UserMemory."""
+    # Extraction is deterministic classification, not creative generation. Pin it to
+    # temperature 0 so it doesn't intermittently return [] (dropping preferences) at the
+    # chat model's higher temperature. Falls back to the raw model if a provider rejects
+    # the override (e.g. reasoning models that force temperature=1).
+    extract_llm = llm.bind(temperature=0)
 
     async def memory_extractor_node(state: RagState) -> dict:
         user_id = state.get("user_id")
@@ -46,11 +51,16 @@ def make_memory_extractor_node(llm: BaseChatModel):
         if not question:
             return {}
 
+        prompt = MEMORY_EXTRACT_PROMPT.format(message=question)
         try:
-            response = await llm.ainvoke(MEMORY_EXTRACT_PROMPT.format(message=question))
+            response = await extract_llm.ainvoke(prompt)
             items = _parse_items(response.content or "")
         except Exception:
-            items = []
+            try:
+                response = await llm.ainvoke(prompt)
+                items = _parse_items(response.content or "")
+            except Exception:
+                items = []
 
         for item in items:
             if not isinstance(item, dict):
@@ -59,7 +69,13 @@ def make_memory_extractor_node(llm: BaseChatModel):
             content = (item.get("content") or "").strip()
             if not kind or not content:
                 continue
-            await upsert_user_memory(user_id, kind, content, key=item.get("key") or None)
+            key = item.get("key") or None
+            # preference는 닫힌 카테고리 키로만 저장(같은 범주 최신값 upsert).
+            # 키가 없거나 범위 밖이면 미분류로 보고 버린다(모순 선호 누적 방지).
+            if kind == UserMemoryKind.PREFERENCE:
+                if key not in PREFERENCE_KEYS:
+                    continue
+            await upsert_user_memory(user_id, kind, content, key=key)
 
         return {}
 

@@ -5,28 +5,10 @@ previous turns. This entry node rebuilds memory from the DB — the user's
 persistent facts/preferences (UserMemory) plus the session's rolling summary
 and recent turns — into `memory_context`, which route/generate then share.
 """
-from maru_lang.enums.chat import UserMemoryKind
 from maru_lang.services.chat import fetch_recent_conversations_by_session
-from maru_lang.services.memory import list_user_memories
+from maru_lang.services.memory import format_user_memory
 from maru_lang.services.session import get_session
 from maru_lang.graph.rag.state import RagState
-
-
-async def _user_memory_block(user_id: int) -> str:
-    """Format the user's persistent facts/preferences into one block."""
-    memories = await list_user_memories(user_id)
-    if not memories:
-        return ""
-    facts, prefs = [], []
-    for m in memories:
-        line = f"{m.key}: {m.content}" if m.key else m.content
-        (facts if m.kind == UserMemoryKind.FACT else prefs).append(line)
-    lines = []
-    if facts:
-        lines.append("사실:\n- " + "\n- ".join(facts))
-    if prefs:
-        lines.append("선호:\n- " + "\n- ".join(prefs))
-    return "[사용자 정보]\n" + "\n".join(lines)
 
 
 def make_context_builder_node(recent_turns: int = 3):
@@ -35,12 +17,13 @@ def make_context_builder_node(recent_turns: int = 3):
     async def context_builder_node(state: RagState) -> dict:
         """Assemble user memory + prior session turns into `memory_context`."""
         parts: list[str] = []
+        style_directive = ""
 
         user_id = state.get("user_id")
         if user_id:
-            block = await _user_memory_block(user_id)
-            if block:
-                parts.append(block)
+            facts_block, style_directive = await format_user_memory(user_id)
+            if facts_block:
+                parts.append(facts_block)
 
         session_id = state.get("session_id")
         if session_id:
@@ -53,6 +36,6 @@ def make_context_builder_node(recent_turns: int = 3):
                 answer = conv.summary or conv.answer
                 parts.append(f"Q: {conv.question}\nA: {answer}")
 
-        return {"memory_context": "\n\n".join(parts)}
+        return {"memory_context": "\n\n".join(parts), "style_directive": style_directive}
 
     return context_builder_node
