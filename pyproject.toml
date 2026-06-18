@@ -30,7 +30,6 @@ dependencies = [
     # (TortoiseContext), which breaks the app's RegisterTortoise-at-startup
     # lifespan pattern (see issue: tortoise 1.x migration).
     "tortoise-orm[asyncpg]>=0.20.0,<1.0",
-    "aerich>=0.7.2,<0.9",
     # Auth
     "python-jose[cryptography]>=3.3.0",
     "passlib>=1.7.4",
@@ -76,7 +75,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "aerich[toml]>=0.7.0",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
@@ -96,8 +94,6 @@ maru_lang = [
     "templates/**/*.yml",
     "templates/**/*.py",
     "templates/**/*.md",
-    "core/relation_db/migrations/**/*.sql",
-    "core/relation_db/migrations/**/*.py",
 ]
 
 [tool.pytest.ini_options]
@@ -122,9 +118,6 @@ markers = [
 
 [tool.coverage.run]
 source = ["maru_lang"]
-omit = [
-    "maru_lang/core/relation_db/migrations/*",
-]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -135,8 +128,3 @@ exclude_lines = [
 
 [project.scripts]
 maru = "maru_lang.cli:app"
-
-[tool.aerich]
-tortoise_orm = "maru_lang.core.relation_db.TORTOISE_ORM"
-location = "./maru_lang/core/relation_db/migrations"
-src_folder = "./."

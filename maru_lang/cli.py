@@ -49,8 +49,6 @@ def serve(
         None, help="Enable hot-reload when code changes"),
     log_level: str = typer.Option(None, help="Log level"),
     workers: int = typer.Option(1, help="Number of server workers"),
-    skip_migrations: bool = typer.Option(
-        False, "--skip-migrations", help="Skip automatic database migrations"),
     worker: int = typer.Option(
         0, "--worker",
         help="Number of ARQ ingest workers to co-launch (0=none; distinct from --workers, "
@@ -68,16 +66,6 @@ def serve(
 
     # Check if installation is complete
     _check_maru_app_installation()
-
-    # Run migrations before starting the server
-    if not skip_migrations:
-        typer.echo("🔄 Checking for pending database migrations...")
-        from maru_lang.core.relation_db.migration_utils import run_migrations_sync
-        success = run_migrations_sync()
-        if not success:
-            typer.echo(
-                "⚠️  Migration check failed, but continuing to start server...")
-        typer.echo("")
 
     # Add current directory and maru_app to Python path
     if '.' not in sys.path:
@@ -204,8 +192,6 @@ def run(
                               help="Team names (comma-separated). Default: 'public' (switch in chat with /team)."),
     host: str = typer.Option(None, help="Server host"),
     port: int = typer.Option(None, help="Server port"),
-    skip_migrations: bool = typer.Option(
-        False, "--skip-migrations", help="Skip automatic database migrations"),
     worker: int = typer.Option(
         0, "--worker",
         help="Number of ARQ ingest workers to co-launch (0=none; needs task_queue_enabled)"),
@@ -247,7 +233,6 @@ def run(
         team_names=team_list,
         host=host,
         port=port,
-        skip_migrations=skip_migrations,
         worker_count=worker,
         attach=attach,
     ))
