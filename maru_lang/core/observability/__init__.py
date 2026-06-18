@@ -71,18 +71,27 @@ def flush_langfuse() -> None:
 
 
 def langfuse_trace_metadata(
-    *, session_id: Optional[str], user_id, tags: Optional[list] = None
+    *,
+    session_id: Optional[str],
+    user_id,
+    user_name: Optional[str] = None,
+    tags: Optional[list] = None,
 ) -> dict:
     """Map app identifiers to the metadata keys Langfuse v3 reads off a run.
 
     Merge the result into `config["metadata"]` so traces are grouped by session
     and attributed to a user in the Langfuse UI.
+
+    Langfuse has no separate "name" field — the value shown in the Users tab is
+    `langfuse_user_id`. To surface the human name there while keeping the id
+    unique (names collide), we display it as `name (#id)` when a name is given.
     """
     meta: dict = {}
     if session_id:
         meta["langfuse_session_id"] = session_id
     if user_id is not None:
-        meta["langfuse_user_id"] = str(user_id)
+        name = (user_name or "").strip()
+        meta["langfuse_user_id"] = f"{name} (#{user_id})" if name else str(user_id)
     clean_tags = [t for t in (tags or []) if t]
     if clean_tags:
         meta["langfuse_tags"] = clean_tags

@@ -181,6 +181,7 @@ async def chat_websocket(websocket: WebSocket):
                     config["metadata"].update(langfuse_trace_metadata(
                         session_id=active_session.id,
                         user_id=user.id,
+                        user_name=user.name,
                         tags=[active_graph_id, active_llm_name],
                     ))
 
