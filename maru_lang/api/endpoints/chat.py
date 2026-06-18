@@ -166,6 +166,7 @@ async def chat_websocket(websocket: WebSocket):
                 config["metadata"] = {
                     "session_id": active_session.id,
                     "user_id": user.id,
+                    "user_name": user.name,
                     "team_ids": active_team_ids,
                     "team_names": active_team_names,
                     "graph_id": active_graph_id,
