@@ -8,7 +8,10 @@ from maru_lang.services.auth import (
     generate_chat_token,
     update_user_name,
 )
-from maru_lang.services.team import get_or_create_team, add_member_to_team
+from maru_lang.services.team import (
+    get_or_create_domain_team,
+    add_member_to_team,
+)
 from maru_lang.services.admin import (
     get_or_create_public_team,
     get_or_create_admin_user,
@@ -137,19 +140,17 @@ async def verify_code(
 
         user = await create_or_get_user(request.email)
 
-        # set up default team using domain
-        # if example.co.kr -> example
-        email_domain = request.email.split("@")[-1]
-        domain_prefix = email_domain.split(".")[0]
-        team, created = await get_or_create_team(
-            name=domain_prefix,
-            manager=user)
-
         # 자동생성 도메인 팀은 시스템 admin이 관리한다(public 팀과 동일 정책).
-        # 먼저 로그인한 사람이 우연히 조직 팀의 admin이 되지 않도록, 일반 유저는
-        # member로만 가입시키고 admin 권한은 시스템 admin에게 둔다.
+        # 먼저 로그인한 사람이 우연히 조직 팀의 소유자/admin이 되지 않도록, manager는
+        # 시스템 admin으로 두고 일반 유저는 member로만 가입시킨다.
+        # 팀 이름 도출은 get_or_create_domain_team이 담당(첫 라벨만 겹치는 다른
+        # 도메인이 한 팀으로 병합되지 않도록 가드 포함).
+        admin_user = await get_or_create_admin_user()
+        team, created = await get_or_create_domain_team(
+            request.email,
+            manager=admin_user)
+
         if created:
-            admin_user = await get_or_create_admin_user()
             await add_member_to_team(
                 team=team,
                 user=admin_user,
