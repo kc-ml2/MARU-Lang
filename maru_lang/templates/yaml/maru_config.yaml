@@ -28,6 +28,13 @@ auth:
 #   username: ${ENV:SMTP_USERNAME}
 #   password: ${ENV:SMTP_PASSWORD}
 
+# Email message overrides. `maru install` seeds maru_app/templates/email/ with
+# "*.txt.example" files; rename one to "<name>.txt" (otp/invitation/notification)
+# to override that message — the first line is the subject, the rest is the body.
+# Placeholders: otp -> {code}; invitation/notification -> {team_name}, {inviter_name}.
+# Point elsewhere with email_template_dir (relative to the project root):
+# email_template_dir: maru_app/templates/email
+
 # --- Observability (optional) ---
 # Langfuse LLM tracing. When enabled with valid keys, every chat-graph LLM node
 # (route/intent/keywords/generate/summarize/...) is traced automatically, grouped

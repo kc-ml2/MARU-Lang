@@ -105,6 +105,12 @@ class MaruConfig:
     database_url: str = "sqlite:///chatbot.db"
     auth: AuthConfig = field(default_factory=AuthConfig)
     smtp: SMTPConfig = field(default_factory=SMTPConfig)
+    # Directory for email message overrides, resolved relative to cwd (the project
+    # root that holds maru_app/). Each "<name>.txt" (otp/invitation/notification)
+    # uses its first line as the subject and the rest as the body; missing files
+    # fall back to the built-in defaults in dependencies/email_templates.py.
+    # `maru install` seeds "*.txt.example" copies here.
+    email_template_dir: str = "maru_app/templates/email"
     langfuse: LangfuseConfig = field(default_factory=LangfuseConfig)
     vector_db_url: str = "chroma://data/chroma/maru"
     storage_dir: str = "data/storage"
@@ -251,6 +257,7 @@ class MaruConfig:
             database_url=data.get("database_url", cls.database_url),
             auth=auth,
             smtp=smtp,
+            email_template_dir=data.get("email_template_dir", cls.email_template_dir),
             langfuse=langfuse,
             vector_db_url=data.get("vector_db_url", cls.vector_db_url),
             storage_dir=data.get("storage_dir", cls.storage_dir),
