@@ -94,6 +94,7 @@ maru_lang = [
     "templates/**/*.yml",
     "templates/**/*.py",
     "templates/**/*.md",
+    "templates/**/*.txt.example",
 ]
 
 [tool.pytest.ini_options]
