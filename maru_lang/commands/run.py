@@ -25,7 +25,7 @@ console = Console()
 
 # Slash commands available in the chat REPL (used for autocomplete + help).
 _SLASH_COMMANDS = [
-    "/ingest", "/team", "/status", "/retry", "/llms", "/function", "/help", "/clear", "/quit", "/exit",
+    "/ingest", "/team", "/scope", "/status", "/retry", "/llms", "/function", "/help", "/clear", "/quit", "/exit",
 ]
 
 
@@ -61,6 +61,10 @@ class _ChatCompleter(Completer):
             for opt in ("feedback", "off"):
                 if opt.startswith(arg.strip()):
                     yield Completion(opt, start_position=-len(arg))
+        elif cmd == "/scope":
+            for opt in ("team", "all"):
+                if opt.startswith(arg.strip()):
+                    yield Completion(opt, start_position=-len(arg))
         elif cmd == "/team":
             frag = arg.rsplit(",", 1)[-1].lstrip()
             for name in self._teams_getter():
@@ -70,6 +74,22 @@ class _ChatCompleter(Completer):
 
 class _QuitSignal(Exception):
     pass
+
+
+def _message_payload(content: str, scope: str, current_teams: list[str], team_map: dict[str, int]) -> dict:
+    """Build the chat `message` payload, scoping document search per `scope`.
+
+    - scope == "team": include `team_ids` for the currently selected teams, so
+      the server searches only those teams' documents.
+    - scope == "all": omit `team_ids` — the server falls back to every team the
+      CLI admin user can access (all accumulated memberships).
+    """
+    payload = {"type": "message", "content": content}
+    if scope == "team":
+        team_ids = [team_map[name] for name in current_teams if name in team_map]
+        if team_ids:
+            payload["team_ids"] = team_ids
+    return payload
 
 
 async def run_session(
@@ -311,9 +331,15 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
         return
     team_display = ", ".join(current_teams) if current_teams else "none"
 
+    # Document-search scope: "team" (only the selected teams) or "all" (every
+    # team the CLI admin can access). Default to "team" so search stays scoped
+    # to the chosen team; toggle at runtime with /scope.
+    scope = "team"
+
     console.print(Panel.fit(
         "[bold cyan]MARU Run[/bold cyan]\n"
         f"[yellow]Teams: {team_display}[/yellow]\n"
+        f"[yellow]Scope: {scope}[/yellow] [dim](search the selected team only; /scope all for every team)[/dim]\n"
         "[dim]Type /help for commands, /quit to exit · Tab for autocomplete[/dim]",
         border_style="cyan",
     ))
@@ -372,6 +398,22 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                     console.print(f"[green]Switched to team: {team_display}[/green]")
                     continue
 
+                elif cmd == "/scope":
+                    val = args.strip().lower()
+                    if not val:
+                        console.print(
+                            f"[cyan]Current scope: {scope}[/cyan] "
+                            "[dim](team=selected teams only, all=every accessible team)[/dim]"
+                        )
+                        continue
+                    if val not in ("team", "all"):
+                        console.print("[red]Usage: /scope team|all[/red]")
+                        continue
+                    scope = val
+                    desc = "selected teams only" if scope == "team" else "every accessible team"
+                    console.print(f"[green]Search scope: {scope}[/green] [dim]({desc})[/dim]")
+                    continue
+
                 elif cmd == "/ingest":
                     await _api_ingest(base_url, access_token, args, current_teams, team_map)
                     continue
@@ -410,9 +452,11 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                     console.print("[dim]Type /help for available commands[/dim]")
                     continue
 
-            # Chat message via WebSocket
+            # Chat message via WebSocket. Scope document search per /scope:
+            # "team" sends team_ids (selected teams only), "all" omits it.
+            payload = _message_payload(stripped, scope, current_teams, team_map)
             try:
-                await ws.send(json.dumps({"type": "message", "content": stripped}))
+                await ws.send(json.dumps(payload))
             except websockets.exceptions.ConnectionClosed:
                 console.print("[red]Connection lost. Reconnecting...[/red]")
                 token_data = await _get_cli_token(base_url, current_teams)
@@ -420,11 +464,12 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                     console.print("[red]Reconnection failed.[/red]")
                     break
                 access_token = token_data["access_token"]
+                team_map = {t["name"]: t["id"] for t in token_data["teams"]}
                 ws, err = await _connect_ws(ws_url, token_data["chat_token"], session_id)
                 if err:
                     console.print(f"[red]Reconnection failed: {err}[/red]")
                     break
-                await ws.send(json.dumps({"type": "message", "content": stripped}))
+                await ws.send(json.dumps(_message_payload(stripped, scope, current_teams, team_map)))
 
             # Receive streamed response (re-enters on interrupt)
             got_error = False
@@ -505,6 +550,7 @@ def _print_help():
     help_text = (
         "[bold cyan]Available Commands[/bold cyan]\n\n"
         "  [yellow]/team[/yellow] [name]        — Show or switch team (comma-separated for multiple)\n"
+        "  [yellow]/scope[/yellow] team|all     — Limit document search to selected team(s) or all accessible\n"
         "  [yellow]/ingest[/yellow] <path>      — Ingest files via API (uses current team)\n"
         "  [yellow]/status[/yellow]             — Show document status via API\n"
         "  [yellow]/retry[/yellow] [force]      — Re-ingest failed docs (force: ACTIVE too)\n"
