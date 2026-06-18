@@ -282,6 +282,46 @@ async def get_or_create_team(
     return team, True
 
 
+async def get_or_create_domain_team(
+    email: str,
+    manager: User,
+) -> tuple[Team, bool]:
+    """이메일 도메인으로 조직(자동) 팀을 조회/생성한다.
+
+    팀 이름은 도메인 첫 라벨(prefix)을 쓴다(예: alice@acme.com -> "acme").
+    단, 같은 prefix 팀이 이미 있는데 그 팀의 실제 멤버(시스템 admin 제외)가
+    "다른 전체 도메인"이면(예: 기존 acme.com 팀에 acme.co.kr 유입) 병합하지 않고
+    전체 도메인 이름의 별도 팀으로 격리한다. 첫 라벨만 우연히 겹치는 무관한
+    도메인이 한 조직 팀으로 섞이는 크로스 테넌트 멤버십을 막기 위함.
+
+    manager: 자동 생성 팀의 소유자. 호출부에서 시스템 admin을 넘긴다(먼저 로그인한
+    일반 유저가 조직 팀의 소유자가 되지 않도록).
+
+    Returns:
+        tuple[Team, bool]: (Team 인스턴스, 신규 생성 여부)
+    """
+    email_domain = email.split("@")[-1].lower()
+    domain_prefix = email_domain.split(".")[0]
+
+    team, created = await get_or_create_team(name=domain_prefix, manager=manager)
+    if not created:
+        # 기존 prefix 팀의 실제 멤버 도메인과 비교(시스템 admin은 role로 제외).
+        members = (
+            await TeamMember.filter(team=team)
+            .exclude(role="admin")
+            .prefetch_related("user")
+        )
+        member_domains = {
+            m.user.email.split("@")[-1].lower() for m in members
+        }
+        if member_domains and email_domain not in member_domains:
+            # 첫 라벨만 겹치는 다른 도메인 -> 전체 도메인 이름으로 격리(prefix 팀과 안 겹침).
+            team, created = await get_or_create_team(
+                name=email_domain, manager=manager
+            )
+    return team, created
+
+
 async def add_member_to_team(
     team: Team,
     user: User,
