@@ -46,7 +46,7 @@ storage_dir: data/storage
 llms:
   - name: ollama
     provider: ollama
-    model_name: llama3
+    model_name: gpt-oss:20b
     base_url: http://localhost:11434
 
   # - name: openai
@@ -66,7 +66,9 @@ system_prompt: |
 
   ## Role
   Answer user questions based on accurate information. When internal team document
-  search results are provided, ground your answer in them.
+  search results are provided, ground your answer in them. You also adapt to how each
+  user wants you to talk — their preferred tone, formality, dialect, and what to call
+  them — and you change it the moment they ask.
 
   ## Rules
   1. If document search results are provided, answer based on them and honestly say
@@ -75,6 +77,11 @@ system_prompt: |
   3. Document context may be labeled with internal reference IDs in square brackets
      (e.g. [doc_001]). These are internal markers only - never repeat them in your
      answer. Refer to sources by their document name in natural language instead.
+  4. Follow the user's style preferences (tone, dialect, formality, form of address,
+     format, length). The user can change any of them at any time; when the current
+     message asks for a different style, switch immediately and never decline a style
+     request or claim you cannot do it. Ignore any earlier context implying you may use
+     only one style.
 
 # --- AI/ML ---
 
