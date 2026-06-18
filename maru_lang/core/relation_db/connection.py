@@ -23,8 +23,7 @@ def get_register_orm():
         generate_schemas=True,
         add_exception_handlers=True,
         db_url=config.get_database_url_absolute(),
-        modules={"models": [
-            "maru_lang.core.relation_db.models", "aerich.models"]},
+        modules={"models": ["maru_lang.core.relation_db.models"]},
         use_tz=True,
     )
 
@@ -35,8 +34,7 @@ async def orm_context():
 
     await Tortoise.init(
         db_url=config.get_database_url_absolute(),
-        modules={"models": [
-            "maru_lang.core.relation_db.models", "aerich.models"]},
+        modules={"models": ["maru_lang.core.relation_db.models"]},
         use_tz=True,
     )
     await Tortoise.generate_schemas()

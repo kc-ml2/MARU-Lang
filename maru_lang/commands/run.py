@@ -76,7 +76,6 @@ async def run_session(
     team_names: list[str],
     host: str,
     port: int,
-    skip_migrations: bool,
     worker_count: int = 0,
     attach: bool = False,
 ):
@@ -88,7 +87,7 @@ async def run_session(
     With attach=True no server (or worker) is spawned — the REPL connects to an
     already-running maru server (e.g. a systemd `maru serve`) and leaves it
     running on exit. This is safe because the REPL is a pure HTTP/WS client:
-    all DB work (migrations, admin bootstrap, graph compilation) lives in the
+    all DB work (schema setup, admin bootstrap, graph compilation) lives in the
     server process, which the running service has already done.
     """
     base_url = f"http://{host}:{port}"
@@ -100,7 +99,7 @@ async def run_session(
     if attach:
         console.print(f"[dim]Attaching to running server at {host}:{port}...[/dim]")
     else:
-        server_proc = _start_server(host, port, skip_migrations)
+        server_proc = _start_server(host, port)
         console.print(f"[dim]Starting server on {host}:{port}...[/dim]")
         # 1b. Optionally co-launch ingest worker(s).
         worker_procs = _start_workers(worker_count)
@@ -143,7 +142,7 @@ async def run_session(
             console.print("[dim]Detached (server left running).[/dim]")
 
 
-def _start_server(host: str, port: int, skip_migrations: bool) -> subprocess.Popen:
+def _start_server(host: str, port: int) -> subprocess.Popen:
     """Start uvicorn as a background subprocess."""
     env = os.environ.copy()
     cwd = os.getcwd()
