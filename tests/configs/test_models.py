@@ -192,6 +192,24 @@ class TestAuthConfig:
         auth = AuthConfig(allowed_domains=["Example.COM"])
         assert auth.is_domain_allowed("user@example.com") is True
 
+    def test_is_domain_allowed_multiple_at_blocked(self):
+        # "a@evil.com@example.com" must NOT pass by matching only the last label
+        auth = AuthConfig(allowed_domains=["example.com"])
+        assert auth.is_domain_allowed("a@evil.com@example.com") is False
+
+    def test_is_domain_allowed_no_at_blocked(self):
+        auth = AuthConfig(allowed_domains=["example.com"])
+        assert auth.is_domain_allowed("not-an-email") is False
+
+    def test_is_domain_allowed_empty_parts_blocked(self):
+        auth = AuthConfig(allowed_domains=["example.com"])
+        assert auth.is_domain_allowed("@example.com") is False
+        assert auth.is_domain_allowed("user@") is False
+
+    def test_is_domain_allowed_whitespace_trimmed(self):
+        auth = AuthConfig(allowed_domains=["example.com"])
+        assert auth.is_domain_allowed("  user@example.com  ") is True
+
 
 class TestServerConfig:
     def test_defaults(self):
