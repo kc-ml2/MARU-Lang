@@ -164,6 +164,25 @@ class TestMemoryExtractor:
         await node({"user_id": user_alice.id, "messages": [HumanMessage(content="반말로 해줘")]})
         assert await list_user_memories(user_alice.id) == []
 
+    async def test_drops_fact_without_valid_key(self, user_alice):
+        # fact도 닫힌 셋(FACT_KEYS) 밖이거나 키 없으면 버린다(name만 저장).
+        from unittest.mock import MagicMock, AsyncMock
+        from langchain_core.language_models import BaseChatModel
+        from langchain_core.messages import AIMessage, HumanMessage
+        from maru_lang.graph.rag.nodes.memory import make_memory_extractor_node
+        from maru_lang.services.memory import list_user_memories
+
+        model = MagicMock(spec=BaseChatModel)
+        model.ainvoke = AsyncMock(return_value=AIMessage(
+            content='[{"kind":"fact","key":"name","content":"선영"},'
+                    '{"kind":"fact","key":"hobby","content":"등산"},'
+                    '{"kind":"fact","content":"커피 좋아함"}]'
+        ))
+        node = make_memory_extractor_node(model)
+        await node({"user_id": user_alice.id, "messages": [HumanMessage(content="내 이름은 선영이야")]})
+        mems = await list_user_memories(user_alice.id)
+        assert len(mems) == 1 and mems[0].key == "name" and mems[0].content == "선영"
+
     async def test_contradictory_preference_overwrites_by_key(self, user_alice):
         # issue #22 재현: 반말→존댓말(둘 다 tone)이면 누적되지 않고 최신만 남는다.
         from unittest.mock import MagicMock, AsyncMock

@@ -9,7 +9,7 @@ import re
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
-from maru_lang.constants import MEMORY_EXTRACT_PROMPT, PREFERENCE_KEYS
+from maru_lang.constants import FACT_KEYS, MEMORY_EXTRACT_PROMPT, PREFERENCE_KEYS
 from maru_lang.enums.chat import UserMemoryKind
 from maru_lang.services.memory import upsert_user_memory
 from maru_lang.graph.rag.state import RagState
@@ -70,11 +70,11 @@ def make_memory_extractor_node(llm: BaseChatModel):
             if not kind or not content:
                 continue
             key = item.get("key") or None
-            # preference는 닫힌 카테고리 키로만 저장(같은 범주 최신값 upsert).
-            # 키가 없거나 범위 밖이면 미분류로 보고 버린다(모순 선호 누적 방지).
-            if kind == UserMemoryKind.PREFERENCE:
-                if key not in PREFERENCE_KEYS:
-                    continue
+            # fact/preference 모두 닫힌 키 집합으로만 저장(같은 범주 최신값 upsert).
+            # 키가 없거나 범위 밖이면 버린다(임의 사실·모순 선호 누적 방지).
+            allowed = FACT_KEYS if kind == UserMemoryKind.FACT else PREFERENCE_KEYS
+            if key not in allowed:
+                continue
             await upsert_user_memory(user_id, kind, content, key=key)
 
         return {}
