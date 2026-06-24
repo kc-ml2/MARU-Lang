@@ -37,8 +37,8 @@ async def upsert_user_memory(
     """Upsert a memory.
 
     - with key: update-or-create by (user, kind, key) — keeps the latest value
-      for that category. FACT uses free-form keys (e.g. name); PREFERENCE uses a
-      closed category set (tone/language/format/length/persona).
+      for that category. Extractor-enforced categories are FACT
+      (name/team/role/org) and PREFERENCE (tone/language/format/length/persona).
     - without key: skip if an identical content already exists, else create.
     """
     content = (content or "").strip()
