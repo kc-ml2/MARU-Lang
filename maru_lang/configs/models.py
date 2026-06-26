@@ -60,7 +60,14 @@ class AuthConfig:
     def is_domain_allowed(self, email: str) -> bool:
         if not self.allowed_domains:
             return True
-        domain = email.split("@")[-1].lower()
+        # Fail closed on malformed input: an address must have exactly one "@".
+        # `email.split("@")[-1]` alone would let "attacker@evil.com@kct.co.kr"
+        # pass by matching only the trailing label, so reject anything that is
+        # not a clean local@domain pair before comparing.
+        parts = (email or "").strip().split("@")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return False
+        domain = parts[1].lower()
         return domain in [d.lower() for d in self.allowed_domains]
 
 
