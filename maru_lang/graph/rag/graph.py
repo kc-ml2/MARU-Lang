@@ -207,6 +207,7 @@ async def stream_rag(
     session_id: str | None = None,
     user_id: int | None = None,
     llm_name: str | None = None,
+    **_ignored,
 ) -> AsyncIterator[tuple[str, str | list]]:
     """Stream the graph execution as (event_type, content) tuples.
 

@@ -42,3 +42,19 @@ class TeamDetailResponse(BaseModel):
     description: Optional[str] = None
     members: list[TeamMemberResponse]
     folders: list[FolderResponse]
+    allowed_graphs: list[str] = []
+
+
+class GraphInfoResponse(BaseModel):
+    id: str
+    description: str
+
+
+class SetTeamGraphsRequest(BaseModel):
+    # graph ids to allow for the team; [] resets to the default set.
+    graphs: list[str]
+
+
+class TeamGraphsResponse(BaseModel):
+    id: int
+    allowed_graphs: list[str]

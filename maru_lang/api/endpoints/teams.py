@@ -10,6 +10,9 @@ from maru_lang.schemas.team import (
     TeamSummaryResponse,
     TeamDetailResponse,
     TeamMemberResponse,
+    GraphInfoResponse,
+    SetTeamGraphsRequest,
+    TeamGraphsResponse,
 )
 from maru_lang.services.team import (
     list_teams_by_user,
@@ -17,6 +20,8 @@ from maru_lang.services.team import (
     create_team,
     invite_member,
     remove_member,
+    set_team_allowed_graphs,
+    list_registerable_graphs,
 )
 
 router = APIRouter(prefix="/teams", tags=["Teams"])
@@ -26,6 +31,24 @@ router = APIRouter(prefix="/teams", tags=["Teams"])
 async def get_my_teams(user=Depends(get_user)):
     """로그인한 사용자가 속한 팀 목록 조회"""
     return await list_teams_by_user(user)
+
+
+@router.get("/available-graphs", response_model=list[GraphInfoResponse])
+async def get_available_graphs(user=Depends(get_user)):
+    """팀에 설정 가능한 등록된 그래프 목록 (id + 설명)"""
+    return list_registerable_graphs()
+
+
+@router.put("/{team_id}/graphs", response_model=TeamGraphsResponse)
+async def set_team_graphs(team_id: int, request: SetTeamGraphsRequest, user=Depends(get_user)):
+    """팀의 사용 가능 그래프 설정 (팀 admin만 가능; []이면 기본값으로 리셋)"""
+    try:
+        allowed = await set_team_allowed_graphs(team_id, request.graphs, user)
+        return TeamGraphsResponse(id=team_id, allowed_graphs=allowed)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/{team_id}", response_model=TeamDetailResponse)

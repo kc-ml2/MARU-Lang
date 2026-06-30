@@ -25,7 +25,7 @@ console = Console()
 
 # Slash commands available in the chat REPL (used for autocomplete + help).
 _SLASH_COMMANDS = [
-    "/ingest", "/team", "/scope", "/status", "/retry", "/llms", "/function", "/help", "/clear", "/quit", "/exit",
+    "/ingest", "/team", "/scope", "/status", "/retry", "/llms", "/graphs", "/function", "/help", "/clear", "/quit", "/exit",
 ]
 
 
@@ -65,7 +65,10 @@ class _ChatCompleter(Completer):
             for opt in ("team", "all"):
                 if opt.startswith(arg.strip()):
                     yield Completion(opt, start_position=-len(arg))
-        elif cmd == "/team":
+        elif cmd in ("/team", "/graphs"):
+            # /graphs completes the team name (first arg) too.
+            if cmd == "/graphs" and " " in arg:
+                return
             frag = arg.rsplit(",", 1)[-1].lstrip()
             for name in self._teams_getter():
                 if name.startswith(frag):
@@ -74,6 +77,33 @@ class _ChatCompleter(Completer):
 
 class _QuitSignal(Exception):
     pass
+
+
+def _parse_edit_command(line: str) -> dict:
+    """Parse a doc-graph edit command line into a resume op dict.
+
+    Grammars: `edit <id> <feedback>` | `add [after <id>] <text>` |
+    `delete <id>` | `reorder <id,id,..>` | `finalize` (default).
+    """
+    parts = (line or "").strip().split(maxsplit=1)
+    if not parts:
+        return {"op": "finalize"}
+    cmd = parts[0].lower()
+    rest = parts[1] if len(parts) > 1 else ""
+    if cmd == "edit":
+        bid, _, fb = rest.partition(" ")
+        return {"op": "edit", "block_id": bid.strip(), "feedback": fb.strip()}
+    if cmd == "delete":
+        return {"op": "delete", "block_id": rest.strip()}
+    if cmd == "reorder":
+        return {"op": "reorder", "order": [x.strip() for x in rest.split(",") if x.strip()]}
+    if cmd == "add":
+        after = None
+        if rest.lower().startswith("after "):
+            after_id, _, rest = rest[len("after "):].partition(" ")
+            after = after_id.strip()
+        return {"op": "add", "after_block_id": after, "content": rest.strip()}
+    return {"op": "finalize"}
 
 
 def _message_payload(content: str, scope: str, current_teams: list[str], team_map: dict[str, int]) -> dict:
@@ -422,6 +452,10 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                     await _api_status(base_url, access_token, current_teams, team_map)
                     continue
 
+                elif cmd == "/graphs":
+                    await _api_graphs(base_url, access_token, args, current_teams, team_map)
+                    continue
+
                 elif cmd == "/retry":
                     await _api_retry(base_url, access_token, args, current_teams, team_map)
                     continue
@@ -508,6 +542,29 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                             if docs:
                                 names = [f"[dim]{d.get('document_name', '?')}[/dim]" for d in docs]
                                 live.update(f"[cyan]Retrieved {len(docs)} docs:[/cyan] {', '.join(names)}")
+                        elif msg_type == "canvas":
+                            # doc graph: render the current canvas (sections→blocks) above the live region.
+                            canvas = msg.get("canvas") or {}
+                            live.update("")
+                            title = canvas.get("title") or canvas.get("metadata", {}).get("title") or ""
+                            if title:
+                                console.print(f"[bold underline]{title}[/bold underline]")
+                            for section in canvas.get("sections", []):
+                                art = section.get("metadata", {}).get("article_no", "")
+                                head = " ".join(x for x in [art, section.get("title", "")] if x)
+                                if head:
+                                    console.print(f"[bold cyan]{head}[/bold cyan]")
+                                for b in section.get("blocks", []):
+                                    refs = b.get("source_refs", [])
+                                    ref_s = f" [dim](출처 {len(refs)})[/dim]" if refs else ""
+                                    console.print(
+                                        f"  [bold]{b.get('block_id')}[/bold] "
+                                        f"[dim]{b.get('block_type')}[/dim]{ref_s}\n  {b.get('text', '')}\n"
+                                    )
+                            missing = canvas.get("missing_terms", [])
+                            if missing:
+                                labels = ", ".join(m.get("label", "?") for m in missing)
+                                console.print(f"[yellow]미정 항목: {labels}[/yellow]")
                         elif msg_type == "complete":
                             break
                         elif msg_type == "interrupt":
@@ -526,12 +583,37 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                 interrupt_type = interrupt_content.get("type", "") if isinstance(interrupt_content, dict) else ""
                 if interrupt_type == "feedback_score":
                     console.print()
-                    feedback = Prompt.ask("[bold cyan]방금 답변에 점수를 매겨주세요 (1-5점)[/bold cyan]")
+                    resume_content = Prompt.ask("[bold cyan]방금 답변에 점수를 매겨주세요 (1-5점)[/bold cyan]")
                 elif interrupt_type == "feedback_reason":
-                    feedback = Prompt.ask("[bold yellow]이유를 알려주세요[/bold yellow]")
+                    resume_content = Prompt.ask("[bold yellow]이유를 알려주세요[/bold yellow]")
+                elif interrupt_type == "awaiting_anchor_choice":
+                    # doc graph: pick a baseline/standard document among candidates.
+                    cands = interrupt_content.get("candidates", []) if isinstance(interrupt_content, dict) else []
+                    console.print("[bold]기준 문서를 선택하세요 (여러 표준 문서가 있습니다):[/bold]")
+                    for i, c in enumerate(cands):
+                        console.print(f"  [cyan]{i}[/cyan] {c.get('name')} [dim](관련도 {c.get('score')})[/dim]")
+                    console.print("[dim]번호 입력, 또는 skip[/dim]")
+                    pick = Prompt.ask("[bold]선택[/bold]").strip().lower()
+                    if pick == "skip" or not pick.isdigit():
+                        resume_content = {"skip": True}
+                    else:
+                        resume_content = {"index": int(pick)}
+                elif interrupt_type == "awaiting_edit":
+                    # doc graph: parse a simple edit command line into a resume dict.
+                    #   edit <id> <feedback> | add [after <id>] <text> | delete <id>
+                    #   reorder <id,id,...> | finalize
+                    if isinstance(interrupt_content, dict) and interrupt_content.get("error"):
+                        console.print(f"[red]이전 편집 실패: {interrupt_content['error']}[/red]")
+                    console.print(
+                        "[dim]편집: edit <id> <피드백> | add [after <id>] <내용> | "
+                        "delete <id> | reorder <id,id,..> | finalize[/dim]"
+                    )
+                    resume_content = _parse_edit_command(
+                        Prompt.ask("[bold]편집 명령[/bold]")
+                    )
                 else:
-                    feedback = Prompt.ask("[bold]입력해주세요[/bold]")
-                await ws.send(json.dumps({"type": "resume", "content": feedback}))
+                    resume_content = Prompt.ask("[bold]입력해주세요[/bold]")
+                await ws.send(json.dumps({"type": "resume", "content": resume_content}))
 
             if not answer and not got_error:
                 console.print("[dim]No response received.[/dim]")
@@ -555,6 +637,7 @@ def _print_help():
         "  [yellow]/status[/yellow]             — Show document status via API\n"
         "  [yellow]/retry[/yellow] [force]      — Re-ingest failed docs (force: ACTIVE too)\n"
         "  [yellow]/llms[/yellow]               — Show available LLM models\n"
+        "  [yellow]/graphs[/yellow] [team] [ids]  — Show or set a team's usable graphs (admin; ids: csv|all|default)\n"
         "  [yellow]/function[/yellow] <name>|off  — Enable/disable feedback collection mode\n"
         "  [yellow]/help[/yellow]               — Show this help\n"
         "  [yellow]/quit[/yellow]               — Exit and stop server"
@@ -563,6 +646,90 @@ def _print_help():
 
 
 # ── API-based slash commands ──
+
+
+async def _api_graphs(
+    base_url: str,
+    access_token: str,
+    args: str,
+    current_teams: list[str],
+    team_map: dict[str, int],
+):
+    """Show or set a team's usable graphs via the Teams API.
+
+    /graphs                            → list available graphs + each team's setting
+    /graphs <team> <ids|all|default>   → set that team's allowed graphs (admin only)
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(
+                f"{base_url}/teams/available-graphs",
+                headers=_auth_headers(access_token), timeout=10,
+            )
+            available = resp.json() if resp.status_code == 200 else []
+        except Exception as e:
+            console.print(f"[red]Failed to fetch graphs: {e}[/red]")
+            return
+        available_ids = [g["id"] for g in available]
+
+        parts = args.split()
+        if not parts:
+            console.print("[bold]Available graphs[/bold]")
+            for g in available:
+                console.print(f"  [cyan]{g['id']}[/cyan] — [dim]{g.get('description', '')}[/dim]")
+            console.print("[bold]Team settings[/bold] [dim](empty = default)[/dim]")
+            for name in current_teams:
+                tid = team_map.get(name)
+                if not tid:
+                    continue
+                try:
+                    d = await client.get(f"{base_url}/teams/{tid}",
+                                         headers=_auth_headers(access_token), timeout=10)
+                    allowed = d.json().get("allowed_graphs", []) if d.status_code == 200 else []
+                except Exception:
+                    allowed = []
+                shown = ", ".join(allowed) if allowed else "(default)"
+                console.print(f"  {name}: [green]{shown}[/green]")
+            console.print("[dim]Set: /graphs <team> chat,doc | all | default[/dim]")
+            return
+
+        team_name = parts[0]
+        team_id = team_map.get(team_name)
+        if not team_id:
+            console.print(f"[red]Team '{team_name}' not found. Use /team to switch first.[/red]")
+            return
+        raw = " ".join(parts[1:]).replace(",", " ").split()
+        if not raw:
+            console.print("[red]Usage: /graphs <team> chat,doc | all | default[/red]")
+            return
+        low = [t.lower() for t in raw]
+        if low in (["all"], ["*"]):
+            graphs = available_ids
+        elif low[0] in ("default", "none", "clear", "reset"):
+            graphs = []
+        else:
+            graphs = raw
+
+        try:
+            resp = await client.put(
+                f"{base_url}/teams/{team_id}/graphs",
+                headers=_auth_headers(access_token),
+                json={"graphs": graphs}, timeout=10,
+            )
+        except Exception as e:
+            console.print(f"[red]Failed to set graphs: {e}[/red]")
+            return
+        if resp.status_code == 200:
+            allowed = resp.json().get("allowed_graphs", [])
+            shown = ", ".join(allowed) if allowed else "(default)"
+            console.print(f"[green]{team_name} graphs set:[/green] {shown}")
+            console.print(f"[dim]재연결 시 적용됩니다 — /team {team_name} 으로 재인증하세요.[/dim]")
+        else:
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except Exception:
+                detail = resp.text
+            console.print(f"[red]{detail}[/red]")
 
 
 async def _api_ingest(

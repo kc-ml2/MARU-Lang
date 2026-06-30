@@ -1,8 +1,39 @@
+import operator
+from functools import reduce
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+from tortoise.expressions import Q
+
 from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
 from maru_lang.enums.documents import DocumentStatus
 from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
+
+
+async def find_template_documents(
+    team_ids: List[int],
+    family_keywords: List[str],
+    marker_keywords: List[str],
+    *,
+    limit: int = 20,
+) -> List[Document]:
+    """Find a team's baseline/template documents for a document family.
+
+    A candidate's name must contain ALL ``family_keywords`` (e.g. "계약") AND at
+    least one ``marker_keywords`` (e.g. "표준"/"양식"). Scoped to the given teams
+    and restricted to ACTIVE (searchable) documents. The caller ranks the
+    returned candidates against the request to pick the right standard. Used by
+    the doc graph to deterministically bind a baseline document (distinct from
+    fuzzy RAG retrieval).
+    """
+    if not team_ids or not family_keywords:
+        return []
+    qs = Document.filter(group__team_id__in=team_ids, status=DocumentStatus.ACTIVE)
+    for kw in family_keywords:
+        qs = qs.filter(name__icontains=kw)
+    if marker_keywords:
+        qs = qs.filter(reduce(operator.or_, (Q(name__icontains=m) for m in marker_keywords)))
+    return await qs.limit(limit)
 
 
 # ========== DocumentGroup helpers ==========

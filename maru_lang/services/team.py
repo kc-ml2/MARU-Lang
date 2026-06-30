@@ -68,17 +68,47 @@ async def resolve_user_graph_ids(user: User) -> list[str]:
     """
     # Imported lazily: the registry pulls in the graph stack (embeddings/transformers),
     # which we don't want to load just by importing this service module.
-    from maru_lang.graph.registry import registry_graph_ids, DEFAULT_GRAPH_ID
+    from maru_lang.graph.registry import registry_graph_ids, DEFAULT_GRAPH_IDS
 
     all_ids = registry_graph_ids()
     memberships = await TeamMember.filter(user=user).select_related("team")
 
     allowed: set[str] = set()
     for m in memberships:
-        team_graphs = m.team.allowed_graphs or [DEFAULT_GRAPH_ID]
+        team_graphs = m.team.allowed_graphs or DEFAULT_GRAPH_IDS
         allowed |= set(team_graphs)
 
     return [gid for gid in all_ids if gid in allowed]
+
+
+async def set_team_allowed_graphs(
+    team_id: int, graph_ids: list[str], requester: User
+) -> list[str]:
+    """Set a team's allowed_graphs (admin only). Returns the saved list.
+
+    Validates against the registry (unknown ids → ValueError) and stores the
+    result in registry order. An empty list resets the team to the default set.
+    """
+    from maru_lang.graph.registry import registry_graph_ids
+
+    await _check_admin(team_id, requester)
+
+    all_ids = registry_graph_ids()
+    unknown = [g for g in graph_ids if g not in all_ids]
+    if unknown:
+        raise ValueError(f"등록되지 않은 그래프: {', '.join(unknown)}")
+
+    ordered = [gid for gid in all_ids if gid in set(graph_ids)]
+    team = await Team.get(id=team_id)
+    team.allowed_graphs = ordered
+    await team.save()
+    return ordered
+
+
+def list_registerable_graphs() -> list[dict]:
+    """Registered graphs as {id, description} for per-team configuration."""
+    from maru_lang.graph.registry import registerable_graphs
+    return registerable_graphs()
 
 
 async def get_team_detail(team_id: int, user: User) -> dict:
@@ -119,6 +149,7 @@ async def get_team_detail(team_id: int, user: User) -> dict:
         "description": team.description,
         "members": members,
         "folders": folders,
+        "allowed_graphs": team.allowed_graphs or [],
     }
 
 
