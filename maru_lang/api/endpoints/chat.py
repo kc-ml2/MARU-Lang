@@ -15,6 +15,8 @@ from maru_lang.services.llm import resolve_user_llm_name
 from maru_lang.services.session import get_session_for_user
 from maru_lang.core.relation_db.models.chat import Session
 from maru_lang.graph.router import select_graph
+from maru_lang.graph.registry import GRAPH_REGISTRY
+from maru_lang.graph import stream_rag
 from maru_lang.api.ws.chat import stream_and_send
 from maru_lang.core.observability import get_langfuse_handler, langfuse_trace_metadata
 
@@ -47,8 +49,15 @@ async def chat_websocket(websocket: WebSocket):
            - team_ids is optional; it scopes document search to those teams
              (intersected with the user's own teams). Omit/empty -> all the
              user's teams.
-        5. Server streams: {"type": "routed"|"thinking"|"stream"|"retrieve"|"interrupt"|"complete"|"error", ...}
+           - doc graph: optional "canvas_id"/"canvas_type". A "canvas_id" bypasses
+             L1 routing and forces the "doc" graph (to edit an existing canvas).
+        5. Server streams: {"type": "routed"|"thinking"|"stream"|"retrieve"|"canvas"|"interrupt"|"complete"|"error", ...}
+           - canvas: {"type":"canvas","canvas":{canvas_id,version_id,sections,...}} (doc graph)
         6. On interrupt, client sends: {"type": "resume", "content": ...}
+           - doc graph (awaiting_edit): content is an edit command dict, e.g.
+             {"op":"edit","block_id":"blk_001_001","feedback":"..."} / {"op":"finalize"}
+           - doc graph (awaiting_anchor_choice): the request matched several standard
+             documents; content picks one: {"index":0} | {"document_id":"..."} | {"skip":true}
     """
     await websocket.accept()
 
@@ -61,6 +70,8 @@ async def chat_websocket(websocket: WebSocket):
     active_session: Session | None = None
     allowed_graph_ids: list[str] = []
     active_graph_id: str | None = None  # graph chosen for the current turn
+    active_streamer = None              # GraphSpec.streamer for the current turn (reused on resume)
+    active_graph_kwargs: dict = {}      # per-graph inputs from the payload (reused on resume)
     active_llm_name: str | None = None  # LLM resolved for the current turn (per-user)
     active_team_ids: list[int] = []     # team scope for the current turn
     active_team_names: list[str] = []
@@ -150,7 +161,22 @@ async def chat_websocket(websocket: WebSocket):
                 # + all graph nodes) runs on one LLM. Falls back to the shared model.
                 models_by_llm = getattr(websocket.app.state, "models_by_llm", {}) or {}
                 router_model = models_by_llm.get(active_llm_name) or getattr(websocket.app.state, "router_model", None)
-                active_graph_id = await select_graph(content, allowed_graph_ids, router_model)
+
+                # A graph may "claim" the payload (e.g. doc claims a canvas_id) and
+                # bypass L1 routing. Claims are checked against the full registry so
+                # an opt-in violation errors rather than silently falling through.
+                claimer = next(
+                    (gid for gid, spec in GRAPH_REGISTRY.items() if spec.claims(data)),
+                    None,
+                )
+                if claimer and claimer not in allowed_graph_ids:
+                    await websocket.send_json({"type": "error", "content": f"{claimer} graph not enabled for your teams"})
+                    break
+                active_graph_id = claimer or await select_graph(content, allowed_graph_ids, router_model)
+
+                spec = GRAPH_REGISTRY[active_graph_id]
+                active_streamer = spec.streamer
+                active_graph_kwargs = spec.extract_inputs(data)
                 graph = graph_map.get(active_graph_id)
                 if graph is None:
                     await websocket.send_json({"type": "error", "content": "Selected graph is unavailable."})
@@ -193,10 +219,12 @@ async def chat_websocket(websocket: WebSocket):
                     active_team_names,
                     graph,
                     config,
+                    streamer=active_streamer,
                     user=user,
                     session=active_session,
                     function=session_function,
                     llm_name=active_llm_name,
+                    graph_kwargs=active_graph_kwargs,
                 )
 
             elif msg_type == "resume":
@@ -217,9 +245,11 @@ async def chat_websocket(websocket: WebSocket):
                     active_team_names,
                     graph,
                     config,
+                    streamer=active_streamer or stream_rag,
                     user=user,
                     session=active_session,
                     llm_name=active_llm_name,
+                    graph_kwargs=active_graph_kwargs,
                     show_thinking=False,
                 )
 
