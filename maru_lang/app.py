@@ -214,6 +214,11 @@ class MaruLangApp(FastAPI):
             await exit_stack.aclose()
             print("✓ Checkpointer closed")
 
+        # Finish any in-flight turn/session summary backfills before the DB goes
+        # away — they run detached from the request that scheduled them.
+        from maru_lang.graph.rag.nodes.summarize import drain_summary_tasks
+        await drain_summary_tasks()
+
         # Close Tortoise ORM connections
         from tortoise import Tortoise
         await Tortoise.close_connections()
