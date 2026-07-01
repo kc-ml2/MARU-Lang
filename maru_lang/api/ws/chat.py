@@ -1,6 +1,6 @@
 """WebSocket streaming helpers for the chat endpoint."""
 import logging
-from typing import Union
+from typing import Callable, Union
 
 from fastapi import WebSocket
 from langgraph.graph.state import CompiledStateGraph
@@ -21,16 +21,24 @@ async def stream_and_send(
     graph: CompiledStateGraph,
     config: dict,
     *,
+    streamer: Callable = stream_rag,
     user: User | None = None,
     session: Session | None = None,
     function: str | None = None,
     llm_name: str | None = None,
+    graph_kwargs: dict | None = None,
     show_thinking: bool = True,
 ) -> bool:
-    """Stream chat graph events to a WebSocket client.
+    """Stream a graph's events to a WebSocket client.
 
-    Turn 영속화(Conversation 생성 + Session.summary 갱신)는 그래프의 summarize
-    종착 노드가 담당한다. 여기서는 스트리밍만 한다.
+    `streamer` is the graph-specific async generator (GraphSpec.streamer):
+    stream_rag for chat, stream_doc for doc. `graph_kwargs` carries per-graph
+    inputs extracted from the inbound payload (GraphSpec.extract_inputs) — this
+    layer forwards them blindly so it stays graph-agnostic. They share one
+    keyword surface and a common event vocabulary, so event tuples map to ws
+    json generically. Turn 영속화는 각 그래프의 종착 노드가 담당한다 (rag: summarize가
+    Conversation 저장; doc: 종착 노드 finalize가 Canvas를 확정하고 세션 이력에
+    Conversation 한 줄을 남긴다 — 문서 자체의 영속 산출물은 Canvas/CanvasVersion).
 
     Returns:
         True if the graph was interrupted (client should send resume), False otherwise.
@@ -40,7 +48,7 @@ async def stream_and_send(
 
     interrupted = False
     try:
-        async for event_type, event_content in stream_rag(
+        async for event_type, event_content in streamer(
             message=message,
             team_ids=team_ids,
             team_names=team_names,
@@ -50,11 +58,14 @@ async def stream_and_send(
             session_id=session.id if session else None,
             user_id=user.id if user else None,
             llm_name=llm_name,
+            **(graph_kwargs or {}),
         ):
             if event_type == "token":
                 await websocket.send_json({"type": "stream", "content": event_content})
             elif event_type == "retrieve":
                 await websocket.send_json({"type": "retrieve", "documents": event_content})
+            elif event_type == "canvas":
+                await websocket.send_json({"type": "canvas", "canvas": event_content})
             elif event_type == "interrupt":
                 await websocket.send_json({"type": "interrupt", "content": event_content})
                 interrupted = True
