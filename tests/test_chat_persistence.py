@@ -231,8 +231,9 @@ def _direct_graph(answers):
 
 class TestSummarizePersistence:
     async def test_graph_persists_conversation_and_session_summary(self, user_alice):
-        """summarize 종착 노드가 Conversation 생성 + Session.summary 갱신."""
+        """summarize 종착 노드가 Conversation 생성 + (백그라운드) Session.summary 갱신."""
         from langchain_core.messages import HumanMessage
+        from maru_lang.graph.rag.nodes.summarize import drain_summary_tasks
 
         session = await create_session(user_alice)
         # route=DIRECT → generate → summarize(turn, session 요약)
@@ -244,11 +245,45 @@ class TestSummarizePersistence:
             config={"configurable": {"thread_id": "persist-1"}},
         )
 
+        await drain_summary_tasks()  # 요약은 백그라운드로 backfill → 기다렸다가 검증
+
         conv = await Conversation.get(session=session)
         assert conv.question == "안녕"
         assert conv.answer == "안녕하세요"
         assert conv.summary == "인사 턴요약"
         assert (await Session.get(id=session.id)).summary == "세션 누적요약"
+
+    async def test_turn_persisted_even_if_summarization_fails(self, user_alice):
+        """요약 LLM이 실패해도 턴(row·본문)은 저장된다 — 저장은 임계 경로, 요약은 아니다."""
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from langchain_core.language_models import BaseChatModel
+        from langchain_core.messages import AIMessage, HumanMessage
+        from maru_lang.graph.rag.nodes.summarize import drain_summary_tasks
+
+        session = await create_session(user_alice)
+        model = MagicMock(spec=BaseChatModel)
+        model.ainvoke = AsyncMock(side_effect=[
+            AIMessage(content="DIRECT"),     # route
+            AIMessage(content="답변본문"),      # generate
+            Exception("summary llm down"),   # turn 요약 → 실패
+            Exception("summary llm down"),   # session 요약 → 실패
+        ])
+        with patch("maru_lang.graph.rag.graph.build_retriever", return_value=MagicMock()), \
+             patch("maru_lang.graph.rag.graph.build_compressor", return_value=None):
+            from maru_lang.graph.rag.graph import create_rag_graph
+            graph = create_rag_graph(model=model)
+
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content="질문")], "team_ids": [1], "team_names": ["t"],
+             "session_id": session.id, "user_id": user_alice.id},
+            config={"configurable": {"thread_id": "persist-3"}},
+        )
+        await drain_summary_tasks()  # 백그라운드 backfill(실패 포함)까지 소진
+
+        # 요약이 통째로 실패해도 턴 자체는 온전히 남는다.
+        conv = await Conversation.get(session=session)
+        assert conv.answer == "답변본문"
+        assert conv.summary is None
 
     async def test_no_persist_without_user_and_session(self, user_alice):
         """게이팅: session_id/user_id 없으면 저장하지 않는다."""
