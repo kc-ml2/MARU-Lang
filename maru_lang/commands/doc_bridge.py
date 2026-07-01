@@ -120,7 +120,7 @@ class DocBridge:
 CANVAS_HTML = r"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><title>MARU 문서 편집</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root { color-scheme: light; }   /* 다크 모드에서 UA 기본색이 뒤집혀 흰 글씨가 되는 것 방지 */
   body { font-family: system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif;
          margin: 0; background: #f6f7f9; color: #1a1a1a; }
   header { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #e3e6ea;
@@ -141,7 +141,7 @@ CANVAS_HTML = r"""<!doctype html>
   .block .acts { margin-top: 8px; display: none; gap: 6px; flex-wrap: wrap; }
   body.awaiting .block .acts { display: flex; }
   button { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid #cfd4da;
-           background: #fff; border-radius: 6px; cursor: pointer; }
+           background: #fff; color: #1a1a1a; border-radius: 6px; cursor: pointer; }
   button:hover { background: #f0f2f5; }
   button.primary { background: #2557d6; color: #fff; border-color: #2557d6; }
   .missing { margin-top: 16px; padding: 10px 12px; background: #fff8e6;
@@ -151,7 +151,7 @@ CANVAS_HTML = r"""<!doctype html>
   body.awaiting .toolbar { display: flex; }
   #anchor { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: none;
             align-items: center; justify-content: center; }
-  #anchor .card { background: #fff; border-radius: 10px; padding: 18px 20px; min-width: 360px; }
+  #anchor .card { background: #fff; color: #1a1a1a; border-radius: 10px; padding: 18px 20px; min-width: 360px; }
   #anchor button { display: block; width: 100%; text-align: left; margin: 6px 0; }
   .inline { margin-top: 8px; display: flex; gap: 6px; }
   .inline textarea { flex: 1; font: inherit; padding: 6px; border: 1px solid #cfd4da; border-radius: 6px; }
