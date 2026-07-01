@@ -21,6 +21,8 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
+from maru_lang.commands.doc_bridge import DocBridge
+
 console = Console()
 
 # Slash commands available in the chat REPL (used for autocomplete + help).
@@ -380,6 +382,9 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
         completer=_ChatCompleter(lambda: current_teams),
     )
 
+    # Lazily-started local browser bridge for interactive doc-graph turns.
+    doc_bridge = None
+
     try:
         while True:
             try:
@@ -507,6 +512,7 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
 
             # Receive streamed response (re-enters on interrupt)
             got_error = False
+            doc_active = False   # this turn was routed to the interactive doc graph
             while True:
                 console.print("\n[bold green]Assistant:[/bold green]")
                 answer = ""
@@ -532,6 +538,15 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                             if gid:
                                 # printed above the live region; persists with the answer
                                 console.print(f"[dim]🧭 graph: {gid}[/dim]")
+                            if gid == "doc":
+                                # Hand this turn's interactive editing to a browser canvas.
+                                doc_active = True
+                                if doc_bridge is None:
+                                    doc_bridge = DocBridge()
+                                    await doc_bridge.start()
+                                if not doc_bridge.has_clients():
+                                    doc_bridge.open_browser()
+                                console.print("[green]📝 문서 편집 창을 브라우저에서 진행합니다.[/green]")
                         elif msg_type == "stream":
                             answer += msg.get("content", "")
                             live.update(Markdown(answer))
@@ -543,8 +558,13 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                                 names = [f"[dim]{d.get('document_name', '?')}[/dim]" for d in docs]
                                 live.update(f"[cyan]Retrieved {len(docs)} docs:[/cyan] {', '.join(names)}")
                         elif msg_type == "canvas":
-                            # doc graph: render the current canvas (sections→blocks) above the live region.
                             canvas = msg.get("canvas") or {}
+                            if doc_active and doc_bridge is not None:
+                                # Interactive turn: render in the browser canvas.
+                                await doc_bridge.send_canvas(canvas)
+                                live.update("[dim]📝 canvas 업데이트 → 브라우저[/dim]")
+                                continue
+                            # Fallback: render the current canvas (sections→blocks) in the terminal.
                             live.update("")
                             title = canvas.get("title") or canvas.get("metadata", {}).get("title") or ""
                             if title:
@@ -566,6 +586,8 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                                 labels = ", ".join(m.get("label", "?") for m in missing)
                                 console.print(f"[yellow]미정 항목: {labels}[/yellow]")
                         elif msg_type == "complete":
+                            if doc_active and doc_bridge is not None:
+                                await doc_bridge.send_complete()
                             break
                         elif msg_type == "interrupt":
                             interrupted = True
@@ -574,11 +596,23 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                         elif msg_type == "error":
                             live.update("")
                             console.print(f"[red]Error: {msg.get('content', 'Unknown')}[/red]")
+                            if doc_active and doc_bridge is not None:
+                                await doc_bridge.send_error(msg.get("content", "오류"))
                             got_error = True
                             break
 
                 if got_error or not interrupted:
                     break
+
+                # Interactive doc turn: relay the interrupt to the browser and wait
+                # for the user's edit command there (edit/add/delete/reorder/finalize
+                # or an anchor choice) instead of prompting in the terminal.
+                if doc_active and doc_bridge is not None:
+                    await doc_bridge.send_interrupt(interrupt_content)
+                    console.print("[dim]⏸ 브라우저에서 편집 입력을 기다립니다…[/dim]")
+                    resume_content = await doc_bridge.await_resume()
+                    await ws.send(json.dumps({"type": "resume", "content": resume_content}))
+                    continue
 
                 interrupt_type = interrupt_content.get("type", "") if isinstance(interrupt_content, dict) else ""
                 if interrupt_type == "feedback_score":
@@ -621,6 +655,11 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
     except _QuitSignal:
         pass
     finally:
+        if doc_bridge is not None:
+            try:
+                await doc_bridge.stop()
+            except Exception:
+                pass
         try:
             await ws.close()
         except Exception:
