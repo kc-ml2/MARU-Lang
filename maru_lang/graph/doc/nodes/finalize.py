@@ -3,6 +3,7 @@ from langchain_core.messages import AIMessage
 
 from maru_lang.core.relation_db.models.auth import User
 from maru_lang.core.relation_db.models.chat import Session
+from maru_lang.graph.doc.constants import DEFAULT_DOC_LABEL
 from maru_lang.graph.doc.presets import get_preset
 from maru_lang.graph.doc.state import DocState
 from maru_lang.services.canvas import finalize_canvas, get_canvas
@@ -19,7 +20,7 @@ def _summarize_canvas(canvas, payload: dict) -> str:
     """
     meta = payload.get("metadata") or {}
     sections = payload.get("sections") or []
-    label = get_preset(canvas.canvas_type).label if canvas.canvas_type else "문서"
+    label = get_preset(canvas.canvas_type).label if canvas.canvas_type else DEFAULT_DOC_LABEL
     title = meta.get("title") or canvas.title
 
     n_sections = len(sections)
@@ -59,6 +60,7 @@ def make_finalize_node():
         else:
             n = sum(len(s.get("blocks") or []) for s in payload.get("sections") or [])
             summary = f"문서를 확정했습니다 (블록 {n}개)."
+        confirmation = f"문서를 확정했습니다 — {summary}"
 
         # Persist the authoring turn into the chat session history (gated on
         # user_id+session_id, mirroring the RAG graph's terminal write-back).
@@ -71,12 +73,12 @@ def make_finalize_node():
                 await create_conversation(
                     user,
                     question=state.get("instruction") or "(문서 작성)",
-                    answer=f"문서를 확정했습니다 — {summary}",
+                    answer=confirmation,
                     references=canvas.references or [],
                     session=session,
                     summary=summary,
                 )
 
-        return {"finalized": True, "messages": [AIMessage(content=f"문서를 확정했습니다 — {summary}")]}
+        return {"finalized": True, "messages": [AIMessage(content=confirmation)]}
 
     return finalize_node

@@ -9,6 +9,7 @@ from typing import Optional
 
 from langchain_core.documents.compressor import BaseDocumentCompressor
 
+from maru_lang.graph.doc.nodes._refs import base_ref, render_ref_context
 from maru_lang.graph.doc.state import DocState
 from maru_lang.graph.rag.retriever import VectorRetriever
 
@@ -17,24 +18,12 @@ def _to_chunk_dicts(docs) -> list[dict]:
     """Like rag format._to_doc_dicts but keeps the per-chunk vector id (doc.id)."""
     return [
         {
-            "chunk_id": doc.id,
-            "document_id": doc.metadata.get("document_id", "unknown"),
-            "document_name": doc.metadata.get("document_name", ""),
-            "score": doc.metadata.get("score", 0),
-            "content": doc.page_content,
+            **base_ref(doc, score_default=0),
             "file_path": doc.metadata.get("file_path", ""),
             "group_id": doc.metadata.get("group_id"),
         }
         for doc in docs
     ]
-
-
-def _build_context(refs: list[dict]) -> str:
-    """Tag each chunk with its id so the draft prompt can cite source_refs."""
-    return "\n\n---\n\n".join(
-        f"[{r['chunk_id']}] {r.get('document_name', '')}\n{r['content']}"
-        for r in refs
-    )
 
 
 def make_ground_node(
@@ -62,7 +51,7 @@ def make_ground_node(
         return {
             "documents": docs,
             "references": refs,
-            "context": _build_context(refs),
+            "context": render_ref_context(refs),
         }
 
     return ground_node

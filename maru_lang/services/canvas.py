@@ -11,11 +11,22 @@ Two layers:
 """
 import copy
 import uuid
+from typing import TypedDict
 
 from maru_lang.core.relation_db.models.auth import User, Team
 from maru_lang.core.relation_db.models.chat import Session
 from maru_lang.core.relation_db.models.canvas import Canvas, CanvasVersion
 from maru_lang.enums.chat import CanvasStatus
+
+
+class Party(TypedDict, total=False):
+    """A contract party in metadata.parties. ``label`` (갑/을) is the match key for
+    set_parties; the rest are filled in by the client's set_parties op."""
+    label: str          # 갑 / 을 — stable identifier, set at draft time
+    role: str           # client / vendor / …
+    name: str           # 상호/성명 — blank until the client fills it
+    address: str
+    representative: str
 
 
 def empty_payload() -> dict:
@@ -302,6 +313,42 @@ def reorder_blocks(
     rest = [b for b in blocks if b.get("block_id") not in set(ordered_ids)]
     section["blocks"] = listed + rest
     return True
+
+
+# Party fields a set_parties op may fill (label is the match key, not overwritten).
+_PARTY_FIELDS = ("name", "address", "representative", "role")
+
+
+def set_parties(payload: dict, parties: list[Party]) -> bool:
+    """Merge party info into metadata.parties, matched by ``label`` (e.g. 갑/을).
+
+    Existing parties (seeded from the preset) are updated field-by-field; an
+    incoming party whose label isn't present is appended. Returns True if anything
+    changed, so the edit loop can skip a no-op version.
+    """
+    if not parties:
+        return False
+    meta = payload.setdefault("metadata", {})
+    existing = meta.setdefault("parties", [])
+    by_label = {p.get("label"): p for p in existing if p.get("label")}
+    changed = False
+    for incoming in parties:
+        if not isinstance(incoming, dict):
+            continue
+        label = incoming.get("label")
+        target = by_label.get(label)
+        if target is None:
+            if not label:
+                continue  # can't match an unlabeled party to an existing one
+            target = {"label": label}
+            existing.append(target)
+            by_label[label] = target
+            changed = True
+        for field in _PARTY_FIELDS:
+            if field in incoming and incoming[field] != target.get(field):
+                target[field] = incoming[field]
+                changed = True
+    return changed
 
 
 def index_references(references: list[dict]) -> dict[str, dict]:

@@ -232,6 +232,9 @@ DOC_DRAFT_PROMPT = """너는 사내 문서를 근거로 정형 문서(계약서�
 권장 구조(프리셋: {preset_label}):
 {scaffold}
 
+당사자 슬롯(있으면 작성 요청에서 이름을 파악해 채운다):
+{party_slots}
+
 참고 컨텍스트 (각 줄머리 [chunk_id]는 출처 청크 식별자다):
 {context}
 
@@ -245,11 +248,14 @@ DOC_DRAFT_PROMPT = """너는 사내 문서를 근거로 정형 문서(계약서�
   않은 값은 placeholder로 둔다.
 - 컨텍스트에 근거가 없는 내용은 지어내지 말고, 일반적 표현으로 보수적으로 작성하라.
 - 각 블록에 대해 실제로 참고한 청크의 chunk_id만 source_refs 배열에 담아라(참고 없으면 []).
+- 위 당사자 슬롯이 있으면, 작성 요청에서 회사·개인 이름을 파악해 각 슬롯의 name에 채워라
+  (먼저 언급된 쪽을 갑으로, label/role은 슬롯 그대로 유지). 이름을 알 수 없으면 name은 빈 문자열로 둔다.
 - 아직 확정되지 않은 항목(금액, 상대방 정보 등)은 missing_terms에 정리하라.
 
 JSON 객체로만 출력하라(다른 텍스트·코드펜스 금지). section_id/block_id는 비워 둬도 된다:
 {{
-  "metadata": {{"title": "<문서 제목>", "contract_type": "<선택>", "parties": []}},
+  "metadata": {{"title": "<문서 제목>", "contract_type": "<선택>",
+               "parties": [{{"label": "<갑 등, 슬롯대로>", "role": "<슬롯대로>", "name": "<요청에서 파악한 이름 또는 빈칸>"}}]}},
   "sections": [
     {{
       "section_type": "preamble|article|attachment|signature|appendix|toc",

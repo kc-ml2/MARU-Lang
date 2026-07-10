@@ -8,6 +8,8 @@ first real target; proposal/generic keep the mechanism honest and extensible).
 """
 from dataclasses import dataclass
 
+from maru_lang.graph.doc.constants import FREE_STRUCTURE
+
 
 # 문서 이름에 이 중 하나라도 있으면 "표준/템플릿 문서"로 간주(후보군 마커).
 DEFAULT_TEMPLATE_MARKERS: tuple[str, ...] = ("표준", "양식", "서식", "template", "standard")
@@ -34,7 +36,7 @@ class DocPreset:
     def scaffold_text(self) -> str:
         """The expected-section skeleton, rendered for the draft prompt."""
         if not self.sections:
-            return "(자유 구조)"
+            return FREE_STRUCTURE
         lines = []
         for s in self.sections:
             st = s.get("section_type", "article")
