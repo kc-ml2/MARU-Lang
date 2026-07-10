@@ -5,6 +5,7 @@ from langchain_core.messages import HumanMessage
 from maru_lang.constants import DOC_DRAFT_PROMPT
 from maru_lang.core.relation_db.models.auth import User
 from maru_lang.core.relation_db.models.chat import Session
+from maru_lang.graph.doc.constants import DEFAULT_DOC_LABEL, FREE_STRUCTURE
 from maru_lang.graph.doc.nodes._parse import parse_json_object
 from maru_lang.graph.doc.presets import get_preset
 from maru_lang.graph.doc.state import DocState
@@ -14,8 +15,17 @@ from maru_lang.services.canvas import (
     index_references,
     iter_blocks,
     serialize_canvas,
+    set_parties,
     write_version,
 )
+
+
+def _render_party_slots(parties: list[dict]) -> str:
+    """Expected party slots (label + role) for the draft prompt; the model fills
+    each slot's name from the request. Empty when the preset defines no parties."""
+    if not parties:
+        return "(해당 없음)"
+    return "\n".join(f"- {p.get('label', '')} ({p.get('role', '')})" for p in parties)
 
 
 def _validate_sources(payload: dict, ref_index: dict[str, dict]) -> None:
@@ -49,22 +59,28 @@ def make_draft_node(llm: BaseChatModel):
         references = (state.get("anchor_references") or []) + (state.get("references") or [])
         # Preset (from classify) seeds the scaffold/guidance/schema_version/parties.
         preset = state.get("preset") or get_preset(state.get("canvas_type")).to_state()
-        canvas_type = preset.get("canvas_type") or state.get("canvas_type") or "문서"
+        canvas_type = preset.get("canvas_type") or state.get("canvas_type") or DEFAULT_DOC_LABEL
 
+        preset_parties = preset.get("parties") or []
         prompt = DOC_DRAFT_PROMPT.format(
             doc_type=canvas_type,
             instruction=instruction,
             context=context,
             preset_label=preset.get("label", canvas_type),
-            scaffold=preset.get("scaffold", "(자유 구조)"),
+            scaffold=preset.get("scaffold", FREE_STRUCTURE),
+            party_slots=_render_party_slots(preset_parties),
             guidance=preset.get("guidance", ""),
         )
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         tree = parse_json_object(response.content or "")
         metadata = tree.get("metadata") or {}
-        # Seed default parties (e.g. 갑/을) when the model didn't supply any.
-        if not metadata.get("parties") and preset.get("parties"):
-            metadata["parties"] = preset["parties"]
+        # Seed the preset's party slots (갑/을), then overlay any names the model
+        # extracted from the request (matched by label). Unfilled slots stay blank
+        # so the client's parties modal can still collect them.
+        if preset_parties:
+            extracted = metadata.get("parties") or []
+            metadata["parties"] = [dict(p) for p in preset_parties]
+            set_parties({"metadata": metadata}, extracted)
         payload = assign_ids({
             "metadata": metadata,
             "sections": tree.get("sections") or [],

@@ -54,8 +54,21 @@ async def chat_websocket(websocket: WebSocket):
         5. Server streams: {"type": "routed"|"thinking"|"stream"|"retrieve"|"canvas"|"interrupt"|"complete"|"error", ...}
            - canvas: {"type":"canvas","canvas":{canvas_id,version_id,sections,...}} (doc graph)
         6. On interrupt, client sends: {"type": "resume", "content": ...}
-           - doc graph (awaiting_edit): content is an edit command dict, e.g.
-             {"op":"edit","block_id":"blk_001_001","feedback":"..."} / {"op":"finalize"}
+           - doc graph (awaiting_edit): content is an edit command dict:
+             {"op":"edit","block_id":"blk_001_001","feedback":"..."}
+             | {"op":"add","content":"...","after_block_id":"...","section_id":"..."}
+             | {"op":"delete","block_id":"..."}
+             | {"op":"reorder","order":["blk_...", ...],"section_id":"..."}
+             | {"op":"set_parties","parties":[{"label":"갑","name":"...","representative":"...","address":"..."}, ...]}
+             | {"op":"batch","ops":[<edit|add|delete|reorder|set_parties>, ...]}  # applied as one version
+             | {"op":"finalize"}
+             A batch applies its ops in order (later ops see earlier changes) and
+             commits a single version; a failing op is skipped, not fatal, and the
+             skipped reasons come back in the next interrupt's "error".
+             When a contract's parties (갑/을) are still blank, the awaiting_edit
+             interrupt carries "missing_parties":[{label,role,name,...}, ...] so the
+             client can prompt for them and resume with a set_parties op (parties are
+             matched by "label"; the hint clears once each has a name).
            - doc graph (awaiting_anchor_choice): the request matched several standard
              documents; content picks one: {"index":0} | {"document_id":"..."} | {"skip":true}
     """

@@ -15,6 +15,11 @@ import re
 
 from langgraph.types import interrupt
 
+from maru_lang.graph.doc.constants import (
+    INTERRUPT_ANCHOR_CHOICE,
+    REF_KIND_ANCHOR,
+)
+from maru_lang.graph.doc.nodes._refs import base_ref, render_ref_context
 from maru_lang.graph.doc.state import DocState
 from maru_lang.services.document import find_template_documents
 
@@ -45,14 +50,7 @@ def _rank(instruction: str, docs) -> list[tuple]:
 
 def _to_anchor_refs(chunks) -> list[dict]:
     return [
-        {
-            "chunk_id": c.id,
-            "document_id": c.metadata.get("document_id", "unknown"),
-            "document_name": c.metadata.get("document_name", ""),
-            "score": c.metadata.get("score"),
-            "content": c.page_content,
-            "kind": "anchor",
-        }
+        {**base_ref(c, score_default=None), "kind": REF_KIND_ANCHOR}
         for c in chunks
     ]
 
@@ -61,10 +59,7 @@ def _build_anchor_context(refs: list[dict]) -> str:
     names = ", ".join(sorted({r["document_name"] for r in refs if r.get("document_name")}))
     header = (f"[기준 문서{(' : ' + names) if names else ''}] "
               "아래는 표준 양식이다. 구조와 표현을 우선 참고해 작성하라.")
-    body = "\n\n---\n\n".join(
-        f"[{r['chunk_id']}] {r.get('document_name', '')}\n{r['content']}" for r in refs
-    )
-    return f"{header}\n\n{body}"
+    return f"{header}\n\n{render_ref_context(refs)}"
 
 
 async def _load_anchor(vdb, document_id: str) -> dict:
@@ -121,7 +116,7 @@ def anchor_route(state: DocState) -> str:
 def await_anchor_choice_node(state: DocState) -> dict:
     """Pause for the user to pick a baseline document among the candidates."""
     choice = interrupt({
-        "type": "awaiting_anchor_choice",
+        "type": INTERRUPT_ANCHOR_CHOICE,
         "candidates": state.get("anchor_candidates", []),
     })
     return {"anchor_choice": choice if isinstance(choice, dict) else {"skip": True}}

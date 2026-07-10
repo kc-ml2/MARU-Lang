@@ -44,7 +44,7 @@ class DocState(TypedDict, total=False):
     canvas_payload: Optional[dict]  # serialized full canvas → stream_doc "canvas" event
 
     # ---- edit loop ----
-    edit_op: Optional[dict]         # last resume payload {op, block_id?, feedback?, order?, ...}
+    edit_op: Optional[dict]         # last resume payload {op, block_id?/feedback?/order?/parties?, ...}
     edit_error: Optional[str]       # reason the last op was rejected (surfaced on next interrupt)
     finalized: bool
 
