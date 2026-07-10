@@ -5,9 +5,16 @@ from typing import Optional
 from langchain_core.language_models import BaseChatModel
 
 from .client import LLMClient
+from .messages import merge_system_messages
 from .server_manager import LLMManager
 
-__all__ = ["LLMClient", "LLMManager", "get_model_with_fallbacks", "get_llm_manager"]
+__all__ = [
+    "LLMClient",
+    "LLMManager",
+    "merge_system_messages",
+    "get_model_with_fallbacks",
+    "get_llm_manager",
+]
 
 _llm_manager: LLMManager | None = None
 _llm_manager_lock = threading.Lock()
