@@ -3,6 +3,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 
 from maru_lang.constants import SYSTEM_PROMPT
+from maru_lang.core.llm import merge_system_messages
 from maru_lang.graph.rag.state import RagState
 
 
@@ -29,7 +30,8 @@ def make_generate_node(llm: BaseChatModel, system_prompt: str = ""):
             prompt_msgs.append(SystemMessage(content=style))
         prompt_msgs += history
 
-        response = await llm.ainvoke(prompt_msgs)
+        # Qwen etc. accept only a single leading system message → coalesce.
+        response = await llm.ainvoke(merge_system_messages(prompt_msgs))
         # Keep the answer in state so the write-back tail uses this generated
         # answer (not, e.g., the reason node's follow-up thank-you message).
         return {"messages": [response], "answer": response.content}

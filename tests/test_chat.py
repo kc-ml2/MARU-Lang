@@ -224,13 +224,15 @@ class TestGenerateNode:
         model.ainvoke = AsyncMock(return_value=AIMessage(content="답변"))
 
         node = make_generate_node(model, "")
-        # 검색 결과(result)가 있으면 컨텍스트 SystemMessage가 추가되어야 함
+        # 검색 결과(result)가 있으면 컨텍스트가 시스템 프롬프트에 합쳐져야 함
         await node({"messages": [HumanMessage(content="hi")], "result": "문서내용"})
 
         sent = model.ainvoke.call_args[0][0]
         sys_msgs = [m for m in sent if isinstance(m, SystemMessage)]
-        assert sys_msgs[0].content == SYSTEM_PROMPT
-        assert any("문서내용" in m.content for m in sys_msgs)  # context 주입
+        # Qwen 호환: system 메시지는 맨 앞 하나로 합쳐진다.
+        assert len(sys_msgs) == 1
+        assert sys_msgs[0].content.startswith(SYSTEM_PROMPT)
+        assert "문서내용" in sys_msgs[0].content  # context 주입
 
     @pytest.mark.asyncio
     async def test_no_context_when_no_result(self):
