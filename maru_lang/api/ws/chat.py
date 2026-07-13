@@ -28,6 +28,7 @@ async def stream_and_send(
     llm_name: str | None = None,
     graph_kwargs: dict | None = None,
     show_thinking: bool = True,
+    verbose: bool = False,
 ) -> bool:
     """Stream a graph's events to a WebSocket client.
 
@@ -58,10 +59,15 @@ async def stream_and_send(
             session_id=session.id if session else None,
             user_id=user.id if user else None,
             llm_name=llm_name,
+            verbose=verbose,
             **(graph_kwargs or {}),
         ):
             if event_type == "token":
                 await websocket.send_json({"type": "stream", "content": event_content})
+            elif event_type == "node_token":
+                # verbose only: an internal node's LLM token, tagged with its node.
+                node, content = event_content
+                await websocket.send_json({"type": "node_stream", "node": node, "content": content})
             elif event_type == "retrieve":
                 await websocket.send_json({"type": "retrieve", "documents": event_content})
             elif event_type == "canvas":

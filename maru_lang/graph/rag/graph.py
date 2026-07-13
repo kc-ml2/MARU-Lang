@@ -207,19 +207,25 @@ async def stream_rag(
     session_id: str | None = None,
     user_id: int | None = None,
     llm_name: str | None = None,
+    verbose: bool = False,
     **_ignored,
 ) -> AsyncIterator[tuple[str, str | list]]:
     """Stream the graph execution as (event_type, content) tuples.
 
     Events:
         - ("token", str): a user-facing answer token (from the answer node only).
+        - ("node_token", (node, str)): a token from a non-answer node — emitted
+          only when `verbose`, so debug runs can watch every internal LLM call.
         - ("retrieve", list[dict]): retrieved document metadata.
         - ("interrupt", value): graph paused (feedback), awaiting a resume.
 
     Args:
         message: a user message string, or Command(resume=value) to resume.
+        verbose: also surface internal (non-answer) node tokens for debugging.
     """
     if isinstance(message, Command):
+        if message.resume is None:
+            raise ValueError("rag graph resume requires Command(resume=...)")
         input_state = message
     else:
         input_state = build_input(
@@ -235,13 +241,16 @@ async def stream_rag(
     ):
         if mode == "messages":
             msg, metadata = event
-            # Stream only the answer node's tokens. Other nodes (route, intent,
-            # keywords, evaluate, rerank, summary, memory) also call the LLM, but
-            # their output must not leak into the user-visible stream.
-            if metadata.get("langgraph_node") != _ANSWER_NODE:
-                continue
-            if isinstance(msg, AIMessageChunk) and msg.content:
-                yield "token", msg.content
+            node = metadata.get("langgraph_node")
+            # Stream only the answer node's tokens to the user. Other nodes (route,
+            # intent, keywords, evaluate, rerank, summary, memory) also call the
+            # LLM; their output must not leak into the answer — but under verbose
+            # we surface them separately (node_token) for debugging.
+            if node == _ANSWER_NODE:
+                if isinstance(msg, AIMessageChunk) and msg.content:
+                    yield "token", msg.content
+            elif verbose and isinstance(msg, AIMessageChunk) and msg.content:
+                yield "node_token", (node, msg.content)
         elif mode == "updates":
             for _node_name, state_update in event.items():
                 if not isinstance(state_update, dict):
