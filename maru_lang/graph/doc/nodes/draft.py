@@ -6,13 +6,14 @@ from maru_lang.constants import DOC_DRAFT_PROMPT
 from maru_lang.core.relation_db.models.auth import User
 from maru_lang.core.relation_db.models.chat import Session
 from maru_lang.graph.doc.constants import DEFAULT_DOC_LABEL, FREE_STRUCTURE
-from maru_lang.graph.doc.nodes._parse import parse_json_object
+from maru_lang.graph.doc.parse import parse_json_object
 from maru_lang.graph.doc.presets import get_preset
 from maru_lang.graph.doc.state import DocState
 from maru_lang.services.canvas import (
     assign_ids,
     create_canvas,
     index_references,
+    index_term_blocks,
     iter_blocks,
     serialize_canvas,
     set_parties,
@@ -87,6 +88,9 @@ def make_draft_node(llm: BaseChatModel):
             "missing_terms": tree.get("missing_terms") or [],
         })
         _validate_sources(payload, index_references(references))
+        # Link each missing_term to the block(s) holding its {{label}} token, so a
+        # frontend can render the fill-in inline and set_terms can resolve it.
+        index_term_blocks(payload)
 
         title = metadata.get("title") or instruction[:255] or None
         schema_version = preset.get("schema_version") or f"{canvas_type}.v1"

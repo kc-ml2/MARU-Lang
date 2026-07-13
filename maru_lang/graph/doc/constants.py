@@ -12,6 +12,7 @@ OP_ADD = "add"
 OP_DELETE = "delete"
 OP_REORDER = "reorder"
 OP_SET_PARTIES = "set_parties"  # fill structured metadata.parties (갑/을 정보)
+OP_SET_TERMS = "set_terms"      # fill undetermined values: {{label}} 토큰 치환 + missing_terms 제거
 OP_BATCH = "batch"              # apply several ops as one version {"op":"batch","ops":[...]}
 OP_FINALIZE = "finalize"
 

@@ -1,8 +1,8 @@
 """Edit loop — interrupt for the next op, then append a new canvas version.
 
 `await_edit` pauses with the current canvas; the client resumes with an edit
-command dict: {op: edit|add|delete|reorder|set_parties|finalize, ...}, or a batch
-{op: "batch", ops: [...]} to apply several as one version. `apply_edit` reloads the
+command dict: {op: edit|add|delete|reorder|set_parties|set_terms|finalize, ...}, or
+a batch {op: "batch", ops: [...]} to apply several as one version. `apply_edit` reloads the
 head version (single source of truth), applies the op(s), and appends a new
 immutable version, then loops back to await_edit.
 
@@ -28,6 +28,7 @@ from maru_lang.graph.doc.constants import (
     OP_FINALIZE,
     OP_REORDER,
     OP_SET_PARTIES,
+    OP_SET_TERMS,
 )
 from maru_lang.graph.doc.state import DocState
 from maru_lang.services.canvas import (
@@ -35,6 +36,7 @@ from maru_lang.services.canvas import (
     add_block,
     delete_block,
     empty_payload,
+    fill_terms,
     find_block,
     iter_blocks,
     load_head,
@@ -167,6 +169,12 @@ async def _apply_one_op(
             changed = set_parties(payload, edit_op.get("parties") or [])
             if not changed:
                 error = "반영할 당사자 정보가 없습니다."
+
+        elif op == OP_SET_TERMS:
+            # Fill undetermined values: replace {{label}} tokens + drop from missing_terms.
+            changed = fill_terms(payload, edit_op.get("terms") or [])
+            if not changed:
+                error = "반영할 미정 항목 값이 없습니다."
         else:
             error = f"알 수 없는 편집 명령: {op}"
     except Exception as e:  # defensive: malformed payloads never break the turn

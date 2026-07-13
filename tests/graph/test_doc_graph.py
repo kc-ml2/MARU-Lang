@@ -188,6 +188,22 @@ class TestDocGraph:
         texts = [b["text"] for b in head.payload["sections"][0]["blocks"]]
         assert texts == ["제1조 본문 B", "제1조 본문 A"]
 
+    async def test_set_terms_op_clears_missing_term(self, user_alice):
+        graph = _build_graph()
+        cfg = _cfg("doc-terms")
+        from maru_lang.graph.doc.state import build_doc_input
+        await graph.ainvoke(build_doc_input("계약서", [1], ["T"], user_id=user_alice.id), config=cfg)
+        val = await _interrupt_value(graph, cfg)
+        assert [m["label"] for m in val["canvas"]["missing_terms"]] == ["계약금액"]
+        # resolve the surfaced term via a structured set_terms op (frontend contract)
+        await graph.ainvoke(
+            Command(resume={"op": "set_terms", "terms": [{"label": "계약금액", "value": "1,000만원"}]}),
+            config=cfg)
+        canvas = await Canvas.filter(user=user_alice).first()
+        head = await CanvasVersion.get(id=canvas.head_version_id)
+        assert head.payload.get("missing_terms", []) == []          # resolved → dropped
+        assert await CanvasVersion.filter(canvas=canvas).count() == 2  # new version appended
+
     async def test_load_path_skips_grounding(self, user_alice):
         # First, create a canvas via the new path.
         graph = _build_graph()

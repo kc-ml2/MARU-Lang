@@ -7,9 +7,11 @@ from maru_lang.services.canvas import (
     assign_ids,
     create_canvas,
     delete_block,
+    fill_terms,
     finalize_canvas,
     find_block,
     index_references,
+    index_term_blocks,
     list_canvases_by_user,
     load_head,
     reorder_blocks,
@@ -87,6 +89,36 @@ class TestTreeHelpers:
     def test_index_references(self):
         idx = index_references([{"chunk_id": "x", "document_name": "D"}])
         assert idx["x"]["document_name"] == "D"
+
+    def test_index_term_blocks_links_tokens_to_block_ids(self):
+        tree = _tree(["기간은 {{계약 기간}}으로 한다.", "지분은 {{지분 비율}}.", "근거 없음"])
+        tree["missing_terms"] = [
+            {"label": "계약 기간", "description": "x"},
+            {"label": "지분 비율", "description": "y"},
+        ]
+        index_term_blocks(tree)
+        by_label = {m["label"]: m["block_ids"] for m in tree["missing_terms"]}
+        assert by_label["계약 기간"] == ["blk_001_001"]
+        assert by_label["지분 비율"] == ["blk_001_002"]
+
+    def test_fill_terms_replaces_token_and_drops_from_missing(self):
+        tree = _tree(["기간은 {{계약 기간}}으로 한다.", "지분은 {{지분 비율}}."])
+        tree["missing_terms"] = [
+            {"label": "계약 기간", "description": "x"},
+            {"label": "지분 비율", "description": "y"},
+        ]
+        changed = fill_terms(tree, [{"label": "계약 기간", "value": "2026-01-01~2028-12-31"}])
+        assert changed is True
+        assert "2026-01-01~2028-12-31" in tree["sections"][0]["blocks"][0]["text"]
+        assert "{{계약 기간}}" not in tree["sections"][0]["blocks"][0]["text"]
+        # only the resolved label is dropped; the other stays open
+        assert [m["label"] for m in tree["missing_terms"]] == ["지분 비율"]
+
+    def test_fill_terms_noop_returns_false(self):
+        tree = _tree(["아무 토큰 없음"])
+        tree["missing_terms"] = []
+        assert fill_terms(tree, []) is False
+        assert fill_terms(tree, [{"value": "x"}]) is False  # no label
 
 
 class TestCanvasPersistence:
