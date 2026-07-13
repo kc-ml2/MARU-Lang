@@ -22,6 +22,10 @@ class LLMConfig:
     weight: int = 1  # 가입 시 사용자 배정 목표 비율 (least-filled 밸런싱)
     config: dict[str, Any] = field(default_factory=dict)
     timeout: Optional[float] = None
+    # Qwen3 등 하이브리드 추론 모델의 thinking on/off (OpenAI 호환 서버 전용).
+    # None이면 미주입(모델 기본값); False로 두면 route/keywords 등 내부 분류 콜의
+    # 숨은 추론 토큰을 없애 지연을 크게 줄인다. 실제 OpenAI/Anthropic API엔 두지 말 것.
+    enable_thinking: Optional[bool] = None
 
     def __post_init__(self):
         if self.api_key and self.api_key.startswith("${") and self.api_key.endswith("}"):
@@ -217,6 +221,7 @@ class MaruConfig:
                     weight=int(llm_data.get("weight", 1)),
                     config=llm_data.get("config", {}),
                     timeout=llm_data.get("timeout"),
+                    enable_thinking=llm_data.get("enable_thinking"),
                 ))
 
         # Server

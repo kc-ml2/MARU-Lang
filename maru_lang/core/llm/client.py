@@ -82,6 +82,14 @@ def create_chat_model(config: LLMConfig) -> BaseChatModel:
             kwargs["max_tokens"] = model_kwargs.pop("max_tokens")
         if config.timeout:
             kwargs["timeout"] = config.timeout
+        # Qwen3 등 하이브리드 추론 모델: chat_template_kwargs로 thinking on/off.
+        # None이면 미주입(모델 기본값). 내부 분류 콜의 숨은 추론이 지연의 주범이라
+        # 로컬 모델은 보통 false 권장. (실제 OpenAI API는 이 필드를 무시/거부하므로
+        # None으로 두어야 함.)
+        if config.enable_thinking is not None:
+            kwargs["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": config.enable_thinking}
+            }
         if model_kwargs:
             kwargs["model_kwargs"] = model_kwargs
         return ChatOpenAI(**kwargs)
