@@ -77,8 +77,6 @@ async def chat_websocket(websocket: WebSocket):
     user: User | None = None
     authenticated = False
     all_user_teams: list[dict] = []
-    all_user_team_ids: list[int] = []
-    all_user_team_names: list[int] = []
 
     active_session: Session | None = None
     allowed_graph_ids: list[str] = []
@@ -122,8 +120,6 @@ async def chat_websocket(websocket: WebSocket):
                     break
 
                 all_user_teams = await list_teams_by_user(user)
-                all_user_team_ids = [t["id"] for t in all_user_teams]
-                all_user_team_names = [t["name"] for t in all_user_teams]
                 allowed_graph_ids = await resolve_user_graph_ids(user)
 
                 authenticated = True
@@ -238,6 +234,7 @@ async def chat_websocket(websocket: WebSocket):
                     function=session_function,
                     llm_name=active_llm_name,
                     graph_kwargs=active_graph_kwargs,
+                    verbose=bool(data.get("verbose")),
                 )
 
             elif msg_type == "resume":
@@ -264,6 +261,7 @@ async def chat_websocket(websocket: WebSocket):
                     llm_name=active_llm_name,
                     graph_kwargs=active_graph_kwargs,
                     show_thinking=False,
+                    verbose=bool(data.get("verbose")),
                 )
 
             else:

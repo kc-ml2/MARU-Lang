@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import websockets
+from contextlib import nullcontext
 from pathlib import Path
 
 import httpx
@@ -20,8 +21,6 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
-
-from maru_lang.commands.doc_bridge import DocBridge
 
 console = Console()
 
@@ -108,19 +107,128 @@ def _parse_edit_command(line: str) -> dict:
     return {"op": "finalize"}
 
 
-def _message_payload(content: str, scope: str, current_teams: list[str], team_map: dict[str, int]) -> dict:
+def _canvas_block_texts(canvas: dict) -> dict:
+    """Map block_id -> text for every block in a canvas payload (for diffing)."""
+    out = {}
+    for section in (canvas or {}).get("sections", []):
+        for b in section.get("blocks", []):
+            out[str(b.get("block_id"))] = b.get("text", "")
+    return out
+
+
+def _render_canvas(canvas: dict, prev: dict | None) -> None:
+    """Print the canvas (sections→blocks) to the terminal.
+
+    When `prev` is given, mark what changed since the last render: new blocks get
+    a green ＋, edited blocks a yellow ~, deleted block_ids a trailing note. The
+    first render of a doc passes prev=None, so it prints clean with no markers.
+    """
+    prev_texts = _canvas_block_texts(prev) if prev is not None else None
+
+    title = canvas.get("title") or canvas.get("metadata", {}).get("title") or ""
+    if title:
+        console.print(f"[bold underline]{title}[/bold underline]")
+    parties = (canvas.get("metadata") or {}).get("parties") or []
+    if parties:
+        shown = "  ·  ".join(
+            f"{p.get('label', '')}: {p.get('name') or '(미입력)'}" for p in parties
+        )
+        console.print(f"[dim]{shown}[/dim]")
+
+    for section in canvas.get("sections", []):
+        art = section.get("metadata", {}).get("article_no", "")
+        head = " ".join(x for x in [art, section.get("title", "")] if x)
+        if head:
+            console.print(f"[bold cyan]{head}[/bold cyan]")
+        for b in section.get("blocks", []):
+            bid = str(b.get("block_id"))
+            text = b.get("text", "")
+            refs = b.get("source_refs", [])
+            ref_s = f" [dim](출처 {len(refs)})[/dim]" if refs else ""
+            if prev_texts is None:
+                tag, style = "  ", None
+            elif bid not in prev_texts:
+                tag, style = "[green]＋[/green] ", "green"
+            elif prev_texts[bid] != text:
+                tag, style = "[yellow]~[/yellow] ", "yellow"
+            else:
+                tag, style = "  ", None
+            body = f"[{style}]{text}[/{style}]" if style else text
+            console.print(
+                f"{tag}[bold]{bid}[/bold] [dim]{b.get('block_type')}[/dim]{ref_s}\n    {body}\n"
+            )
+
+    if prev_texts is not None:
+        removed = [bid for bid in prev_texts if bid not in _canvas_block_texts(canvas)]
+        if removed:
+            console.print(f"[red]삭제됨: {', '.join(removed)}[/red]")
+
+    missing = canvas.get("missing_terms", [])
+    if missing:
+        labels = ", ".join(m.get("label", "?") for m in missing)
+        console.print(f"[yellow]미정 항목: {labels}[/yellow]")
+
+
+def _collect_parties(missing: list[dict]) -> dict:
+    """Interactively collect 갑/을 party info → a `set_parties` resume op.
+
+    Mirrors the browser's parties form: one prompt group per still-blank party,
+    each with 상호/성명·대표자·주소. Blank answers are kept (skipped) so the loop
+    stays fast; the server matches by `label`.
+    """
+    parties = []
+    for p in missing:
+        label = p.get("label") or "당사자"
+        role = f" ({p.get('role')})" if p.get("role") else ""
+        console.print(f"[bold]{label}{role}[/bold] [dim](엔터로 건너뛰기)[/dim]")
+        parties.append({
+            "label": p.get("label"),
+            "name": Prompt.ask("  상호/성명", default="").strip(),
+            "representative": Prompt.ask("  대표자", default="").strip(),
+            "address": Prompt.ask("  주소", default="").strip(),
+        })
+    return {"op": "set_parties", "parties": parties}
+
+
+def _collect_terms(missing_terms: list[dict]) -> dict:
+    """Interactively collect undetermined values → a `set_terms` resume op.
+
+    One prompt per missing_term (label + description); the server fills each into
+    the doc's {{label}} token and drops it from missing_terms. Blank answers are
+    skipped (that term stays open).
+    """
+    terms = []
+    for t in missing_terms:
+        label = t.get("label")
+        if not label:
+            continue
+        desc = f" [dim]— {t.get('description')}[/dim]" if t.get("description") else ""
+        console.print(f"[bold]{label}[/bold]{desc}")
+        value = Prompt.ask("  값 (엔터로 건너뛰기)", default="").strip()
+        if value:
+            terms.append({"label": label, "value": value})
+    return {"op": "set_terms", "terms": terms}
+
+
+def _message_payload(
+    content: str, scope: str, current_teams: list[str], team_map: dict[str, int],
+    verbose: bool = False,
+) -> dict:
     """Build the chat `message` payload, scoping document search per `scope`.
 
     - scope == "team": include `team_ids` for the currently selected teams, so
       the server searches only those teams' documents.
     - scope == "all": omit `team_ids` — the server falls back to every team the
       CLI admin user can access (all accumulated memberships).
+    - verbose: ask the server to stream every node's LLM tokens (debug).
     """
     payload = {"type": "message", "content": content}
     if scope == "team":
         team_ids = [team_map[name] for name in current_teams if name in team_map]
         if team_ids:
             payload["team_ids"] = team_ids
+    if verbose:
+        payload["verbose"] = True
     return payload
 
 
@@ -130,6 +238,7 @@ async def run_session(
     port: int,
     worker_count: int = 0,
     attach: bool = False,
+    verbose: bool = False,
 ):
     """Main entry: start server, connect WebSocket, run REPL.
 
@@ -178,7 +287,7 @@ async def run_session(
 
         # 3. Connect and run REPL
         current_teams = list(team_names)
-        await _run_repl(base_url, ws_url, current_teams)
+        await _run_repl(base_url, ws_url, current_teams, verbose=verbose)
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted.[/yellow]")
@@ -340,7 +449,7 @@ def _auth_headers(access_token: str) -> dict:
     return {"Authorization": f"Bearer {access_token}"}
 
 
-async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
+async def _run_repl(base_url: str, ws_url: str, current_teams: list[str], verbose: bool = False):
     """Interactive REPL with WebSocket chat and slash commands."""
 
     # Initial connection
@@ -372,7 +481,8 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
         "[bold cyan]MARU Run[/bold cyan]\n"
         f"[yellow]Teams: {team_display}[/yellow]\n"
         f"[yellow]Scope: {scope}[/yellow] [dim](search the selected team only; /scope all for every team)[/dim]\n"
-        "[dim]Type /help for commands, /quit to exit · Tab for autocomplete[/dim]",
+        + ("[magenta]Verbose: on[/magenta] [dim](streaming every graph node's tokens)[/dim]\n" if verbose else "")
+        + "[dim]Type /help for commands, /quit to exit · Tab for autocomplete[/dim]",
         border_style="cyan",
     ))
 
@@ -382,8 +492,9 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
         completer=_ChatCompleter(lambda: current_teams),
     )
 
-    # Lazily-started local browser bridge for interactive doc-graph turns.
-    doc_bridge = None
+    # Last canvas rendered in the terminal, kept across turns so each new doc
+    # version can be diffed against it (new/edited/removed blocks highlighted).
+    prev_canvas = None
 
     try:
         while True:
@@ -493,7 +604,7 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
 
             # Chat message via WebSocket. Scope document search per /scope:
             # "team" sends team_ids (selected teams only), "all" omits it.
-            payload = _message_payload(stripped, scope, current_teams, team_map)
+            payload = _message_payload(stripped, scope, current_teams, team_map, verbose)
             try:
                 await ws.send(json.dumps(payload))
             except websockets.exceptions.ConnectionClosed:
@@ -508,18 +619,24 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                 if err:
                     console.print(f"[red]Reconnection failed: {err}[/red]")
                     break
-                await ws.send(json.dumps(_message_payload(stripped, scope, current_teams, team_map)))
+                await ws.send(json.dumps(_message_payload(stripped, scope, current_teams, team_map, verbose)))
 
             # Receive streamed response (re-enters on interrupt)
             got_error = False
-            doc_active = False   # this turn was routed to the interactive doc graph
             while True:
                 console.print("\n[bold green]Assistant:[/bold green]")
                 answer = ""
                 interrupted = False
                 interrupt_content = None
+                # verbose: the current node whose tokens are printing, so a header
+                # prints only when it changes.
+                last_node = None
 
-                with Live(console=console, refresh_per_second=10) as live:
+                # Non-verbose gets a clean in-place Markdown region via Live. Verbose
+                # streams every node's tokens incrementally instead — a Live region
+                # would fight the interleaved DEBUG log lines and reprint endlessly.
+                live_cm = nullcontext() if verbose else Live(console=console, refresh_per_second=10)
+                with live_cm as live:
                     while True:
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=120)
@@ -539,55 +656,51 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                                 # printed above the live region; persists with the answer
                                 console.print(f"[dim]🧭 graph: {gid}[/dim]")
                             if gid == "doc":
-                                # Hand this turn's interactive editing to a browser canvas.
-                                doc_active = True
-                                if doc_bridge is None:
-                                    doc_bridge = DocBridge()
-                                    await doc_bridge.start()
-                                if not doc_bridge.has_clients():
-                                    doc_bridge.open_browser()
-                                console.print("[green]📝 문서 편집 창을 브라우저에서 진행합니다.[/green]")
+                                # Interactive editing runs right here in the terminal:
+                                # each canvas version prints inline (with a diff vs the
+                                # last), and edit commands are read at the prompt.
+                                console.print("[green]📝 문서 편집 모드 — 터미널에서 진행합니다.[/green]")
                         elif msg_type == "stream":
-                            answer += msg.get("content", "")
-                            live.update(Markdown(answer))
+                            content = msg.get("content", "")
+                            answer += content
+                            if verbose:
+                                if last_node != "generate":
+                                    console.print("\n[bold green]⟨generate⟩[/bold green]")
+                                    last_node = "generate"
+                                print(content, end="", flush=True)
+                            else:
+                                live.update(Markdown(answer))
+                        elif msg_type == "node_stream":
+                            # verbose only: an internal node's LLM token stream,
+                            # printed under a per-node header so you can see which
+                            # node is running and how long each call takes.
+                            if verbose:
+                                node = msg.get("node") or "?"
+                                if last_node != node:
+                                    console.print(f"\n[dim cyan]⟨{node}⟩[/dim cyan]")
+                                    last_node = node
+                                print(msg.get("content", ""), end="", flush=True)
                         elif msg_type == "thinking":
-                            live.update("[dim]Thinking...[/dim]")
+                            if live is not None:
+                                live.update("[dim]Thinking...[/dim]")
                         elif msg_type == "retrieve":
                             docs = msg.get("documents", [])
                             if docs:
                                 names = [f"[dim]{d.get('document_name', '?')}[/dim]" for d in docs]
-                                live.update(f"[cyan]Retrieved {len(docs)} docs:[/cyan] {', '.join(names)}")
+                                summary = f"[cyan]Retrieved {len(docs)} docs:[/cyan] {', '.join(names)}"
+                                if live is not None:
+                                    live.update(summary)
+                                else:
+                                    console.print(summary)
                         elif msg_type == "canvas":
                             canvas = msg.get("canvas") or {}
-                            if doc_active and doc_bridge is not None:
-                                # Interactive turn: render in the browser canvas.
-                                await doc_bridge.send_canvas(canvas)
-                                live.update("[dim]📝 canvas 업데이트 → 브라우저[/dim]")
-                                continue
-                            # Fallback: render the current canvas (sections→blocks) in the terminal.
-                            live.update("")
-                            title = canvas.get("title") or canvas.get("metadata", {}).get("title") or ""
-                            if title:
-                                console.print(f"[bold underline]{title}[/bold underline]")
-                            for section in canvas.get("sections", []):
-                                art = section.get("metadata", {}).get("article_no", "")
-                                head = " ".join(x for x in [art, section.get("title", "")] if x)
-                                if head:
-                                    console.print(f"[bold cyan]{head}[/bold cyan]")
-                                for b in section.get("blocks", []):
-                                    refs = b.get("source_refs", [])
-                                    ref_s = f" [dim](출처 {len(refs)})[/dim]" if refs else ""
-                                    console.print(
-                                        f"  [bold]{b.get('block_id')}[/bold] "
-                                        f"[dim]{b.get('block_type')}[/dim]{ref_s}\n  {b.get('text', '')}\n"
-                                    )
-                            missing = canvas.get("missing_terms", [])
-                            if missing:
-                                labels = ", ".join(m.get("label", "?") for m in missing)
-                                console.print(f"[yellow]미정 항목: {labels}[/yellow]")
+                            # Render the current canvas (sections→blocks) in the
+                            # terminal, highlighting the diff vs the last version.
+                            if live is not None:
+                                live.update("")
+                            _render_canvas(canvas, prev_canvas)
+                            prev_canvas = canvas
                         elif msg_type == "complete":
-                            if doc_active and doc_bridge is not None:
-                                await doc_bridge.send_complete()
                             break
                         elif msg_type == "interrupt":
                             interrupted = True
@@ -596,23 +709,11 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                         elif msg_type == "error":
                             live.update("")
                             console.print(f"[red]Error: {msg.get('content', 'Unknown')}[/red]")
-                            if doc_active and doc_bridge is not None:
-                                await doc_bridge.send_error(msg.get("content", "오류"))
                             got_error = True
                             break
 
                 if got_error or not interrupted:
                     break
-
-                # Interactive doc turn: relay the interrupt to the browser and wait
-                # for the user's edit command there (edit/add/delete/reorder/finalize
-                # or an anchor choice) instead of prompting in the terminal.
-                if doc_active and doc_bridge is not None:
-                    await doc_bridge.send_interrupt(interrupt_content)
-                    console.print("[dim]⏸ 브라우저에서 편집 입력을 기다립니다…[/dim]")
-                    resume_content = await doc_bridge.await_resume()
-                    await ws.send(json.dumps({"type": "resume", "content": resume_content}))
-                    continue
 
                 interrupt_type = interrupt_content.get("type", "") if isinstance(interrupt_content, dict) else ""
                 if interrupt_type == "feedback_score":
@@ -635,19 +736,45 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
                 elif interrupt_type == "awaiting_edit":
                     # doc graph: parse a simple edit command line into a resume dict.
                     #   edit <id> <feedback> | add [after <id>] <text> | delete <id>
-                    #   reorder <id,id,...> | finalize
+                    #   reorder <id,id,...> | parties | terms | finalize
                     if isinstance(interrupt_content, dict) and interrupt_content.get("error"):
                         console.print(f"[red]이전 편집 실패: {interrupt_content['error']}[/red]")
+                    missing = (
+                        interrupt_content.get("missing_parties")
+                        if isinstance(interrupt_content, dict) else None
+                    ) or []
+                    # Undetermined values ({{label}} tokens) come on the canvas, not
+                    # the interrupt — read them from the last rendered canvas.
+                    missing_terms = (prev_canvas or {}).get("missing_terms") or []
+                    if missing:
+                        labels = ", ".join(p.get("label", "?") for p in missing)
+                        console.print(
+                            f"[yellow]당사자 정보가 비어 있습니다: {labels}[/yellow] "
+                            "[dim]— parties 로 입력[/dim]"
+                        )
+                    if missing_terms:
+                        labels = ", ".join(m.get("label", "?") for m in missing_terms)
+                        console.print(
+                            f"[yellow]미정 항목: {labels}[/yellow] [dim]— terms 로 입력[/dim]"
+                        )
                     console.print(
                         "[dim]편집: edit <id> <피드백> | add [after <id>] <내용> | "
-                        "delete <id> | reorder <id,id,..> | finalize[/dim]"
+                        "delete <id> | reorder <id,id,..> | "
+                        + ("parties | " if missing else "")
+                        + ("terms | " if missing_terms else "")
+                        + "finalize[/dim]"
                     )
-                    resume_content = _parse_edit_command(
-                        Prompt.ask("[bold]편집 명령[/bold]")
-                    )
+                    line = Prompt.ask("[bold]편집 명령[/bold]")
+                    cmd = line.strip().lower()
+                    if cmd == "parties" and missing:
+                        resume_content = _collect_parties(missing)
+                    elif cmd == "terms" and missing_terms:
+                        resume_content = _collect_terms(missing_terms)
+                    else:
+                        resume_content = _parse_edit_command(line)
                 else:
                     resume_content = Prompt.ask("[bold]입력해주세요[/bold]")
-                await ws.send(json.dumps({"type": "resume", "content": resume_content}))
+                await ws.send(json.dumps({"type": "resume", "content": resume_content, "verbose": verbose}))
 
             if not answer and not got_error:
                 console.print("[dim]No response received.[/dim]")
@@ -655,11 +782,6 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str]):
     except _QuitSignal:
         pass
     finally:
-        if doc_bridge is not None:
-            try:
-                await doc_bridge.stop()
-            except Exception:
-                pass
         try:
             await ws.close()
         except Exception:

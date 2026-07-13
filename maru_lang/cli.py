@@ -19,12 +19,20 @@ app = typer.Typer()
 
 
 def _enable_verbose_logging() -> None:
-    """Turn on DEBUG logs for maru_lang.* (quiet by default)."""
+    """Turn on DEBUG logs for maru_lang.* only — third-party libs stay quiet.
+
+    basicConfig(level=DEBUG) would set the *root* logger to DEBUG, which floods
+    the output with httpcore/httpx/websockets frame logs (every health-poll retry,
+    every WS ping/token) and drowns the graph token stream. So the root stays at
+    INFO and only maru_lang is DEBUG, with the chattiest libs pinned to WARNING.
+    """
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     logging.getLogger("maru_lang").setLevel(logging.DEBUG)
+    for noisy in ("httpcore", "httpx", "websockets", "urllib3", "asyncio"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 @app.callback()
@@ -203,7 +211,8 @@ def run(
         help="Attach the chat REPL to an already-running maru server (e.g. a "
              "systemd `maru serve`) instead of starting one"),
     verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Enable DEBUG logs for maru_lang (default: quiet)"),
+        False, "--verbose", "-v",
+        help="DEBUG logs + stream every graph node's LLM tokens in chat (default: quiet)"),
 ):
     """Start server + interactive chat in one command."""
     if verbose:
@@ -238,6 +247,7 @@ def run(
         port=port,
         worker_count=worker,
         attach=attach,
+        verbose=verbose,
     ))
 
 

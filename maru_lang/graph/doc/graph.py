@@ -23,6 +23,7 @@ Topology
 from typing import AsyncIterator, Union
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessageChunk
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, END
 from langgraph.types import Command
@@ -123,6 +124,7 @@ async def stream_doc(
     session_id: str | None = None,
     user_id: int | None = None,
     llm_name: str | None = None,
+    verbose: bool = False,
     **_ignored,
 ) -> AsyncIterator[tuple[str, object]]:
     """Stream the doc graph as (event_type, content) tuples.
@@ -130,6 +132,8 @@ async def stream_doc(
     Events:
         - ("canvas", {...}): the current document (initial draft or post-edit),
           the full serialized canvas (envelope + tree).
+        - ("node_token", (node, str)): a token from any node's LLM call — emitted
+          only when `verbose`, so debug runs can watch drafting/classify live.
         - ("interrupt", value): paused at await_edit, awaiting an edit command.
 
     `message` is the authoring instruction string, or Command(resume=op) to resume.
@@ -137,6 +141,8 @@ async def stream_doc(
     interchangeable from the registry-driven dispatch.
     """
     if isinstance(message, Command):
+        if message.resume is None:
+            raise ValueError("doc graph resume requires Command(resume=...)")
         input_state = message
     else:
         input_state = build_doc_input(
@@ -145,8 +151,11 @@ async def stream_doc(
             session_id=session_id, user_id=user_id, llm_name=llm_name,
         )
 
+    # Verbose adds "messages" so every node's LLM tokens (classify, draft, edit)
+    # can be surfaced for debugging; default stays updates-only (canvas on node exit).
+    stream_mode = ["updates", "messages"] if verbose else ["updates"]
     async for mode, event in graph.astream(
-        input_state, config=config, stream_mode=["updates"],
+        input_state, config=config, stream_mode=stream_mode,
     ):
         if mode == "updates":
             for _node, state_update in event.items():
@@ -155,6 +164,10 @@ async def stream_doc(
                 payload = state_update.get("canvas_payload")
                 if payload:
                     yield "canvas", payload
+        elif mode == "messages":
+            msg, metadata = event
+            if isinstance(msg, AIMessageChunk) and msg.content:
+                yield "node_token", (metadata.get("langgraph_node"), msg.content)
 
     # Surface the pending interrupt (paused at await_edit for the next op).
     snapshot = await graph.aget_state(config)
