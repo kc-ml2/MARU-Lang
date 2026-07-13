@@ -4,6 +4,8 @@ All paths (generate / score / reason) converge on this terminal node. It builds
 a turn summary and a rolling session summary, then creates the Conversation row
 and updates Session.summary. No-op when session_id/user_id are absent (tests/CLI).
 """
+import asyncio
+
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
@@ -47,13 +49,12 @@ def make_summarize_node(llm: BaseChatModel):
         llm_name = state.get("llm_name")
         llm_used = await Llm.get_or_none(name=llm_name) if llm_name else None
 
-        turn_summary = await _summarize(
-            TURN_SUMMARY_PROMPT.format(question=question, answer=answer)
-        )
         prev = session.summary or ""
-        session_summary = await _summarize(
-            SESSION_SUMMARY_PROMPT.format(previous=prev or "(없음)", question=question, answer=answer)
-        ) or prev
+        turn_summary, session_summary_raw = await asyncio.gather(
+            _summarize(TURN_SUMMARY_PROMPT.format(question=question, answer=answer)),
+            _summarize(SESSION_SUMMARY_PROMPT.format(previous=prev or "(없음)", question=question, answer=answer)),
+        )
+        session_summary = session_summary_raw or prev
 
         await create_conversation(
             user=user,
