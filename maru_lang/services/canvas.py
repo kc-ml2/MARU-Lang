@@ -9,7 +9,6 @@ Two layers:
     place. The graph nodes deep-copy the head payload, apply one op, then persist
     it as the next version. LLM (re)generation is owned by the nodes.
 """
-import copy
 import uuid
 from typing import TypedDict
 
@@ -348,6 +347,67 @@ def set_parties(payload: dict, parties: list[Party]) -> bool:
             if field in incoming and incoming[field] != target.get(field):
                 target[field] = incoming[field]
                 changed = True
+    return changed
+
+
+def _term_token(label: str) -> str:
+    """The inline placeholder the draft writes for an undetermined value."""
+    return "{{" + label + "}}"
+
+
+def index_term_blocks(payload: dict) -> None:
+    """Annotate each missing_term with the block_ids whose text holds its token.
+
+    The draft marks undetermined spots as ``{{label}}`` (label == the missing_term
+    label). Recording which blocks contain each token lets a frontend render the
+    input inline (and mirrors how parties carry structure). Mutates payload.
+    """
+    for term in payload.get("missing_terms") or []:
+        if not isinstance(term, dict) or not term.get("label"):
+            continue
+        token = _term_token(term["label"])
+        term["block_ids"] = [
+            b.get("block_id") for _s, b in iter_blocks(payload) if token in (b.get("text") or "")
+        ]
+
+
+def fill_terms(payload: dict, terms: list[dict]) -> bool:
+    """Fill undetermined values into the doc and clear them from missing_terms.
+
+    Each term is ``{label, value}``; the label matches a missing_term (and the
+    ``{{label}}`` token the draft left in block text). Every occurrence of the
+    token is replaced with the value, and the label is dropped from missing_terms
+    (whether or not a token was present — the user resolved it). Mirrors set_parties
+    but writes into block text, since term values live inline (not in metadata).
+    Returns True if anything changed, so the edit loop can skip a no-op version.
+    """
+    if not terms:
+        return False
+    values = {
+        t["label"]: (t.get("value") or "")
+        for t in terms
+        if isinstance(t, dict) and t.get("label")
+    }
+    if not values:
+        return False
+
+    changed = False
+    for label, value in values.items():
+        token = _term_token(label)
+        for _section, block in iter_blocks(payload):
+            text = block.get("text") or ""
+            if token in text:
+                block["text"] = text.replace(token, value)
+                changed = True
+
+    missing = payload.get("missing_terms") or []
+    kept = [
+        m for m in missing
+        if (m.get("label") if isinstance(m, dict) else m) not in values
+    ]
+    if len(kept) != len(missing):
+        payload["missing_terms"] = kept
+        changed = True
     return changed
 
 

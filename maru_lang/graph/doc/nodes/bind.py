@@ -19,7 +19,7 @@ from maru_lang.graph.doc.constants import (
     INTERRUPT_ANCHOR_CHOICE,
     REF_KIND_ANCHOR,
 )
-from maru_lang.graph.doc.nodes._refs import base_ref, render_ref_context
+from maru_lang.graph.doc.refs import base_ref, render_ref_context
 from maru_lang.graph.doc.state import DocState
 from maru_lang.services.document import find_template_documents
 

@@ -9,7 +9,7 @@ from typing import Optional
 
 from langchain_core.documents.compressor import BaseDocumentCompressor
 
-from maru_lang.graph.doc.nodes._refs import base_ref, render_ref_context
+from maru_lang.graph.doc.refs import base_ref, render_ref_context
 from maru_lang.graph.doc.state import DocState
 from maru_lang.graph.rag.retriever import VectorRetriever
 
