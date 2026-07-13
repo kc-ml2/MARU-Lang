@@ -158,6 +158,38 @@ class TestMaruConfig:
         config = MaruConfig.from_dict(data)
         assert config.embedding_model == "BAAI/bge-m3"
 
+    def test_enable_thinking_defaults_none_and_parses(self):
+        # Default: unset → None (leave the model's own default, inject nothing).
+        assert LLMConfig().enable_thinking is None
+        cfg = MaruConfig.from_dict({
+            "llms": [{
+                "name": "local", "provider": "openai", "model_name": "qwen3",
+                "base_url": "http://127.0.0.1:8080/v1", "enable_thinking": False,
+            }]
+        })
+        assert cfg.llms[0].enable_thinking is False
+
+
+class TestCreateChatModel:
+    def test_enable_thinking_false_injects_extra_body(self):
+        # OpenAI-compatible (local) path: enable_thinking flows to extra_body so
+        # the Qwen chat template disables the hidden reasoning pass.
+        from maru_lang.core.llm.client import create_chat_model
+        model = create_chat_model(LLMConfig(
+            name="l", provider="openai", model_name="qwen3",
+            api_key="sk-x", base_url="http://127.0.0.1:8080/v1",
+            enable_thinking=False,
+        ))
+        assert model.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+    def test_enable_thinking_none_leaves_extra_body_unset(self):
+        # Real OpenAI API must not receive chat_template_kwargs → None injects nothing.
+        from maru_lang.core.llm.client import create_chat_model
+        model = create_chat_model(LLMConfig(
+            name="l", provider="openai", model_name="gpt-4o", api_key="sk-x",
+        ))
+        assert getattr(model, "extra_body", None) is None
+
     def test_get_database_url_absolute(self):
         config = MaruConfig(database_url="sqlite:///chatbot.db")
         result = config.get_database_url_absolute()
