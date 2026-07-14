@@ -26,7 +26,7 @@ console = Console()
 
 # Slash commands available in the chat REPL (used for autocomplete + help).
 _SLASH_COMMANDS = [
-    "/ingest", "/team", "/scope", "/status", "/retry", "/llms", "/graphs", "/function", "/help", "/clear", "/quit", "/exit",
+    "/ingest", "/team", "/scope", "/anchor", "/status", "/retry", "/llms", "/graphs", "/function", "/help", "/clear", "/quit", "/exit",
 ]
 
 
@@ -62,8 +62,8 @@ class _ChatCompleter(Completer):
             for opt in ("feedback", "off"):
                 if opt.startswith(arg.strip()):
                     yield Completion(opt, start_position=-len(arg))
-        elif cmd == "/scope":
-            for opt in ("team", "all"):
+        elif cmd in ("/scope", "/anchor"):
+            for opt in ("team", "all") if cmd == "/scope" else ("on", "off"):
                 if opt.startswith(arg.strip()):
                     yield Completion(opt, start_position=-len(arg))
         elif cmd in ("/team", "/graphs"):
@@ -212,7 +212,7 @@ def _collect_terms(missing_terms: list[dict]) -> dict:
 
 def _message_payload(
     content: str, scope: str, current_teams: list[str], team_map: dict[str, int],
-    verbose: bool = False,
+    verbose: bool = False, anchor_only: bool = False,
 ) -> dict:
     """Build the chat `message` payload, scoping document search per `scope`.
 
@@ -221,6 +221,7 @@ def _message_payload(
     - scope == "all": omit `team_ids` — the server falls back to every team the
       CLI admin user can access (all accumulated memberships).
     - verbose: ask the server to stream every node's LLM tokens (debug).
+    - anchor_only: doc graph grounds on the chosen anchor only (skip fuzzy RAG).
     """
     payload = {"type": "message", "content": content}
     if scope == "team":
@@ -229,6 +230,8 @@ def _message_payload(
             payload["team_ids"] = team_ids
     if verbose:
         payload["verbose"] = True
+    if anchor_only:
+        payload["anchor_only"] = True
     return payload
 
 
@@ -477,6 +480,11 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str], verbos
     # to the chosen team; toggle at runtime with /scope.
     scope = "team"
 
+    # Doc graph grounding: when on, the draft grounds on the chosen anchor
+    # (standard) document only and skips fuzzy RAG over other team docs.
+    # Session-level toggle (/anchor), applied to each turn's message payload.
+    anchor_only = False
+
     console.print(Panel.fit(
         "[bold cyan]MARU Run[/bold cyan]\n"
         f"[yellow]Teams: {team_display}[/yellow]\n"
@@ -560,6 +568,22 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str], verbos
                     console.print(f"[green]Search scope: {scope}[/green] [dim]({desc})[/dim]")
                     continue
 
+                elif cmd == "/anchor":
+                    val = args.strip().lower()
+                    if not val:
+                        console.print(
+                            f"[cyan]Anchor-only: {'on' if anchor_only else 'off'}[/cyan] "
+                            "[dim](on=고른 표준 문서만으로 작성, RAG 끔)[/dim]"
+                        )
+                        continue
+                    if val not in ("on", "off"):
+                        console.print("[red]Usage: /anchor on|off[/red]")
+                        continue
+                    anchor_only = (val == "on")
+                    desc = "고른 표준만 사용 (RAG off)" if anchor_only else "표준 + RAG (기본)"
+                    console.print(f"[green]Anchor-only: {'on' if anchor_only else 'off'}[/green] [dim]({desc})[/dim]")
+                    continue
+
                 elif cmd == "/ingest":
                     await _api_ingest(base_url, access_token, args, current_teams, team_map)
                     continue
@@ -604,7 +628,7 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str], verbos
 
             # Chat message via WebSocket. Scope document search per /scope:
             # "team" sends team_ids (selected teams only), "all" omits it.
-            payload = _message_payload(stripped, scope, current_teams, team_map, verbose)
+            payload = _message_payload(stripped, scope, current_teams, team_map, verbose, anchor_only)
             try:
                 await ws.send(json.dumps(payload))
             except websockets.exceptions.ConnectionClosed:
@@ -619,7 +643,7 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str], verbos
                 if err:
                     console.print(f"[red]Reconnection failed: {err}[/red]")
                     break
-                await ws.send(json.dumps(_message_payload(stripped, scope, current_teams, team_map, verbose)))
+                await ws.send(json.dumps(_message_payload(stripped, scope, current_teams, team_map, verbose, anchor_only)))
 
             # Receive streamed response (re-enters on interrupt)
             got_error = False
@@ -727,12 +751,17 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str], verbos
                     console.print("[bold]기준 문서를 선택하세요 (여러 표준 문서가 있습니다):[/bold]")
                     for i, c in enumerate(cands):
                         console.print(f"  [cyan]{i}[/cyan] {c.get('name')} [dim](관련도 {c.get('score')})[/dim]")
-                    console.print("[dim]번호 입력, 또는 skip[/dim]")
+                    console.print("[dim]번호 입력 · 뒤에 ! = 이 표준만 사용(RAG 없이, 예: 0!) · skip[/dim]")
                     pick = Prompt.ask("[bold]선택[/bold]").strip().lower()
-                    if pick == "skip" or not pick.isdigit():
+                    # A trailing '!' forces anchor-only grounding for this doc.
+                    anchor_only_pick = pick.endswith("!")
+                    tok = pick[:-1].strip() if anchor_only_pick else pick
+                    if tok == "skip" or not tok.isdigit():
                         resume_content = {"skip": True}
                     else:
-                        resume_content = {"index": int(pick)}
+                        resume_content = {"index": int(tok)}
+                        if anchor_only_pick:
+                            resume_content["anchor_only"] = True
                 elif interrupt_type == "awaiting_edit":
                     # doc graph: parse a simple edit command line into a resume dict.
                     #   edit <id> <feedback> | add [after <id>] <text> | delete <id>
@@ -794,6 +823,7 @@ def _print_help():
         "[bold cyan]Available Commands[/bold cyan]\n\n"
         "  [yellow]/team[/yellow] [name]        — Show or switch team (comma-separated for multiple)\n"
         "  [yellow]/scope[/yellow] team|all     — Limit document search to selected team(s) or all accessible\n"
+        "  [yellow]/anchor[/yellow] on|off      — Doc: ground on the chosen standard only (skip RAG)\n"
         "  [yellow]/ingest[/yellow] <path>      — Ingest files via API (uses current team)\n"
         "  [yellow]/status[/yellow]             — Show document status via API\n"
         "  [yellow]/retry[/yellow] [force]      — Re-ingest failed docs (force: ACTIVE too)\n"

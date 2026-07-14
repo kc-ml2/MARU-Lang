@@ -50,6 +50,8 @@ GRAPH_REGISTRY: dict[str, GraphSpec] = {
         extract_inputs=lambda data: {
             "canvas_id": data.get("canvas_id"),
             "canvas_type": data.get("canvas_type"),
+            # per-turn: ground the draft on the chosen anchor only (skip fuzzy RAG).
+            "anchor_only": bool(data.get("anchor_only")),
         },
     ),
 }

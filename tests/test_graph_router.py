@@ -83,8 +83,10 @@ class TestGraphSpecHooks:
         from maru_lang.graph.registry import GRAPH_REGISTRY
         doc = GRAPH_REGISTRY["doc"]
         assert doc.extract_inputs({"canvas_id": "c1", "canvas_type": "contract"}) == {
-            "canvas_id": "c1", "canvas_type": "contract",
+            "canvas_id": "c1", "canvas_type": "contract", "anchor_only": False,
         }
+        # anchor_only flows through as a per-turn input when the client sends it
+        assert doc.extract_inputs({"anchor_only": True})["anchor_only"] is True
 
 
 class TestResolveUserGraphIds:

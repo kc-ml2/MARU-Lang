@@ -121,6 +121,7 @@ async def stream_doc(
     config: dict | None = None,
     canvas_id: str | None = None,
     canvas_type: str | None = None,
+    anchor_only: bool = False,
     session_id: str | None = None,
     user_id: int | None = None,
     llm_name: str | None = None,
@@ -147,7 +148,7 @@ async def stream_doc(
     else:
         input_state = build_doc_input(
             message, team_ids, team_names,
-            canvas_id=canvas_id, canvas_type=canvas_type,
+            canvas_id=canvas_id, canvas_type=canvas_type, anchor_only=anchor_only,
             session_id=session_id, user_id=user_id, llm_name=llm_name,
         )
 

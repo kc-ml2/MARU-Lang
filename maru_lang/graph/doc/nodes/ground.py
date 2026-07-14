@@ -36,7 +36,9 @@ def make_ground_node(
         team_ids = state.get("team_ids") or []
         instruction = state.get("instruction") or ""
 
-        if not team_ids:
+        # anchor_only (per-turn): ground on the chosen anchor alone — skip the fuzzy
+        # RAG retrieval so clauses from unrelated team docs can't leak into the draft.
+        if state.get("anchor_only") or not team_ids:
             return {"documents": [], "references": [], "context": ""}
 
         scoped = retriever.model_copy(update={"team_ids": team_ids})
