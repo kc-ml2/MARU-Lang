@@ -319,6 +319,26 @@ class TestFinalizeSummary:
         assert "미정 1건" in s                              # open items
 
 
+class TestGrounding:
+    """ground node: fuzzy RAG vs anchor-only."""
+
+    async def test_anchor_only_skips_rag_retrieval(self):
+        from maru_lang.graph.doc.nodes.ground import make_ground_node
+        retriever = _mock_retriever()
+        node = make_ground_node(retriever, compressor=None)
+        out = await node({"anchor_only": True, "team_ids": [1], "instruction": "특허 계약서"})
+        assert out == {"documents": [], "references": [], "context": ""}
+        assert not retriever.ainvoke.called   # RAG skipped → anchor grounds the draft
+
+    async def test_default_runs_rag_retrieval(self):
+        from maru_lang.graph.doc.nodes.ground import make_ground_node
+        retriever = _mock_retriever()
+        node = make_ground_node(retriever, compressor=None)
+        out = await node({"team_ids": [1], "instruction": "특허 계약서"})
+        assert retriever.ainvoke.called       # default: fuzzy RAG runs
+        assert out["references"]
+
+
 class TestPresets:
     """Preset registry + keyword classification (pure)."""
 

@@ -128,16 +128,19 @@ def make_resolve_anchor_node(vdb):
     async def resolve_anchor_node(state: DocState) -> dict:
         choice = state.get("anchor_choice") or {}
         candidates = state.get("anchor_candidates") or []
+        # The pick may force anchor-only for this doc (ground on the chosen
+        # standard alone). If unset, the turn's default (/anchor) stands.
+        override = {"anchor_only": True} if choice.get("anchor_only") else {}
         if choice.get("skip"):
-            return {"anchor_references": [], "anchor_context": None}
+            return {"anchor_references": [], "anchor_context": None, **override}
 
         document_id = choice.get("document_id")
         idx = choice.get("index")
         if document_id is None and isinstance(idx, int) and 0 <= idx < len(candidates):
             document_id = candidates[idx]["document_id"]
         if document_id is None:
-            return {"anchor_references": [], "anchor_context": None}
+            return {"anchor_references": [], "anchor_context": None, **override}
 
-        return await _load_anchor(vdb, document_id)
+        return {**await _load_anchor(vdb, document_id), **override}
 
     return resolve_anchor_node

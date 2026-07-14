@@ -24,6 +24,7 @@ class DocState(TypedDict, total=False):
     instruction: Optional[str]      # this turn's authoring request
     canvas_type: Optional[str]      # "contract" / "기안서" / ...
     canvas_id: Optional[str]        # set → load path; None → new-canvas path
+    anchor_only: bool               # per-turn: ground on the chosen anchor only (skip RAG)
     preset: dict                    # classified doc preset (scaffold/guidance/schema_version)
 
     # ---- reference binding (standard/baseline doc) ----
@@ -56,6 +57,7 @@ def build_doc_input(
     *,
     canvas_id: Optional[str] = None,
     canvas_type: Optional[str] = None,
+    anchor_only: bool = False,
     session_id: Optional[str] = None,
     user_id: Optional[int] = None,
     llm_name: Optional[str] = None,
@@ -71,5 +73,6 @@ def build_doc_input(
         "instruction": instruction,
         "canvas_type": canvas_type,
         "canvas_id": canvas_id,
+        "anchor_only": anchor_only,
         "finalized": False,
     }
