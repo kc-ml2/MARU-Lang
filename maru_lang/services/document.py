@@ -1,4 +1,5 @@
 import operator
+import unicodedata
 from functools import reduce
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -8,6 +9,18 @@ from tortoise.expressions import Q
 from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
 from maru_lang.enums.documents import DocumentStatus
 from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
+
+
+def _contains_any_norm(keyword: str) -> Q:
+    """A name__icontains that survives Hangul NFC/NFD mismatch.
+
+    SQLite LIKE compares bytes, so an NFC query ("계약") never matches an NFD-stored
+    name (macOS uploads decompose Hangul into jamo — visually identical, different
+    bytes). OR the NFC and NFD forms so the match works regardless of how the row
+    was normalized on ingest.
+    """
+    forms = {unicodedata.normalize("NFC", keyword), unicodedata.normalize("NFD", keyword)}
+    return reduce(operator.or_, (Q(name__icontains=f) for f in forms))
 
 
 async def find_template_documents(
@@ -25,14 +38,17 @@ async def find_template_documents(
     returned candidates against the request to pick the right standard. Used by
     the doc graph to deterministically bind a baseline document (distinct from
     fuzzy RAG retrieval).
+
+    Name matching is Hangul-normalization-insensitive (NFC/NFD) — see
+    _contains_any_norm — so NFD-stored names (macOS uploads) still match.
     """
     if not team_ids or not family_keywords:
         return []
     qs = Document.filter(group__team_id__in=team_ids, status=DocumentStatus.ACTIVE)
     for kw in family_keywords:
-        qs = qs.filter(name__icontains=kw)
+        qs = qs.filter(_contains_any_norm(kw))
     if marker_keywords:
-        qs = qs.filter(reduce(operator.or_, (Q(name__icontains=m) for m in marker_keywords)))
+        qs = qs.filter(reduce(operator.or_, (_contains_any_norm(m) for m in marker_keywords)))
     return await qs.limit(limit)
 
 

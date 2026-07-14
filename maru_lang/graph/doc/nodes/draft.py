@@ -56,6 +56,15 @@ def make_draft_node(llm: BaseChatModel):
         # merged references back the per-block source_refs validation + audit.
         anchor_context = state.get("anchor_context")
         rag_context = state.get("context") or ""
+        # anchor_only: RAG was skipped upstream (ground), so there's no fuzzy context
+        # to blend. Reflect that intent in the prompt too — instruct the model to
+        # follow the chosen standard(s) strictly, not merely "reference" them.
+        if state.get("anchor_only") and anchor_context:
+            anchor_context = (
+                "[중요] 아래 기준 문서(표준 양식)만을 근거로 작성하라. 외부 지식이나 "
+                "임의의 조항을 새로 만들지 말고, 표준의 구조·조항·표현을 요청에 맞게 "
+                "충실히 따르라.\n\n" + anchor_context
+            )
         context = "\n\n".join(c for c in (anchor_context, rag_context) if c) or "(참고 문서 없음)"
         references = (state.get("anchor_references") or []) + (state.get("references") or [])
         # Preset (from classify) seeds the scaffold/guidance/schema_version/parties.
