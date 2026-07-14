@@ -20,6 +20,7 @@ Topology
                                                   ▼
                                               finalize ─► END
 """
+import logging
 from typing import AsyncIterator, Union
 
 from langchain_core.language_models import BaseChatModel
@@ -50,6 +51,19 @@ from maru_lang.graph.doc.nodes import (
 from maru_lang.core.vector_db import get_vector_db
 from maru_lang.graph.rag.retriever import build_retriever
 from maru_lang.graph.rag.reranker import build_compressor
+
+logger = logging.getLogger(__name__)
+
+
+def _fmt_val(v) -> str:
+    """노드 델타 값을 한 줄 요약으로. 긴 문자열/리스트/dict는 축약."""
+    if isinstance(v, str):
+        return repr(v[:120] + "…") if len(v) > 120 else repr(v)
+    if isinstance(v, list):
+        return f"list[{len(v)}]"
+    if isinstance(v, dict):
+        return f"dict{{{', '.join(v)}}}"  # 키만
+    return repr(v)
 
 
 def create_doc_graph(model: BaseChatModel | None = None, checkpointer=None):
@@ -155,6 +169,7 @@ async def stream_doc(
     # Verbose adds "messages" so every node's LLM tokens (classify, draft, edit)
     # can be surfaced for debugging; default stays updates-only (canvas on node exit).
     stream_mode = ["updates", "messages"] if verbose else ["updates"]
+    emit_seq = 0  # per-turn counter: proves the actual (canvas → interrupt) emit order
     async for mode, event in graph.astream(
         input_state, config=config, stream_mode=stream_mode,
     ):
@@ -162,8 +177,20 @@ async def stream_doc(
             for _node, state_update in event.items():
                 if not isinstance(state_update, dict):
                     continue
+                # 노드 끝날 때마다 그 노드가 쓴 상태 델타를 요약 로깅.
+                # DEBUG라 평소엔 조용하고, `maru serve -v`에서만 콘솔에 뜬다.
+                logger.debug(
+                    "[doc-node] %s  %s",
+                    _node,
+                    "  ".join(f"{k}={_fmt_val(v)}" for k, v in state_update.items()),
+                )
                 payload = state_update.get("canvas_payload")
                 if payload:
+                    emit_seq += 1
+                    logger.debug(
+                        "[doc-emit] #%d → canvas (canvas_id=%s)",
+                        emit_seq, payload.get("canvas_id"),
+                    )
                     yield "canvas", payload
         elif mode == "messages":
             msg, metadata = event
@@ -174,5 +201,11 @@ async def stream_doc(
     snapshot = await graph.aget_state(config)
     for task in snapshot.tasks:
         if task.interrupts:
-            yield "interrupt", task.interrupts[0].value
+            value = task.interrupts[0].value
+            emit_seq += 1
+            logger.debug(
+                "[doc-emit] #%d → interrupt (canvas_id=%s)",
+                emit_seq, value.get("canvas_id") if isinstance(value, dict) else None,
+            )
+            yield "interrupt", value
             break

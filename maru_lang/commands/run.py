@@ -751,15 +751,18 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str], verbos
                     console.print("[bold]기준 문서를 선택하세요 (여러 표준 문서가 있습니다):[/bold]")
                     for i, c in enumerate(cands):
                         console.print(f"  [cyan]{i}[/cyan] {c.get('name')} [dim](관련도 {c.get('score')})[/dim]")
-                    console.print("[dim]번호 입력 · 뒤에 ! = 이 표준만 사용(RAG 없이, 예: 0!) · skip[/dim]")
+                    console.print("[dim]번호 입력(여러 개는 쉼표, 예: 0,2) · 뒤에 ! = 이 표준만 사용(RAG 없이, 예: 0!) · skip[/dim]")
                     pick = Prompt.ask("[bold]선택[/bold]").strip().lower()
-                    # A trailing '!' forces anchor-only grounding for this doc.
+                    # A trailing '!' forces anchor-only grounding for the chosen docs.
                     anchor_only_pick = pick.endswith("!")
                     tok = pick[:-1].strip() if anchor_only_pick else pick
-                    if tok == "skip" or not tok.isdigit():
+                    # Comma-separated indices → one or more chosen standards' document_ids.
+                    idxs = [int(t) for t in tok.split(",") if t.strip().isdigit()]
+                    doc_ids = [cands[i]["document_id"] for i in idxs if 0 <= i < len(cands)]
+                    if tok == "skip" or not doc_ids:
                         resume_content = {"skip": True}
                     else:
-                        resume_content = {"index": int(tok)}
+                        resume_content = {"document_ids": doc_ids}
                         if anchor_only_pick:
                             resume_content["anchor_only"] = True
                 elif interrupt_type == "awaiting_edit":

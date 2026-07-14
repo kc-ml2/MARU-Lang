@@ -105,6 +105,14 @@ async def _interrupt_value(graph, config):
     return None
 
 
+async def _current_canvas(graph, config):
+    """The working canvas from graph state — the content a client renders from the
+    "canvas" stream event. The await_edit interrupt no longer embeds the body (it
+    carries only canvas_id + prompts), so tests read the canvas from state instead."""
+    snap = await graph.aget_state(config)
+    return snap.values.get("canvas_payload") or {}
+
+
 def _blocks(canvas_payload):
     return [b for s in canvas_payload.get("sections", []) for b in s.get("blocks", [])]
 
@@ -132,11 +140,12 @@ class TestDocGraph:
         # hallucinated chunk id dropped, valid one kept + enriched
         assert [r["chunk_id"] for r in blocks[1]["source_refs"]] == ["chunk-1"]
         assert blocks[1]["source_refs"][0]["document_name"] == "표준계약서"
-        # paused at await_edit, surfacing the whole canvas
+        # paused at await_edit; interrupt carries the id, the canvas body rides the event
         val = await _interrupt_value(graph, cfg)
         assert val["type"] == "awaiting_edit"
         assert val["canvas_id"] == canvas.id
-        assert len(_blocks(val["canvas"])) == 2
+        assert "canvas" not in val  # body lives on the "canvas" event, not the interrupt
+        assert len(_blocks(await _current_canvas(graph, cfg))) == 2
 
     async def test_edit_op_regenerates_only_target_block(self, user_alice):
         graph = _build_graph()
@@ -144,8 +153,7 @@ class TestDocGraph:
         from maru_lang.graph.doc.state import build_doc_input
         await graph.ainvoke(
             build_doc_input("계약서", [1], ["T"], user_id=user_alice.id), config=cfg)
-        val = await _interrupt_value(graph, cfg)
-        target = _blocks(val["canvas"])[1]["block_id"]
+        target = _blocks(await _current_canvas(graph, cfg))[1]["block_id"]
         await graph.ainvoke(
             Command(resume={"op": "edit", "block_id": target, "feedback": "더 공식적으로"}),
             config=cfg)
@@ -163,8 +171,7 @@ class TestDocGraph:
         cfg = _cfg("doc-3")
         from maru_lang.graph.doc.state import build_doc_input
         await graph.ainvoke(build_doc_input("계약서", [1], ["T"], user_id=user_alice.id), config=cfg)
-        val = await _interrupt_value(graph, cfg)
-        first_id = _blocks(val["canvas"])[0]["block_id"]
+        first_id = _blocks(await _current_canvas(graph, cfg))[0]["block_id"]
         await graph.ainvoke(Command(resume={"op": "delete", "block_id": first_id}), config=cfg)
         canvas = await Canvas.filter(user=user_alice).first()
         head = await CanvasVersion.get(id=canvas.head_version_id)
@@ -179,8 +186,7 @@ class TestDocGraph:
         cfg = _cfg("doc-4")
         from maru_lang.graph.doc.state import build_doc_input
         await graph.ainvoke(build_doc_input("계약서", [1], ["T"], user_id=user_alice.id), config=cfg)
-        val = await _interrupt_value(graph, cfg)
-        ids = [b["block_id"] for b in _blocks(val["canvas"])]
+        ids = [b["block_id"] for b in _blocks(await _current_canvas(graph, cfg))]
         await graph.ainvoke(
             Command(resume={"op": "reorder", "order": [ids[1], ids[0]]}), config=cfg)
         canvas = await Canvas.filter(user=user_alice).first()
@@ -193,8 +199,8 @@ class TestDocGraph:
         cfg = _cfg("doc-terms")
         from maru_lang.graph.doc.state import build_doc_input
         await graph.ainvoke(build_doc_input("계약서", [1], ["T"], user_id=user_alice.id), config=cfg)
-        val = await _interrupt_value(graph, cfg)
-        assert [m["label"] for m in val["canvas"]["missing_terms"]] == ["계약금액"]
+        canvas_payload = await _current_canvas(graph, cfg)
+        assert [m["label"] for m in canvas_payload["missing_terms"]] == ["계약금액"]
         # resolve the surfaced term via a structured set_terms op (frontend contract)
         await graph.ainvoke(
             Command(resume={"op": "set_terms", "terms": [{"label": "계약금액", "value": "1,000만원"}]}),
@@ -220,7 +226,7 @@ class TestDocGraph:
         val = await _interrupt_value(graph2, cfg2)
         assert val["type"] == "awaiting_edit"
         assert val["canvas_id"] == canvas.id
-        assert len(_blocks(val["canvas"])) == 2
+        assert len(_blocks(await _current_canvas(graph2, cfg2))) == 2
         assert (await Canvas.get(id=canvas.id)).status == CanvasStatus.EDITING
 
     async def test_client_canvas_type_skips_classification(self, user_alice):
@@ -296,7 +302,7 @@ class TestDocGraphSecurity:
         assert val["type"] == "awaiting_edit"
         assert "block_id" in val.get("error", "")
         # the loop still works: a valid op afterwards applies
-        first_id = _blocks(val["canvas"])[0]["block_id"]
+        first_id = _blocks(await _current_canvas(graph, cfg))[0]["block_id"]
         await graph.ainvoke(Command(resume={"op": "delete", "block_id": first_id}), config=cfg)
         assert await CanvasVersion.filter(canvas=canvas).count() == versions + 1
 
@@ -424,14 +430,34 @@ class TestReferenceBinding:
         assert {c["document_id"] for c in val["candidates"]} == {"t1", "t2"}
         # no canvas yet (paused before drafting)
         assert await Canvas.filter(user=user_alice).count() == 0
-        # user picks the first → proceeds, binds it, drafts, pauses at edit
-        await graph.ainvoke(Command(resume={"index": 0}), config=cfg)
+        # user picks one (or more) by document_ids → binds it, drafts, pauses at edit
+        picked = val["candidates"][0]["document_id"]
+        await graph.ainvoke(Command(resume={"document_ids": [picked]}), config=cfg)
         val2 = await _interrupt_value(graph, cfg)
         assert val2["type"] == "awaiting_edit"
         canvas = await Canvas.filter(user=user_alice).first()
-        picked = val["candidates"][0]["document_id"]
         assert any(r.get("kind") == "anchor" and r["document_id"] == picked
                    for r in canvas.references)
+
+    async def test_anchor_choice_binds_multiple_documents(self, user_alice):
+        team = await _team_with_templates(user_alice, {
+            "t1": "표준 용역계약서", "t2": "표준 위탁계약서"})
+        vdb = _mock_vdb({"t1": "표준 용역계약서", "t2": "표준 위탁계약서"})
+        graph = _build_graph(vdb)
+        cfg = _cfg("doc-bind-multi")
+        from maru_lang.graph.doc.state import build_doc_input
+        await graph.ainvoke(
+            build_doc_input("계약서 초안 작성해줘", [team.id], ["T"], user_id=user_alice.id),
+            config=cfg)
+        val = await _interrupt_value(graph, cfg)
+        assert val["type"] == "awaiting_anchor_choice"
+        # pick BOTH standards → both bound as anchors, merged into the draft context
+        await graph.ainvoke(Command(resume={"document_ids": ["t1", "t2"]}), config=cfg)
+        val2 = await _interrupt_value(graph, cfg)
+        assert val2["type"] == "awaiting_edit"
+        canvas = await Canvas.filter(user=user_alice).first()
+        anchor_ids = {r["document_id"] for r in canvas.references if r.get("kind") == "anchor"}
+        assert anchor_ids == {"t1", "t2"}
 
     async def test_anchor_choice_skip_falls_back_to_rag(self, user_alice):
         team = await _team_with_templates(user_alice, {

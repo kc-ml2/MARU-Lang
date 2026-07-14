@@ -64,10 +64,15 @@ def await_edit_node(state: DocState) -> dict:
     If the previous op was rejected (malformed/locked/not-found) its reason is
     surfaced as `error` so the client can correct and retry. Resuming clears it.
     """
+    # The interrupt is a lean control signal ("paused, awaiting the next op for
+    # canvas X"), NOT a carrier of the canvas body: await_edit is always reached
+    # right after a node that already emitted the canvas (draft/load_canvas/
+    # apply_edit) as a "canvas" event with this same canvas_id. So we send only
+    # the id to correlate, plus prompts (missing_parties/error). The client renders
+    # the canvas from the "canvas" event; this avoids shipping the full tree twice.
     value = {
         "type": INTERRUPT_EDIT,
         "canvas_id": state.get("canvas_id"),
-        "canvas": state.get("canvas_payload") or {},
     }
     missing = _incomplete_parties(state.get("canvas_payload"))
     if missing:
