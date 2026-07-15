@@ -12,8 +12,8 @@ from maru_lang.graph.doc.state import DocState
 from maru_lang.services.canvas import (
     assign_ids,
     create_canvas,
+    extract_terms,
     index_references,
-    index_term_blocks,
     iter_blocks,
     serialize_canvas,
     set_parties,
@@ -97,9 +97,12 @@ def make_draft_node(llm: BaseChatModel):
             "missing_terms": tree.get("missing_terms") or [],
         })
         _validate_sources(payload, index_references(references))
-        # Link each missing_term to the block(s) holding its {{label}} token, so a
-        # frontend can render the fill-in inline and set_terms can resolve it.
-        index_term_blocks(payload)
+        # Derive missing_terms deterministically from the placeholder tokens the
+        # draft actually wrote (canonicalizing them to {{label}}), instead of
+        # trusting the LLM's parallel missing_terms list to stay in sync. This
+        # links each term to its block(s) for inline fill-in and guarantees
+        # set_terms can resolve every token later.
+        extract_terms(payload)
 
         title = metadata.get("title") or instruction[:255] or None
         schema_version = preset.get("schema_version") or f"{canvas_type}.v1"

@@ -9,6 +9,8 @@ Two layers:
     place. The graph nodes deep-copy the head payload, apply one op, then persist
     it as the next version. LLM (re)generation is owned by the nodes.
 """
+import re
+import unicodedata
 import uuid
 from typing import TypedDict
 
@@ -351,24 +353,82 @@ def set_parties(payload: dict, parties: list[Party]) -> bool:
 
 
 def _term_token(label: str) -> str:
-    """The inline placeholder the draft writes for an undetermined value."""
+    """The canonical inline placeholder for an undetermined value: ``{{label}}``."""
     return "{{" + label + "}}"
 
 
-def index_term_blocks(payload: dict) -> None:
-    """Annotate each missing_term with the block_ids whose text holds its token.
+def _term_tokens(label: str) -> list[str]:
+    """Every placeholder spelling we accept for a term label.
 
-    The draft marks undetermined spots as ``{{label}}`` (label == the missing_term
-    label). Recording which blocks contain each token lets a frontend render the
-    input inline (and mirrors how parties carry structure). Mutates payload.
+    Canonically the draft writes ``{{label}}``, but the draft prompt is rendered
+    with ``str.format()`` which collapses ``{{`` → ``{``, so real drafts have long
+    emitted single-brace ``{label}`` too — accept both. Each brace form is offered
+    in NFC and NFD to survive Hangul normalization drift. Double-brace variants
+    come first so a ``{{x}}`` is consumed whole before its ``{x}`` substring can
+    strand a stray brace.
     """
-    for term in payload.get("missing_terms") or []:
-        if not isinstance(term, dict) or not term.get("label"):
-            continue
-        token = _term_token(term["label"])
-        term["block_ids"] = [
-            b.get("block_id") for _s, b in iter_blocks(payload) if token in (b.get("text") or "")
-        ]
+    label = unicodedata.normalize("NFC", label)
+    tokens = []
+    for tok in ("{{" + label + "}}", "{" + label + "}"):
+        tokens.append(tok)
+        nfd = unicodedata.normalize("NFD", tok)
+        if nfd != tok:
+            tokens.append(nfd)
+    return tokens
+
+
+# A placeholder token: one or two braces around a non-brace label — `{label}` or
+# `{{label}}`. The draft LLM is asked for `{{label}}`, but since it can't be forced
+# to, we accept either and canonicalize in code (see extract_terms).
+_TERM_TOKEN_RE = re.compile(r"\{{1,2}([^{}]+?)\}{1,2}")
+
+
+def extract_terms(payload: dict) -> dict:
+    """Deterministically (re)build missing_terms from the placeholder tokens that
+    actually appear in block text, and canonicalize every token to ``{{label}}``.
+
+    This is the source of truth for undetermined values: rather than trusting the
+    LLM to keep its inline tokens and its missing_terms list in sync (they drift —
+    brace count, label spelling, forgotten entries), we scan the prose, take the
+    tokens as authoritative, and derive the list from them. So token ↔ missing_term
+    ↔ block_ids are 1:1 by construction, and set_terms later matches exactly.
+
+    The LLM's own missing_terms is kept only to enrich each term's `description`.
+    Labels are NFC-normalized (matches how the client will echo them). Mutates and
+    returns payload.
+    """
+    # Descriptions the LLM proposed, keyed by NFC label (its list is advisory).
+    prior_desc = {
+        unicodedata.normalize("NFC", m["label"]): (m.get("description") or "")
+        for m in (payload.get("missing_terms") or [])
+        if isinstance(m, dict) and m.get("label")
+    }
+
+    order: list[str] = []
+    block_ids: dict[str, list[str]] = {}
+
+    for _section, block in iter_blocks(payload):
+        bid = block.get("block_id")
+
+        def _canon(match: "re.Match") -> str:
+            label = unicodedata.normalize("NFC", match.group(1).strip())
+            if label not in block_ids:
+                block_ids[label] = []
+                order.append(label)
+            if bid and bid not in block_ids[label]:
+                block_ids[label].append(bid)
+            return "{{" + label + "}}"
+
+        text = block.get("text") or ""
+        canon = _TERM_TOKEN_RE.sub(_canon, text)
+        if canon != text:
+            block["text"] = canon
+
+    payload["missing_terms"] = [
+        {"label": label, "description": prior_desc.get(label, ""), "block_ids": block_ids[label]}
+        for label in order
+    ]
+    return payload
 
 
 def fill_terms(payload: dict, terms: list[dict]) -> bool:
@@ -383,8 +443,12 @@ def fill_terms(payload: dict, terms: list[dict]) -> bool:
     """
     if not terms:
         return False
+    # Match by NFC-normalized label: the label round-trips draft JSON -> client
+    # input -> resume, and a Unicode normalization drift (NFC vs NFD Hangul) would
+    # otherwise make exact-string matching a silent no-op — no token replaced, no
+    # missing_term dropped, so the client sees the canvas "not update" at all.
     values = {
-        t["label"]: (t.get("value") or "")
+        unicodedata.normalize("NFC", t["label"]): (t.get("value") or "")
         for t in terms
         if isinstance(t, dict) and t.get("label")
     }
@@ -393,17 +457,24 @@ def fill_terms(payload: dict, terms: list[dict]) -> bool:
 
     changed = False
     for label, value in values.items():
-        token = _term_token(label)
+        # Accept every placeholder spelling ({{label}}/{label}, NFC/NFD): only the
+        # token substring is rewritten, leaving the rest of the block byte-for-byte
+        # intact. Double-brace forms are tried first so {{x}} is consumed whole.
+        tokens = _term_tokens(label)
         for _section, block in iter_blocks(payload):
             text = block.get("text") or ""
-            if token in text:
-                block["text"] = text.replace(token, value)
-                changed = True
+            for token in tokens:
+                if token in text:
+                    text = text.replace(token, value)
+                    changed = True
+            block["text"] = text
 
     missing = payload.get("missing_terms") or []
     kept = [
         m for m in missing
-        if (m.get("label") if isinstance(m, dict) else m) not in values
+        if unicodedata.normalize(
+            "NFC", (m.get("label") if isinstance(m, dict) else m) or ""
+        ) not in values
     ]
     if len(kept) != len(missing):
         payload["missing_terms"] = kept
