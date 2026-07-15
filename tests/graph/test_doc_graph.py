@@ -31,8 +31,13 @@ _CANVAS_JSON = json.dumps({
 })
 
 
-def _mock_model():
-    """Model returns the canvas tree for the draft prompt, plain text for edits."""
+def _mock_model(canvas_json=None):
+    """Model returns the canvas tree for the draft prompt, plain text for edits.
+
+    `canvas_json` overrides the draft payload for tests that need a different tree
+    (e.g. one with inline `{{term}}` tokens); defaults to the shared _CANVAS_JSON.
+    """
+    canvas_json = canvas_json or _CANVAS_JSON
     model = MagicMock(spec=BaseChatModel)
 
     async def _ainvoke(messages, **_):
@@ -40,7 +45,7 @@ def _mock_model():
         if "분류" in text:           # DOC_CLASSIFY_PROMPT marker
             return AIMessage(content="contract")
         if "JSON 객체" in text:      # DOC_DRAFT_PROMPT marker
-            return AIMessage(content=_CANVAS_JSON)
+            return AIMessage(content=canvas_json)
         return AIMessage(content="수정된 본문")
     model.ainvoke = AsyncMock(side_effect=_ainvoke)
     return model
@@ -75,12 +80,12 @@ def _mock_vdb(names=None):
     return vdb
 
 
-def _build_graph(vdb=None):
+def _build_graph(vdb=None, canvas_json=None):
     with patch("maru_lang.graph.doc.graph.build_retriever", return_value=_mock_retriever()), \
          patch("maru_lang.graph.doc.graph.build_compressor", return_value=None), \
          patch("maru_lang.graph.doc.graph.get_vector_db", return_value=vdb or MagicMock()):
         from maru_lang.graph.doc.graph import create_doc_graph
-        return create_doc_graph(model=_mock_model())
+        return create_doc_graph(model=_mock_model(canvas_json))
 
 
 async def _team_with_templates(user, names):
@@ -195,7 +200,22 @@ class TestDocGraph:
         assert texts == ["제1조 본문 B", "제1조 본문 A"]
 
     async def test_set_terms_op_clears_missing_term(self, user_alice):
-        graph = _build_graph()
+        # missing_terms is derived from the inline {{token}} in the draft (source of
+        # truth), so the draft must carry the token for the term to surface.
+        canvas_json = json.dumps({
+            "metadata": {"title": "용역계약서"},
+            "sections": [{
+                "section_type": "article",
+                "title": "대금",
+                "metadata": {"article_no": "제1조"},
+                "blocks": [
+                    {"block_type": "paragraph", "text": "계약금액은 {{계약금액}}으로 한다.",
+                     "source_refs": ["chunk-1"]},
+                ],
+            }],
+            "missing_terms": [{"label": "계약금액", "description": "미정"}],
+        })
+        graph = _build_graph(canvas_json=canvas_json)
         cfg = _cfg("doc-terms")
         from maru_lang.graph.doc.state import build_doc_input
         await graph.ainvoke(build_doc_input("계약서", [1], ["T"], user_id=user_alice.id), config=cfg)
@@ -208,6 +228,8 @@ class TestDocGraph:
         canvas = await Canvas.filter(user=user_alice).first()
         head = await CanvasVersion.get(id=canvas.head_version_id)
         assert head.payload.get("missing_terms", []) == []          # resolved → dropped
+        text = head.payload["sections"][0]["blocks"][0]["text"]
+        assert "1,000만원" in text and "{{계약금액}}" not in text  # token replaced inline
         assert await CanvasVersion.filter(canvas=canvas).count() == 2  # new version appended
 
     async def test_load_path_skips_grounding(self, user_alice):
