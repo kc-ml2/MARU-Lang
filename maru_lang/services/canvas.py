@@ -134,6 +134,37 @@ def list_versions(canvas: Canvas):
     return CanvasVersion.filter(canvas=canvas).order_by("created_at")
 
 
+async def previous_version(canvas: Canvas, version: CanvasVersion | None) -> CanvasVersion | None:
+    """The version `version` was derived from — the undo target — or None at the
+    first draft (no base). Ownership is already scoped by the caller's canvas."""
+    if version is None or not version.base_version_id:
+        return None
+    return await CanvasVersion.get_or_none(id=version.base_version_id, canvas=canvas)
+
+
+async def next_version(canvas: Canvas, version: CanvasVersion | None) -> CanvasVersion | None:
+    """The redo target: the most-recently-created version derived from `version`.
+
+    Latest child wins, so a redo after a fresh edit follows the new branch and the
+    abandoned forward branch stays unreachable (classic single-timeline editor
+    semantics) — no extra bookkeeping needed since the snapshots already chain by
+    base_version_id."""
+    if version is None:
+        return None
+    return await CanvasVersion.filter(
+        canvas=canvas, base_version_id=version.id
+    ).order_by("-created_at").first()
+
+
+async def set_head(canvas: Canvas, version: CanvasVersion) -> None:
+    """Move the canvas head pointer to an existing version (undo/redo navigation).
+
+    No new snapshot is written — this only re-points head, so the next edit derives
+    from here. Touches Canvas.updated_at."""
+    canvas.head_version_id = version.id
+    await canvas.save()
+
+
 async def set_status(canvas: Canvas, status: CanvasStatus) -> None:
     canvas.status = status
     await canvas.save()

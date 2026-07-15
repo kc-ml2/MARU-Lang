@@ -1,10 +1,12 @@
 """Edit loop — interrupt for the next op, then append a new canvas version.
 
 `await_edit` pauses with the current canvas; the client resumes with an edit
-command dict: {op: edit|add|delete|reorder|set_parties|set_terms|finalize, ...}, or
-a batch {op: "batch", ops: [...]} to apply several as one version. `apply_edit` reloads the
-head version (single source of truth), applies the op(s), and appends a new
-immutable version, then loops back to await_edit.
+command dict: {op: edit|add|delete|reorder|set_parties|set_terms|regenerate|finalize,
+...}, or a batch {op: "batch", ops: [...]} to apply several as one version. `apply_edit`
+reloads the head version (single source of truth), applies the op(s), and appends a
+new immutable version, then loops back to await_edit. `regenerate` is the exception
+that doesn't mutate the loaded tree: it redrafts the whole document from the original
+grounding steered by the user's feedback (see nodes/draft.generate_canvas_tree).
 
 For contracts the drafted parties (갑/을) are seeded empty; await_edit surfaces the
 still-blank ones as `missing_parties` so the client can prompt for them, and the
@@ -26,10 +28,15 @@ from maru_lang.graph.doc.constants import (
     OP_DELETE,
     OP_EDIT,
     OP_FINALIZE,
+    OP_REDO,
+    OP_REGENERATE,
     OP_REORDER,
     OP_SET_PARTIES,
     OP_SET_TERMS,
+    OP_UNDO,
 )
+from maru_lang.graph.doc.nodes.draft import generate_canvas_tree
+from maru_lang.graph.doc.refs import render_ref_context
 from maru_lang.graph.doc.state import DocState
 from maru_lang.services.canvas import (
     Party,
@@ -40,9 +47,12 @@ from maru_lang.services.canvas import (
     find_block,
     iter_blocks,
     load_head,
+    next_version,
+    previous_version,
     reorder_blocks,
     serialize_canvas,
     set_block_text,
+    set_head,
     set_parties,
     set_status,
     write_version,
@@ -58,7 +68,23 @@ def _incomplete_parties(canvas_payload: dict | None) -> list[Party]:
     return [p for p in (meta.get("parties") or []) if not (p.get("name") or "").strip()]
 
 
-def await_edit_node(state: DocState) -> dict:
+async def _history_availability(state: DocState) -> tuple[bool, bool]:
+    """(can_undo, can_redo) at the canvas's current head: is there a previous
+    version to step back to, and a child to step forward to. Both False when the
+    canvas isn't persisted yet (no-DB draft) or isn't owned/found."""
+    canvas_id = state.get("canvas_id")
+    if not canvas_id:
+        return False, False
+    loaded = await load_head(canvas_id, user_id=state.get("user_id"))
+    if loaded is None:
+        return False, False
+    canvas, head = loaded
+    can_undo = await previous_version(canvas, head) is not None
+    can_redo = await next_version(canvas, head) is not None
+    return can_undo, can_redo
+
+
+async def await_edit_node(state: DocState) -> dict:
     """Pause for the next edit command, surfacing the current canvas.
 
     If the previous op was rejected (malformed/locked/not-found) its reason is
@@ -68,11 +94,16 @@ def await_edit_node(state: DocState) -> dict:
     # canvas X"), NOT a carrier of the canvas body: await_edit is always reached
     # right after a node that already emitted the canvas (draft/load_canvas/
     # apply_edit) as a "canvas" event with this same canvas_id. So we send only
-    # the id to correlate, plus prompts (missing_parties/error). The client renders
-    # the canvas from the "canvas" event; this avoids shipping the full tree twice.
+    # the id to correlate, plus prompts (missing_parties/error) and the history
+    # flags. The client renders the canvas from the "canvas" event; this avoids
+    # shipping the full tree twice.
+    can_undo, can_redo = await _history_availability(state)
     value = {
         "type": INTERRUPT_EDIT,
         "canvas_id": state.get("canvas_id"),
+        # Enable/disable the client's 되돌리기/다시실행 controls without a probe call.
+        "can_undo": can_undo,
+        "can_redo": can_redo,
     }
     missing = _incomplete_parties(state.get("canvas_payload"))
     if missing:
@@ -197,7 +228,7 @@ async def _apply_batch(
     errors = []
     for i, sub in enumerate(sub_ops):
         sub_op = sub.get("op") if isinstance(sub, dict) else None
-        if sub_op in (OP_BATCH, OP_FINALIZE, None):
+        if sub_op in (OP_BATCH, OP_FINALIZE, OP_REGENERATE, OP_UNDO, OP_REDO, None):
             errors.append(f"[{i}] 배치에 넣을 수 없는 항목: {sub_op}")
             continue
         sub_changed, sub_err = await _apply_one_op(llm, payload, canvas_type, sub)
@@ -207,9 +238,67 @@ async def _apply_batch(
     return changed, "; ".join(errors) or None
 
 
+def _grounding_state(state: DocState, canvas) -> DocState:
+    """State for a regenerate, backfilling grounding from the persisted canvas.
+
+    In the same session that drafted the doc, the live state still holds the
+    instruction/context/references, so this is a no-op. But when a fresh thread
+    reloaded an existing canvas (load path), those fields are absent — rebuild the
+    id-tagged context from the canvas's stored reference chunks so the redraft is
+    still grounded on the original sources rather than starting blank.
+    """
+    gen = dict(state)
+    if not gen.get("instruction"):
+        gen["instruction"] = canvas.instruction or ""
+    if not gen.get("canvas_type"):
+        gen["canvas_type"] = canvas.canvas_type
+    if not gen.get("context") and canvas.references:
+        gen["references"] = canvas.references
+        gen["context"] = render_ref_context(canvas.references)
+    return gen
+
+
+async def _regenerate(
+    llm: BaseChatModel, state: DocState, canvas, current_payload: dict,
+) -> tuple[bool, str | None, dict]:
+    """Full redraft: regenerate the whole tree from the original grounding steered
+    by the user's feedback. Returns (changed, error, payload). Keeps the user's
+    already-filled 갑/을 names; filled inline term values reset (they're redrawn)."""
+    feedback = (state.get("edit_op") or {}).get("feedback")
+    feedback = feedback.strip() if isinstance(feedback, str) else ""
+    if not feedback:
+        return False, "재작성하려면 마음에 안 든 점을 feedback으로 보내주세요.", current_payload
+    prior_parties = (current_payload.get("metadata") or {}).get("parties") or []
+    new_payload, _meta = await generate_canvas_tree(
+        llm, _grounding_state(state, canvas), feedback=feedback, prior_parties=prior_parties,
+    )
+    return True, None, new_payload
+
+
+async def _navigate(canvas, version, op: str) -> dict:
+    """Undo/redo: move the head pointer along the version lineage without writing a
+    new snapshot. undo → the base (previous) version; redo → the latest child. A
+    no-op at either end (nothing older / nothing newer) is reported, not fatal."""
+    target = (
+        await previous_version(canvas, version) if op == OP_UNDO
+        else await next_version(canvas, version)
+    )
+    if target is None:
+        msg = "되돌릴 이전 버전이 없습니다." if op == OP_UNDO else "다시 실행할 다음 버전이 없습니다."
+        return {"canvas_payload": serialize_canvas(canvas, version), "edit_error": msg}
+    await set_head(canvas, target)
+    return {
+        "payload": target.payload,
+        "version_id": target.id,
+        "canvas_payload": serialize_canvas(canvas, target),
+        "edit_error": None,
+    }
+
+
 def make_apply_edit_node(llm: BaseChatModel):
-    """Apply an edit op (edit/add/delete/reorder/set_parties, or a batch of them)
-    by appending one new version."""
+    """Apply an edit op (edit/add/delete/reorder/set_parties/set_terms/regenerate, or
+    a batch of them) by appending one new version — or undo/redo, which just re-point
+    the head."""
 
     async def apply_edit_node(state: DocState) -> dict:
         edit_op = state.get("edit_op") or {}
@@ -234,6 +323,11 @@ def make_apply_edit_node(llm: BaseChatModel):
                 "edit_error": "확정된 문서는 편집할 수 없습니다.",
             }
 
+        # Undo/redo just move the head pointer over existing snapshots — no new
+        # version, no LLM, no payload mutation. Handle before the edit machinery.
+        if op in (OP_UNDO, OP_REDO):
+            return await _navigate(canvas, version, op)
+
         payload = copy.deepcopy((version.payload if version else None)
                                 or state.get("payload") or empty_payload())
         canvas_type = canvas.canvas_type or DEFAULT_DOC_LABEL
@@ -241,7 +335,10 @@ def make_apply_edit_node(llm: BaseChatModel):
         # Apply one op, or a batch of them, to the working payload. A malformed/no-op
         # command never crashes the turn: it leaves the canvas unchanged (batch:
         # partially applies) and reports `edit_error` to the client.
-        if op == OP_BATCH:
+        if op == OP_REGENERATE:
+            # Whole-doc redraft — replaces the tree rather than mutating it.
+            changed, error, payload = await _regenerate(llm, state, canvas, payload)
+        elif op == OP_BATCH:
             changed, error = await _apply_batch(
                 llm, payload, canvas_type, edit_op.get("ops") or [])
         else:

@@ -14,6 +14,9 @@ OP_DELETE = "delete"
 OP_REORDER = "reorder"
 OP_SET_PARTIES = "set_parties"  # fill structured metadata.parties (갑/을 정보)
 OP_SET_TERMS = "set_terms"      # fill undetermined values: {{label}} 토큰 치환 + missing_terms 제거
+OP_REGENERATE = "regenerate"    # 전체 재작성: 피드백을 얹어 문서를 처음부터 다시 생성 {"op":"regenerate","feedback":"..."}
+OP_UNDO = "undo"                # head를 base_version(이전 버전)으로 이동 — 새 버전 안 만듦
+OP_REDO = "redo"                # head를 최신 자식 버전으로 이동 (undo 취소)
 OP_BATCH = "batch"              # apply several ops as one version {"op":"batch","ops":[...]}
 OP_FINALIZE = "finalize"
 
