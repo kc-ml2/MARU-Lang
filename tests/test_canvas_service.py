@@ -7,11 +7,11 @@ from maru_lang.services.canvas import (
     assign_ids,
     create_canvas,
     delete_block,
+    extract_terms,
     fill_terms,
     finalize_canvas,
     find_block,
     index_references,
-    index_term_blocks,
     list_canvases_by_user,
     load_head,
     reorder_blocks,
@@ -90,16 +90,21 @@ class TestTreeHelpers:
         idx = index_references([{"chunk_id": "x", "document_name": "D"}])
         assert idx["x"]["document_name"] == "D"
 
-    def test_index_term_blocks_links_tokens_to_block_ids(self):
+    def test_extract_terms_links_tokens_to_block_ids(self):
         tree = _tree(["기간은 {{계약 기간}}으로 한다.", "지분은 {{지분 비율}}.", "근거 없음"])
+        # The LLM's own missing_terms is advisory: tokens in the prose are the source
+        # of truth, so a term with no matching token is dropped and one is derived per
+        # token. The advisory list only seeds each surviving term's description.
         tree["missing_terms"] = [
             {"label": "계약 기간", "description": "x"},
             {"label": "지분 비율", "description": "y"},
+            {"label": "근거 없는 항목", "description": "z"},  # no token → dropped
         ]
-        index_term_blocks(tree)
+        extract_terms(tree)
         by_label = {m["label"]: m["block_ids"] for m in tree["missing_terms"]}
-        assert by_label["계약 기간"] == ["blk_001_001"]
-        assert by_label["지분 비율"] == ["blk_001_002"]
+        assert by_label == {"계약 기간": ["blk_001_001"], "지분 비율": ["blk_001_002"]}
+        desc = {m["label"]: m["description"] for m in tree["missing_terms"]}
+        assert desc == {"계약 기간": "x", "지분 비율": "y"}  # descriptions preserved
 
     def test_fill_terms_replaces_token_and_drops_from_missing(self):
         tree = _tree(["기간은 {{계약 기간}}으로 한다.", "지분은 {{지분 비율}}."])
