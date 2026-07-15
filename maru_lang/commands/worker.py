@@ -74,13 +74,42 @@ def _visible_gpu_tokens() -> list[str]:
     return [str(i) for i in range(_detect_cuda_count())]
 
 
-def plan_worker_gpus(count: int, resolved_device: str | None) -> list[str | None]:
+def _main_gpu_offset(main_device: str | None, tokens: list[str]) -> int:
+    """Index into `tokens` to start the worker round-robin at, so co-launched
+    workers prefer GPUs the main server process is NOT using.
+
+    The main process (`maru serve`) also loads an embedding model, on its own
+    `embedding_device`. Under auto/bare-cuda that lands on the first visible GPU,
+    so we start workers at the *next* one (with only 2 GPUs: main on 0, workers
+    from 1). An explicit main `cuda:N` reserves that GPU instead; a cpu/mps main
+    leaves every GPU free, so workers start at 0.
+    """
+    if main_device is None or main_device.strip().lower() == "cuda":
+        return 1 % len(tokens)  # main auto → GPU 0; start workers after it
+    d = main_device.strip().lower()
+    if d.startswith("cuda:"):
+        idx = d.split(":", 1)[1].strip()
+        if idx in tokens:
+            return (tokens.index(idx) + 1) % len(tokens)
+    return 0  # cpu / mps / a device we can't map → no GPU reserved
+
+
+def plan_worker_gpus(
+    count: int, resolved_device: str | None, main_device: str | None = None
+) -> list[str | None]:
     """Round-robin GPU tokens for `count` workers spawned together.
 
     Returns a per-worker list of CUDA_VISIBLE_DEVICES tokens to pin, or None
     entries when auto-assignment should not apply:
       - device explicitly pinned (e.g. "cuda:1") or non-CUDA ("cpu"/"mps") -> hands off
       - device is None (auto) or bare "cuda" -> distribute across visible GPUs
+
+    `main_device` is the main server process's embedding device (config.embedding_device).
+    Workers start their round-robin *after* the GPU the main process occupies, so a
+    co-launched worker doesn't pile its embedding model onto the main process's GPU
+    (the reported "both on GPU 0" case). With more workers than free GPUs the round-
+    robin still wraps back onto the main GPU last, so no GPU sits idle.
+
     Respects an existing CUDA_VISIBLE_DEVICES mask (distributes within it, so we
     don't break ops-level GPU isolation). Falls back to all-None when 0 or 1 GPU
     is visible (nothing to distribute).
@@ -91,7 +120,8 @@ def plan_worker_gpus(count: int, resolved_device: str | None) -> list[str | None
     tokens = _visible_gpu_tokens()
     if len(tokens) <= 1:
         return [None] * count
-    return [tokens[i % len(tokens)] for i in range(count)]
+    offset = _main_gpu_offset(main_device, tokens)
+    return [tokens[(offset + i) % len(tokens)] for i in range(count)]
 
 
 def run_worker_command() -> int:
