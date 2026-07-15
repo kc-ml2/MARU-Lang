@@ -59,12 +59,19 @@ def scope_team_ids(
     return [t["id"] for t in all_user_teams], [t["name"] for t in all_user_teams]
 
 
-async def resolve_user_graph_ids(user: User) -> list[str]:
+async def resolve_user_graph_ids(
+    user: User, team_ids: list[int] | None = None
+) -> list[str]:
     """Graph ids the user may access = union over their teams' allowed_graphs.
 
     A team with an empty allowed_graphs grants only the default graph (not all),
     so newly registered graphs are opt-in per team. The result is intersected
     with the registry and returned in registry order.
+
+    `team_ids` restricts the union to that subset of the user's teams. Pass the
+    request's active_team_ids so graph opt-in is scoped to the teams actually being
+    searched — otherwise a user in team A (doc on) and team B (doc off) could run
+    the doc graph against B's documents. None = all of the user's teams.
     """
     # Imported lazily: the registry pulls in the graph stack (embeddings/transformers),
     # which we don't want to load just by importing this service module.
@@ -72,6 +79,9 @@ async def resolve_user_graph_ids(user: User) -> list[str]:
 
     all_ids = registry_graph_ids()
     memberships = await TeamMember.filter(user=user).select_related("team")
+    if team_ids is not None:
+        wanted = set(team_ids)
+        memberships = [m for m in memberships if m.team_id in wanted]
 
     allowed: set[str] = set()
     for m in memberships:

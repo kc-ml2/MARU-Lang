@@ -58,10 +58,22 @@ def test_parse_add_with_and_without_after():
     }
 
 
-def test_parse_empty_and_unknown_default_to_finalize():
-    assert _parse_edit_command("") == {"op": "finalize"}
+def test_parse_finalize_is_explicit_only():
+    # finalize confirms and locks the doc, so it must be typed explicitly. An empty
+    # line or an unrecognized command is "unknown" (caller re-prompts), never finalize.
     assert _parse_edit_command("finalize") == {"op": "finalize"}
-    assert _parse_edit_command("bogus xyz") == {"op": "finalize"}
+    assert _parse_edit_command("") == {"op": "unknown"}
+    assert _parse_edit_command("   ") == {"op": "unknown"}
+    assert _parse_edit_command("bogus xyz") == {"op": "unknown"}
+
+
+def test_parse_undo_redo_regenerate():
+    assert _parse_edit_command("undo") == {"op": "undo"}
+    assert _parse_edit_command("redo") == {"op": "redo"}
+    assert _parse_edit_command("regenerate 더 짧게") == {
+        "op": "regenerate", "feedback": "더 짧게",
+    }
+    assert _parse_edit_command("regenerate") == {"op": "regenerate", "feedback": ""}
 
 
 # ── _render_canvas diff markers ──

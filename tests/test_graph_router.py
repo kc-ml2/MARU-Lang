@@ -121,6 +121,21 @@ class TestResolveUserGraphIds:
         await TeamMember.create(user=user_alice, team=team, role="member")
         assert set(await resolve_user_graph_ids(user_alice)) == {"chat", "doc"}
 
+    async def test_graph_ids_scoped_to_requested_teams(self, user_alice):
+        # A team opts into doc, another doesn't. Graph access must follow the teams
+        # actually being searched — not leak doc's opt-in across to the other team.
+        team_doc = await Team.create(name="TD", manager=user_alice, allowed_graphs=["chat", "doc"])
+        team_plain = await Team.create(name="TP", manager=user_alice, allowed_graphs=["chat"])
+        await TeamMember.create(user=user_alice, team=team_doc, role="member")
+        await TeamMember.create(user=user_alice, team=team_plain, role="member")
+
+        # Union over all teams still sees doc (unscoped call).
+        assert set(await resolve_user_graph_ids(user_alice)) == {"chat", "doc"}
+        # Scoped to the doc team → doc available.
+        assert set(await resolve_user_graph_ids(user_alice, team_ids=[team_doc.id])) == {"chat", "doc"}
+        # Scoped to the plain team → doc NOT available (the leak this fixes).
+        assert await resolve_user_graph_ids(user_alice, team_ids=[team_plain.id]) == ["chat"]
+
     async def test_set_team_allowed_graphs_admin_then_resolve(self, user_alice):
         from maru_lang.services.team import set_team_allowed_graphs
         team = await Team.create(name="G1", manager=user_alice)

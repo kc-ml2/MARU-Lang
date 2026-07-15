@@ -134,7 +134,6 @@ async def chat_websocket(websocket: WebSocket):
                     break
 
                 all_user_teams = await list_teams_by_user(user)
-                allowed_graph_ids = await resolve_user_graph_ids(user)
 
                 authenticated = True
                 await websocket.send_json({"type": "authenticated", "session_id": active_session.id})
@@ -164,6 +163,12 @@ async def chat_websocket(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "content": "None of the requested team_ids are accessible"})
                     break
                 active_team_ids, active_team_names = scoped
+
+                # Graph opt-in must be scoped to the teams actually being searched this
+                # turn, not the union over all the user's teams — otherwise a team that
+                # didn't enable a graph could still be targeted through another team's
+                # opt-in. Recompute per message against active_team_ids.
+                allowed_graph_ids = await resolve_user_graph_ids(user, team_ids=active_team_ids)
 
                 graphs = getattr(websocket.app.state, "graphs", {}) or {}
                 if not graphs or not allowed_graph_ids:

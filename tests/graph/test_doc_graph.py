@@ -167,6 +167,10 @@ class TestDocGraph:
         blocks = head.payload["sections"][0]["blocks"]
         assert blocks[0]["text"] == "제1조 본문 A"     # untouched
         assert blocks[1]["text"] == "수정된 본문"        # regenerated
+        # editing a block clears its stale source_refs (the old provenance no longer
+        # grounds the rewritten text); the untouched block keeps its refs.
+        assert blocks[1].get("source_refs") == []
+        assert blocks[0].get("source_refs")            # preserved
         # a new version was appended (lineage), not an in-place mutation
         assert head.base_version_id is not None
         assert await CanvasVersion.filter(canvas=canvas).count() == 2
@@ -480,6 +484,31 @@ class TestReferenceBinding:
         canvas = await Canvas.filter(user=user_alice).first()
         anchor_ids = {r["document_id"] for r in canvas.references if r.get("kind") == "anchor"}
         assert anchor_ids == {"t1", "t2"}
+
+    async def test_anchor_choice_rejects_uncandidate_document_id(self, user_alice):
+        # Security: chosen document_ids arrive on an untrusted resume payload. An id
+        # that wasn't among the (team-scoped) candidates must never be fetched — else
+        # a client could read another team's document by supplying its id.
+        team = await _team_with_templates(user_alice, {
+            "t1": "표준 용역계약서", "t2": "표준 위탁계약서"})
+        vdb = _mock_vdb({"t1": "표준 용역계약서", "t2": "표준 위탁계약서"})
+        graph = _build_graph(vdb)
+        cfg = _cfg("doc-bind-idor")
+        from maru_lang.graph.doc.state import build_doc_input
+        await graph.ainvoke(
+            build_doc_input("계약서 초안 작성해줘", [team.id], ["T"], user_id=user_alice.id),
+            config=cfg)
+        val = await _interrupt_value(graph, cfg)
+        assert val["type"] == "awaiting_anchor_choice"
+        # inject a foreign id not in the candidate set → dropped, treated as skip
+        await graph.ainvoke(Command(resume={"document_ids": ["other-team-doc"]}), config=cfg)
+        val2 = await _interrupt_value(graph, cfg)
+        assert val2["type"] == "awaiting_edit"
+        # the foreign id was never fetched from the vector DB, and nothing was bound
+        for call in vdb.get_documents.call_args_list:
+            assert "other-team-doc" not in call.args[0]
+        canvas = await Canvas.filter(user=user_alice).first()
+        assert not any(r.get("kind") == "anchor" for r in canvas.references)
 
     async def test_anchor_choice_skip_falls_back_to_rag(self, user_alice):
         team = await _team_with_templates(user_alice, {
