@@ -1,5 +1,7 @@
 """WebSocket streaming helpers for the chat endpoint."""
+import asyncio
 import logging
+import time
 from typing import Callable, Union
 
 from fastapi import WebSocket
@@ -11,6 +13,14 @@ from maru_lang.core.relation_db.models.auth import User
 from maru_lang.core.relation_db.models.chat import Session
 
 logger = logging.getLogger(__name__)
+
+# Keepalive: a node like draft/apply_edit is a single long LLM call that emits no
+# events until it returns, so the client can sit in silence for many seconds. After
+# this much dead air (no graph event) we send a "misc" heartbeat with elapsed time
+# so the UI can show "열심히 작업 중입니다…" instead of looking frozen. It only fires
+# during silence — while tokens are streaming, events keep resetting the timer.
+_HEARTBEAT_INTERVAL_S = 5.0
+_HEARTBEAT_MESSAGE = "열심히 작업 중입니다…"
 
 
 async def stream_and_send(
@@ -48,20 +58,43 @@ async def stream_and_send(
         await websocket.send_json({"type": "thinking"})
 
     interrupted = False
+    started = time.monotonic()
+    stream = streamer(
+        message=message,
+        team_ids=team_ids,
+        team_names=team_names,
+        graph=graph,
+        config=config,
+        function=function,
+        session_id=session.id if session else None,
+        user_id=user.id if user else None,
+        llm_name=llm_name,
+        verbose=verbose,
+        **(graph_kwargs or {}),
+    ).__aiter__()
+    # Pull the next event as its own task so we can wait on it WITH a timeout and,
+    # on timeout, emit a heartbeat WITHOUT cancelling the pull (cancelling it would
+    # abort the running graph). The same task is re-awaited until it resolves.
+    next_event = asyncio.ensure_future(stream.__anext__())
     try:
-        async for event_type, event_content in streamer(
-            message=message,
-            team_ids=team_ids,
-            team_names=team_names,
-            graph=graph,
-            config=config,
-            function=function,
-            session_id=session.id if session else None,
-            user_id=user.id if user else None,
-            llm_name=llm_name,
-            verbose=verbose,
-            **(graph_kwargs or {}),
-        ):
+        while True:
+            done, _ = await asyncio.wait({next_event}, timeout=_HEARTBEAT_INTERVAL_S)
+            if not done:
+                # Dead air (a long node still running) — reassure the client.
+                await websocket.send_json({
+                    "type": "misc",
+                    "content": _HEARTBEAT_MESSAGE,
+                    "elapsed_s": round(time.monotonic() - started, 1),
+                })
+                continue
+            try:
+                event_type, event_content = next_event.result()
+            except StopAsyncIteration:
+                break
+            # Queue the next pull before dispatching so the graph keeps advancing
+            # while we send (and the heartbeat timer covers the next gap too).
+            next_event = asyncio.ensure_future(stream.__anext__())
+
             if event_type == "token":
                 await websocket.send_json({"type": "stream", "content": event_content})
             elif event_type == "node_token":
@@ -88,6 +121,19 @@ async def stream_and_send(
         except Exception:
             pass
         return False
+    finally:
+        # Don't leak a pending pull on early break/error: cancel + drain it, then
+        # close the generator so the graph run is torn down cleanly.
+        if not next_event.done():
+            next_event.cancel()
+            try:
+                await next_event
+            except BaseException:
+                pass
+        try:
+            await stream.aclose()
+        except Exception:
+            pass
 
     if not interrupted:
         await websocket.send_json({"type": "complete"})
