@@ -60,11 +60,25 @@ async def chat_websocket(websocket: WebSocket):
              | {"op":"delete","block_id":"..."}
              | {"op":"reorder","order":["blk_...", ...],"section_id":"..."}
              | {"op":"set_parties","parties":[{"label":"갑","name":"...","representative":"...","address":"..."}, ...]}
-             | {"op":"batch","ops":[<edit|add|delete|reorder|set_parties>, ...]}  # applied as one version
+             | {"op":"set_terms","terms":[{"label":"<미정항목>","value":"..."}, ...]}
+             | {"op":"regenerate","feedback":"이전 초안에서 마음에 안 든 점"}  # 전체 재작성
+             | {"op":"undo"} | {"op":"redo"}   # 버전 히스토리 탐색(새 버전 생성 X)
+             | {"op":"batch","ops":[<edit|add|delete|reorder|set_parties|set_terms>, ...]}  # applied as one version
              | {"op":"finalize"}
              A batch applies its ops in order (later ops see earlier changes) and
              commits a single version; a failing op is skipped, not fatal, and the
              skipped reasons come back in the next interrupt's "error".
+             regenerate redrafts the whole document from the original grounding plus
+             the feedback (a fresh version of the same canvas); already-filled 갑/을
+             names carry over, but inline term values reset. It can't go in a batch.
+             undo/redo move the head over the immutable version snapshots (undo →
+             previous, redo → latest child) without writing a version; a new edit
+             after undo starts a fresh branch, leaving the undone forward versions
+             stored but unreachable. Both surface the canvas at the new head, or an
+             "error" at the ends of history.
+             Every awaiting_edit interrupt carries "can_undo"/"can_redo" booleans —
+             whether the current head has a previous version / a child — so the
+             client can enable/disable its 되돌리기/다시실행 controls without probing.
              When a contract's parties (갑/을) are still blank, the awaiting_edit
              interrupt carries "missing_parties":[{label,role,name,...}, ...] so the
              client can prompt for them and resume with a set_parties op (parties are
