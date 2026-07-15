@@ -190,7 +190,10 @@ def _start_ingest_workers(config, count: int) -> list:
     if count <= 0:
         return []
     from maru_lang.commands.worker import plan_worker_gpus, spawn_worker
-    gpus = plan_worker_gpus(count, config.resolve_ingest_embedding_device())
+    # main_device = the main server process's embedding device, so workers avoid
+    # piling onto the GPU it already occupies (default auto → GPU 0).
+    gpus = plan_worker_gpus(
+        count, config.resolve_ingest_embedding_device(), main_device=config.embedding_device)
     pinned = [g for g in gpus if g is not None]
     suffix = f", gpus={','.join(pinned)}" if pinned else ""
     typer.echo(f"🧵 Starting {count} ingest worker(s) (redis={config.redis_url}{suffix})")
