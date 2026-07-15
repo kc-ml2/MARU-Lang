@@ -1,5 +1,6 @@
 """WebSocket streaming helpers for the chat endpoint."""
 import asyncio
+import html
 import logging
 import time
 from typing import Callable, Union
@@ -16,11 +17,50 @@ logger = logging.getLogger(__name__)
 
 # Keepalive: a node like draft/apply_edit is a single long LLM call that emits no
 # events until it returns, so the client can sit in silence for many seconds. After
-# this much dead air (no graph event) we send a "misc" heartbeat with elapsed time
-# so the UI can show "열심히 작업 중입니다…" instead of looking frozen. It only fires
-# during silence — while tokens are streaming, events keep resetting the timer.
+# this much dead air (no graph event) we send a "misc" heartbeat so the UI can show
+# a live status instead of looking frozen. It only fires during silence — while
+# tokens are streaming, events keep resetting the timer. The client renders the
+# "misc" content as HTML, so we ship a small decorated snippet (see _heartbeat_html).
 _HEARTBEAT_INTERVAL_S = 5.0
-_HEARTBEAT_MESSAGE = "열심히 작업 중입니다…"
+
+# Status copy escalates the longer a node runs, so a long wait doesn't just repeat
+# one phrase. Each entry is (elapsed_threshold_s, message); the last entry whose
+# threshold has passed wins.
+_HEARTBEAT_PHASES = (
+    (0.0, "열심히 작업 중입니다"),
+    (15.0, "조금만 더 기다려 주세요, 거의 다 왔어요"),
+    (30.0, "복잡한 요청이라 조금 더 걸리고 있어요"),
+    (60.0, "여전히 처리 중입니다. 곧 결과를 보여드릴게요"),
+)
+
+# Braille spinner frames, advanced once per heartbeat tick. If the client replaces
+# the previous misc message in place, this reads as a spinning indicator.
+_HEARTBEAT_SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+
+def _heartbeat_html(elapsed_s: float, tick: int) -> str:
+    """Build the HTML snippet shown to the client during dead air.
+
+    Self-contained inline styles so it renders decorated even without matching
+    frontend CSS; the `maru-heartbeat` classes are hooks for custom styling.
+    """
+    phrase = _HEARTBEAT_PHASES[0][1]
+    for threshold, text in _HEARTBEAT_PHASES:
+        if elapsed_s >= threshold:
+            phrase = text
+    spinner = _HEARTBEAT_SPINNER[tick % len(_HEARTBEAT_SPINNER)]
+    return (
+        '<span class="maru-heartbeat" '
+        'style="display:inline-flex;align-items:center;gap:6px;'
+        'color:#6b7280;font-size:0.9em;">'
+        f'<span class="maru-heartbeat__spinner" '
+        f'style="font-family:monospace;">{spinner}</span>'
+        f'<span class="maru-heartbeat__text">{html.escape(phrase)}</span>'
+        f'<span class="maru-heartbeat__elapsed" '
+        f'style="opacity:0.6;font-variant-numeric:tabular-nums;">'
+        f'{elapsed_s:.0f}초</span>'
+        '</span>'
+    )
 
 
 async def stream_and_send(
@@ -76,16 +116,20 @@ async def stream_and_send(
     # on timeout, emit a heartbeat WITHOUT cancelling the pull (cancelling it would
     # abort the running graph). The same task is re-awaited until it resolves.
     next_event = asyncio.ensure_future(stream.__anext__())
+    heartbeat_tick = 0
     try:
         while True:
             done, _ = await asyncio.wait({next_event}, timeout=_HEARTBEAT_INTERVAL_S)
             if not done:
-                # Dead air (a long node still running) — reassure the client.
+                # Dead air (a long node still running) — reassure the client with a
+                # decorated HTML status. elapsed_s stays for clients that render raw.
+                elapsed = round(time.monotonic() - started, 1)
                 await websocket.send_json({
                     "type": "misc",
-                    "content": _HEARTBEAT_MESSAGE,
-                    "elapsed_s": round(time.monotonic() - started, 1),
+                    "content": _heartbeat_html(elapsed, heartbeat_tick),
+                    "elapsed_s": elapsed,
                 })
+                heartbeat_tick += 1
                 continue
             try:
                 event_type, event_content = next_event.result()
