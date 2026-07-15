@@ -156,7 +156,11 @@ async def _apply_one_op(
                         feedback=edit_op.get("feedback", ""),
                     )
                     response = await llm.ainvoke([HumanMessage(content=prompt)])
-                    changed = set_block_text(payload, str(block_id), (response.content or "").strip())
+                    # Clear source_refs: the block was rewritten by the LLM and its
+                    # old refs may no longer ground the new text. We can't re-validate
+                    # here, so drop them rather than show stale/false provenance.
+                    changed = set_block_text(
+                        payload, str(block_id), (response.content or "").strip(), source_refs=[])
 
         elif op == OP_ADD:
             content = edit_op.get("content")

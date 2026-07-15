@@ -178,8 +178,13 @@ def make_resolve_anchor_node(vdb):
         if choice.get("skip"):
             return {"anchor_references": [], "anchor_context": None, **override}
 
-        # One or more chosen standards → bind them all as merged anchors.
-        document_ids = [i for i in (choice.get("document_ids") or []) if i]
+        # One or more chosen standards → bind them all as merged anchors. The chosen
+        # ids arrive on an untrusted resume payload, so restrict them to the exact
+        # candidates this turn surfaced (which bind computed team-scoped via
+        # find_template_documents). Without this an arbitrary document_id would reach
+        # vdb.get_documents unchecked and leak another team's document.
+        allowed = {c.get("document_id") for c in (state.get("anchor_candidates") or [])}
+        document_ids = [i for i in (choice.get("document_ids") or []) if i and i in allowed]
         if not document_ids:
             return {"anchor_references": [], "anchor_context": None, **override}
 

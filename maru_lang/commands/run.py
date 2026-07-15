@@ -84,13 +84,27 @@ def _parse_edit_command(line: str) -> dict:
     """Parse a doc-graph edit command line into a resume op dict.
 
     Grammars: `edit <id> <feedback>` | `add [after <id>] <text>` |
-    `delete <id>` | `reorder <id,id,..>` | `finalize` (default).
+    `delete <id>` | `reorder <id,id,..>` | `regenerate <feedback>` |
+    `undo` | `redo` | `finalize`.
+
+    finalize is only ever returned for an explicit `finalize` — an empty line or
+    an unrecognized command returns {"op": "unknown"} so the caller re-prompts.
+    (Previously both fell through to finalize, so a stray Enter or a typo would
+    silently confirm and lock the document.)
     """
     parts = (line or "").strip().split(maxsplit=1)
     if not parts:
-        return {"op": "finalize"}
+        return {"op": "unknown"}
     cmd = parts[0].lower()
     rest = parts[1] if len(parts) > 1 else ""
+    if cmd == "finalize":
+        return {"op": "finalize"}
+    if cmd == "undo":
+        return {"op": "undo"}
+    if cmd == "redo":
+        return {"op": "redo"}
+    if cmd == "regenerate":
+        return {"op": "regenerate", "feedback": rest.strip()}
     if cmd == "edit":
         bid, _, fb = rest.partition(" ")
         return {"op": "edit", "block_id": bid.strip(), "feedback": fb.strip()}
@@ -104,7 +118,7 @@ def _parse_edit_command(line: str) -> dict:
             after_id, _, rest = rest[len("after "):].partition(" ")
             after = after_id.strip()
         return {"op": "add", "after_block_id": after, "content": rest.strip()}
-    return {"op": "finalize"}
+    return {"op": "unknown"}
 
 
 def _canvas_block_texts(canvas: dict) -> dict:
@@ -731,7 +745,8 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str], verbos
                             interrupt_content = msg.get("content")
                             break
                         elif msg_type == "error":
-                            live.update("")
+                            if live is not None:  # verbose mode runs without a Live region
+                                live.update("")
                             console.print(f"[red]Error: {msg.get('content', 'Unknown')}[/red]")
                             got_error = True
                             break
@@ -791,19 +806,33 @@ async def _run_repl(base_url: str, ws_url: str, current_teams: list[str], verbos
                         )
                     console.print(
                         "[dim]편집: edit <id> <피드백> | add [after <id>] <내용> | "
-                        "delete <id> | reorder <id,id,..> | "
+                        "delete <id> | reorder <id,id,..> | regenerate <피드백> | "
+                        "undo | redo | "
                         + ("parties | " if missing else "")
                         + ("terms | " if missing_terms else "")
                         + "finalize[/dim]"
                     )
-                    line = Prompt.ask("[bold]편집 명령[/bold]")
-                    cmd = line.strip().lower()
-                    if cmd == "parties" and missing:
-                        resume_content = _collect_parties(missing)
-                    elif cmd == "terms" and missing_terms:
-                        resume_content = _collect_terms(missing_terms)
-                    else:
-                        resume_content = _parse_edit_command(line)
+                    # Re-prompt on empty/unknown input rather than sending: finalize
+                    # must be typed explicitly, so a stray Enter or typo can't confirm
+                    # and lock the document.
+                    while True:
+                        line = Prompt.ask("[bold]편집 명령[/bold]")
+                        cmd = line.strip().lower()
+                        if cmd == "parties" and missing:
+                            resume_content = _collect_parties(missing)
+                            break
+                        if cmd == "terms" and missing_terms:
+                            resume_content = _collect_terms(missing_terms)
+                            break
+                        parsed = _parse_edit_command(line)
+                        if parsed.get("op") == "unknown":
+                            console.print(
+                                "[yellow]알 수 없는 명령입니다.[/yellow] "
+                                "[dim]finalize 는 명시적으로 입력해야 확정됩니다.[/dim]"
+                            )
+                            continue
+                        resume_content = parsed
+                        break
                 else:
                     resume_content = Prompt.ask("[bold]입력해주세요[/bold]")
                 await ws.send(json.dumps({"type": "resume", "content": resume_content, "verbose": verbose}))
