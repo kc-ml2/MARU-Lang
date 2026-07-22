@@ -51,6 +51,24 @@ def remove_document_storage(storage_path: str | None, doc_id: str) -> None:
         shutil.rmtree(doc_dir, ignore_errors=True)
 
 
+def remove_team_storage(team_id: int) -> bool:
+    """Remove a team's complete local storage directory.
+
+    Unlike per-document best-effort cleanup, failures propagate so a team delete
+    cannot report success while leaving its whole storage tree behind.
+    """
+    storage_dir = get_storage_dir().resolve()
+    team_dir = storage_dir / str(team_id)
+    if team_dir.parent.resolve() != storage_dir:
+        raise ValueError("잘못된 팀 저장소 경로입니다")
+    if not team_dir.exists():
+        return False
+    if not team_dir.is_dir() or team_dir.is_symlink():
+        raise ValueError("팀 저장소 경로가 디렉터리가 아닙니다")
+    shutil.rmtree(team_dir)
+    return True
+
+
 async def save_upload(upload_file: BinaryIO, filename: str, team_id: int, doc_id: str) -> str:
     """Save an uploaded file (from FastAPI UploadFile) to permanent storage.
 

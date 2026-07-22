@@ -1,6 +1,7 @@
 """
 Team management service
 """
+import asyncio
 from typing import Optional
 
 from tortoise.exceptions import IntegrityError
@@ -11,9 +12,14 @@ from maru_lang.core.relation_db.models.auth import Team, TeamMember, User, UserR
 from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
 from maru_lang.dependencies.email import EmailService
 from maru_lang.enums.auth import UserRoleCode
+from maru_lang.enums.documents import DocumentStatus
 from maru_lang.services.llm import assign_balanced_llm
 
 config = get_config()
+
+
+class TeamDeletionPendingError(Exception):
+    """The team has ingest jobs that must finish cancellation before deletion."""
 
 
 async def list_teams_by_user(user: User) -> list[dict]:
@@ -178,6 +184,42 @@ async def create_team(
     )
     await TeamMember.create(user=creator, team=team, role="admin")
     return team
+
+
+async def delete_team(team_id: int, requester: User) -> None:
+    """Hard-delete a team after cleaning up its documents and external storage.
+
+    In-flight documents are atomically moved to DELETING by the existing ingest
+    deletion flow. The caller receives a conflict and can retry after the worker
+    (or deletion reconciler) has finalized those documents. This avoids deleting
+    the team while a worker can still write VectorDB chunks for it.
+    """
+    team = await Team.get_or_none(id=team_id)
+    if team is None:
+        raise LookupError("팀을 찾을 수 없습니다")
+    await _check_admin(team_id, requester)
+
+    # Lazy imports keep ordinary team/list operations from loading the ingest
+    # graph and VectorDB stack.
+    from maru_lang.services.ingest import delete_document_by_id, delete_team_chunks
+    from maru_lang.utils.file_storage import remove_team_storage
+
+    documents = await Document.filter(group__team_id=team_id).all()
+    for document in documents:
+        if document.status == DocumentStatus.DELETING:
+            continue
+        await delete_document_by_id(document.id, team_id, requester.id)
+
+    # UPLOADING/PROCESSING documents remain as DELETING until their worker reaches
+    # a cancellation checkpoint. Never cascade-delete their team out from under it.
+    if await Document.filter(group__team_id=team_id).exists():
+        raise TeamDeletionPendingError(
+            "처리 중인 문서의 삭제를 예약했습니다. 잠시 후 다시 시도해주세요"
+        )
+
+    await asyncio.to_thread(delete_team_chunks, team_id)
+    await asyncio.to_thread(remove_team_storage, team_id)
+    await team.delete()
 
 
 async def invite_member(

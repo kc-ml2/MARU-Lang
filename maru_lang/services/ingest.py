@@ -1,4 +1,5 @@
 """Ingest service - file upload, status, change detection, and deletion."""
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional
@@ -247,15 +248,48 @@ async def delete_document_by_id(
 
 
 async def finalize_document_deletion(document_id: str) -> None:
-    """Physically remove a document's chunks, DB row, and storage dir (idempotent)."""
+    """Physically remove a document's chunks, DB row, and storage dir (idempotent).
+
+    ChromaDB and filesystem I/O run in a worker thread to avoid blocking the
+    event loop. Only the DB row deletion executes in the async context.
+    """
     doc = await Document.get_or_none(id=document_id)
-    try:
-        get_vector_db().delete_all_chunks_by_document_id(document_id)
-    except Exception as e:
-        logger.warning(f"VectorDB chunk deletion failed for {document_id}: {e}")
+
+    def _cleanup():
+        try:
+            get_vector_db().delete_all_chunks_by_document_id(document_id)
+        except Exception as e:
+            logger.warning(f"VectorDB chunk deletion failed for {document_id}: {e}")
+        if doc is not None:
+            remove_document_storage(doc.storage_path, document_id)
+
+    await asyncio.to_thread(_cleanup)
     await Document.filter(id=document_id).delete()
-    if doc is not None:
-        remove_document_storage(doc.storage_path, document_id)
+
+
+def delete_team_chunks(team_id: int) -> int:
+    """Remove every remaining VectorDB chunk owned by a team.
+
+    Normal document deletion removes chunks by document ID. This final sweep also
+    catches orphaned chunks whose relational document row is already gone.
+
+    This is intentionally synchronous because the underlying VectorDB (ChromaDB)
+    has no async API. Callers in async contexts should wrap with
+    ``asyncio.to_thread`` to avoid blocking the event loop.
+    """
+    vdb = get_vector_db()
+    document_ids = {
+        str(metadata["document_id"])
+        for metadata in (vdb.get_all_metadata() or [])
+        if isinstance(metadata, dict)
+        and str(metadata.get("team_id")) == str(team_id)
+        and metadata.get("document_id")
+    }
+
+    deleted = 0
+    for document_id in document_ids:
+        deleted += vdb.delete_all_chunks_by_document_id(document_id)
+    return deleted
 
 
 async def delete_group_documents(
@@ -414,5 +448,4 @@ async def _record_audit(
         action=action,
         detail=detail or {},
     )
-
 
