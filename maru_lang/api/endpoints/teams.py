@@ -15,6 +15,7 @@ from maru_lang.schemas.team import (
     TeamGraphsResponse,
 )
 from maru_lang.services.team import (
+    TeamDeletionPendingError,
     list_teams_by_user,
     get_team_detail,
     create_team,
@@ -22,6 +23,7 @@ from maru_lang.services.team import (
     remove_member,
     set_team_allowed_graphs,
     list_registerable_graphs,
+    delete_team,
 )
 
 router = APIRouter(prefix="/teams", tags=["Teams"])
@@ -69,6 +71,19 @@ async def create_new_team(request: CreateTeamRequest, user=Depends(get_user)):
             id=team.id, name=team.name, description=team.description, role="admin"
         )
     except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.delete("/{team_id}", status_code=204)
+async def delete_team_endpoint(team_id: int, user=Depends(get_user)):
+    """팀 삭제 (admin 만 가능; 하드 삭제)"""
+    try:
+        await delete_team(team_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except TeamDeletionPendingError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
 

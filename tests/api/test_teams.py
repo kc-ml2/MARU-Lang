@@ -5,18 +5,24 @@ Teams API 통합 테스트
   GET    /teams                          — 내 팀 목록
   GET    /teams/{team_id}                — 팀 상세 (멤버 + 폴더)
   POST   /teams                          — 팀 생성
+  DELETE /teams/{team_id}                — 팀 삭제
   POST   /teams/{team_id}/members        — 멤버 초대
   DELETE /teams/{team_id}/members/{uid}  — 멤버 제거
 """
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
 
 from maru_lang.core.relation_db.models.auth import User, Team, TeamMember, UserRole
-from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
+from maru_lang.core.relation_db.models.documents import (
+    Document,
+    DocumentAuditLog,
+    DocumentGroup,
+)
 from maru_lang.dependencies.email import get_email_service_dependency
 from maru_lang.enums.auth import UserRoleCode
+from maru_lang.enums.documents import AuditAction, DocumentStatus
 from tests.conftest import auth_header
 
 
@@ -183,7 +189,115 @@ class TestCreateTeam:
 
 
 # ──────────────────────────────────────────────
-# 4. POST /teams/{team_id}/members — 멤버 초대
+# 4. DELETE /teams/{team_id} — 팀 삭제
+# ──────────────────────────────────────────────
+
+class TestDeleteTeam:
+    """팀 admin 삭제, 외부 저장소 정리, ingest 취소 동작을 검증한다."""
+
+    async def test_admin_deletes_team_and_preserves_audit_log(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team,
+    ):
+        group = await DocumentGroup.create(name="Folder", team=team_with_admin)
+        await Document.create(
+            id="team-doc", name="report", group=group, status=DocumentStatus.ACTIVE,
+        )
+
+        mock_vdb = MagicMock()
+        mock_vdb.delete_all_chunks_by_document_id.return_value = 1
+        mock_vdb.get_all_metadata.return_value = [
+            {"team_id": team_with_admin.id, "document_id": "orphan-doc"},
+            {"team_id": team_with_admin.id + 1, "document_id": "other-doc"},
+        ]
+        with (
+            patch("maru_lang.services.ingest.get_vector_db", return_value=mock_vdb),
+            patch("maru_lang.utils.file_storage.remove_team_storage") as remove_storage,
+        ):
+            resp = await client.delete(
+                f"/teams/{team_with_admin.id}",
+                headers=await auth_header(user_alice.id),
+            )
+
+        assert resp.status_code == 204
+        assert await Team.get_or_none(id=team_with_admin.id) is None
+        assert await TeamMember.filter(team_id=team_with_admin.id).count() == 0
+        assert await DocumentGroup.filter(team_id=team_with_admin.id).count() == 0
+        assert await Document.get_or_none(id="team-doc") is None
+        assert await DocumentAuditLog.filter(
+            document_id="team-doc", team_id=team_with_admin.id,
+            action=AuditAction.DELETE,
+        ).exists()
+        mock_vdb.delete_all_chunks_by_document_id.assert_any_call("team-doc")
+        mock_vdb.delete_all_chunks_by_document_id.assert_any_call("orphan-doc")
+        remove_storage.assert_called_once_with(team_with_admin.id)
+
+    async def test_non_admin_cannot_delete_team(
+        self, client: AsyncClient, user_bob: User, team_with_admin: Team,
+    ):
+        await TeamMember.create(user=user_bob, team=team_with_admin, role="member")
+        resp = await client.delete(
+            f"/teams/{team_with_admin.id}", headers=await auth_header(user_bob.id),
+        )
+        assert resp.status_code == 403
+        assert await Team.exists(id=team_with_admin.id)
+
+    async def test_unknown_team_returns_404(
+        self, client: AsyncClient, user_alice: User,
+    ):
+        resp = await client.delete(
+            "/teams/9999", headers=await auth_header(user_alice.id),
+        )
+        assert resp.status_code == 404
+
+    async def test_in_flight_document_schedules_delete_and_returns_409(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team,
+    ):
+        group = await DocumentGroup.create(name="Folder", team=team_with_admin)
+        await Document.create(
+            id="processing-doc", name="report", group=group,
+            status=DocumentStatus.PROCESSING,
+        )
+
+        resp = await client.delete(
+            f"/teams/{team_with_admin.id}",
+            headers=await auth_header(user_alice.id),
+        )
+
+        assert resp.status_code == 409
+        assert await Team.exists(id=team_with_admin.id)
+        document = await Document.get(id="processing-doc")
+        assert document.status == DocumentStatus.DELETING
+        assert await DocumentAuditLog.filter(
+            document_id=document.id, action=AuditAction.DELETE,
+        ).exists()
+
+    async def test_orphan_vdb_chunks_cleaned_when_no_db_documents(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team,
+    ):
+        """DB 문서가 없어도 VDB에 orphan chunk가 있으면 정리된다."""
+        mock_vdb = MagicMock()
+        mock_vdb.delete_all_chunks_by_document_id.return_value = 3
+        mock_vdb.get_all_metadata.return_value = [
+            {"team_id": team_with_admin.id, "document_id": "ghost-chunk-1"},
+            {"team_id": team_with_admin.id, "document_id": "ghost-chunk-2"},
+        ]
+        with (
+            patch("maru_lang.services.ingest.get_vector_db", return_value=mock_vdb),
+            patch("maru_lang.utils.file_storage.remove_team_storage"),
+        ):
+            resp = await client.delete(
+                f"/teams/{team_with_admin.id}",
+                headers=await auth_header(user_alice.id),
+            )
+
+        assert resp.status_code == 204
+        assert mock_vdb.delete_all_chunks_by_document_id.call_count == 2
+        mock_vdb.delete_all_chunks_by_document_id.assert_any_call("ghost-chunk-1")
+        mock_vdb.delete_all_chunks_by_document_id.assert_any_call("ghost-chunk-2")
+
+
+# ──────────────────────────────────────────────
+# 5. POST /teams/{team_id}/members — 멤버 초대
 # ──────────────────────────────────────────────
 
 class TestInviteMember:
@@ -397,7 +511,7 @@ class TestInviteMember:
 
 
 # ──────────────────────────────────────────────
-# 5. DELETE /teams/{team_id}/members/{user_id} — 멤버 제거
+# 6. DELETE /teams/{team_id}/members/{user_id} — 멤버 제거
 # ──────────────────────────────────────────────
 
 class TestRemoveMember:

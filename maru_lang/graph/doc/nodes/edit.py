@@ -149,18 +149,30 @@ async def _apply_one_op(
                 if block is None:
                     error = f"블록을 찾을 수 없습니다: {block_id}"
                 else:
-                    prompt = DOC_BLOCK_EDIT_PROMPT.format(
-                        doc_type=canvas_type,
-                        doc_context=_doc_context(payload),
-                        block_body=block.get("text", ""),
-                        feedback=edit_op.get("feedback", ""),
-                    )
-                    response = await llm.ainvoke([HumanMessage(content=prompt)])
-                    # Clear source_refs: the block was rewritten by the LLM and its
-                    # old refs may no longer ground the new text. We can't re-validate
-                    # here, so drop them rather than show stale/false provenance.
-                    changed = set_block_text(
-                        payload, str(block_id), (response.content or "").strip(), source_refs=[])
+                    new_text = edit_op.get("content")
+                    if new_text is not None:
+                        # 1. content가 제공된 경우: LLM 호출 없이 직접 수정
+                        changed = set_block_text(
+                            payload, str(block_id), new_text.strip(), source_refs=[]
+                        )
+                    elif edit_op.get("feedback"):
+                        # 2. content는 없고 feedback만 있는 경우: LLM 호출을 통한 수정
+                        prompt = DOC_BLOCK_EDIT_PROMPT.format(
+                            doc_type=canvas_type,
+                            doc_context=_doc_context(payload),
+                            block_body=block.get("text", ""),
+                            feedback=edit_op.get("feedback", ""),
+                        )
+                        response = await llm.ainvoke([HumanMessage(content=prompt)])
+                        # Clear source_refs: the block was rewritten by the LLM and its
+                        # old refs may no longer ground the new text. We can't re-validate
+                        # here, so drop them rather than show stale/false provenance.
+                        changed = set_block_text(
+                            payload, str(block_id), (response.content or "").strip(), source_refs=[]
+                        )
+                    else:
+                        # 3. content도 feedback도 없는 경우: 에러 반환
+                        error = "content 또는 feedback 중 하나는 필요합니다."
 
         elif op == OP_ADD:
             content = edit_op.get("content")
