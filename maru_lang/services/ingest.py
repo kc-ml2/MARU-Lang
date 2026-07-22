@@ -254,17 +254,24 @@ async def finalize_document_deletion(document_id: str) -> None:
     event loop. Only the DB row deletion executes in the async context.
     """
     doc = await Document.get_or_none(id=document_id)
-
-    def _cleanup():
-        try:
-            get_vector_db().delete_all_chunks_by_document_id(document_id)
-        except Exception as e:
-            logger.warning(f"VectorDB chunk deletion failed for {document_id}: {e}")
-        if doc is not None:
-            remove_document_storage(doc.storage_path, document_id)
-
-    await asyncio.to_thread(_cleanup)
+    await asyncio.to_thread(cleanup_document_resources, document_id, doc)
     await Document.filter(id=document_id).delete()
+
+
+def cleanup_document_resources(document_id: str, doc: Optional[Document]) -> None:
+    """Remove a document's VDB chunks and file storage (sync, safe for ``to_thread``).
+
+    Intended to be called via ``asyncio.to_thread`` from async contexts so that
+    ChromaDB and filesystem I/O never block the event loop.
+
+    Can also be used standalone (e.g. in a background worker) when async is not available.
+    """
+    try:
+        get_vector_db().delete_all_chunks_by_document_id(document_id)
+    except Exception as e:
+        logger.warning(f"VectorDB chunk deletion failed for {document_id}: {e}")
+    if doc is not None:
+        remove_document_storage(doc.storage_path, document_id)
 
 
 def delete_team_chunks(team_id: int) -> int:
