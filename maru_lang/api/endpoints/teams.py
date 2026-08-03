@@ -85,6 +85,8 @@ async def delete_team_endpoint(team_id: int, user=Depends(get_user)):
         raise HTTPException(status_code=404, detail=str(e))
     except TeamDeletionPendingError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{team_id}/members", response_model=TeamMemberResponse, status_code=201)

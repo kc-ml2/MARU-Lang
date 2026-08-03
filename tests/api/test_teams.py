@@ -286,6 +286,26 @@ class TestDeleteTeam:
         assert resp.status_code == 204
         mock_vdb.delete_chunks_by_team_id.assert_called_once_with(team_with_admin.id)
 
+    async def test_team_deletion_aborted_when_vdb_returns_zero(
+        self, client: AsyncClient, user_alice: User, team_with_admin: Team,
+    ):
+        """VDB chunk deletion returns 0 → team deletion is aborted."""
+        mock_vdb = MagicMock()
+        mock_vdb.delete_chunks_by_team_id.return_value = 0
+        with (
+            patch("maru_lang.services.ingest.get_vector_db", return_value=mock_vdb),
+            patch("maru_lang.utils.file_storage.remove_team_storage") as remove_storage,
+        ):
+            resp = await client.delete(
+                f"/teams/{team_with_admin.id}",
+                headers=await auth_header(user_alice.id),
+            )
+
+        # API returns 500 (internal error) because team deletion was aborted
+        assert resp.status_code == 500
+        assert await Team.exists(id=team_with_admin.id)
+        assert not remove_storage.called
+
 
 # ──────────────────────────────────────────────
 # 5. POST /teams/{team_id}/members — 멤버 초대
