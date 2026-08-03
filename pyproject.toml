@@ -68,6 +68,7 @@ dependencies = [
     "msoffcrypto-tool>=5.0.0",
     "python-docx>=0.8.11",
     "docx2txt>=0.8",
+    "doc2txt>=1.0",  # .doc (OLE2 binary) parsing via antiword
     "python-pptx>=0.6.21",
     "openpyxl>=3.0.0",
     "beautifulsoup4>=4.12.0",
