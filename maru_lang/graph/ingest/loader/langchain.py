@@ -1,9 +1,24 @@
 """LangChain-based document loader - format-specific file loading."""
+import platform
 from pathlib import Path
 
 from langchain_core.documents import Document
 
 from maru_lang.constants import SUPPORTED_EXTENSIONS
+
+# doc2txt (antiword backend) only supports these platform triples.
+# On unsupported platforms (e.g. Linux ARM64, macOS Intel), RuntimeError is
+# raised — never fall back to TextLoader for binary .doc files.
+_DOC2TXT_SUPPORTED = (
+    ("Darwin", "arm64"),   # macOS Apple Silicon
+    ("Linux", "x86_64"),   # Linux AMD64
+    ("Windows", "AMD64"),  # Windows AMD64
+)
+
+
+def _doc2txt_available() -> bool:
+    """Return True when the current platform is supported by doc2txt/antiword."""
+    return (platform.system(), platform.machine()) in _DOC2TXT_SUPPORTED
 
 
 def load_file(file_path: Path) -> list[Document]:
@@ -17,9 +32,27 @@ def load_file(file_path: Path) -> list[Document]:
         from langchain_community.document_loaders import UnstructuredPDFLoader
         return UnstructuredPDFLoader(str(file_path)).load()
 
-    elif suffix in (".docx", ".doc"):
+    elif suffix == ".docx":
         from langchain_community.document_loaders import Docx2txtLoader
         return Docx2txtLoader(str(file_path)).load()
+
+    elif suffix == ".doc":
+        # Docx2txtLoader does NOT support .doc (OLE2 binary format).
+        # Use doc2txt (wraps antiword) on supported platforms only.
+        if _doc2txt_available():
+            import doc2txt
+            text = doc2txt.extract_text(str(file_path))
+            return [Document(page_content=text, metadata={"source": str(file_path)})]
+        # Unsupported platform — do NOT fall back to TextLoader. Ingesting a
+        # binary OLE2 file as raw text would produce garbage embeddings and
+        # could corrupt the vector store. Raise so the caller can surface a
+        # clear message (e.g. "DOC files are not supported on this platform").
+        raise RuntimeError(
+            f".doc files require a supported platform (macOS Apple Silicon, "
+            f"Linux x86_64, or Windows AMD64). Current platform: "
+            f"{platform.system()} {platform.machine()}. "
+            f"Please move the file to a supported host or convert to .docx first."
+        )
 
     elif suffix == ".pptx":
         from langchain_community.document_loaders import UnstructuredPowerPointLoader

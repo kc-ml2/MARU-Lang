@@ -17,6 +17,8 @@ if "maru_lang" not in sys.modules:
     _fake.__path__ = ["maru_lang"]
     sys.modules["maru_lang"] = _fake
 
+from langchain_core.documents import Document
+
 from maru_lang.constants import SUPPORTED_EXTENSIONS
 from maru_lang.graph.ingest.loader import load_file, is_supported
 from maru_lang.graph.ingest.splitter import create_splitter, split_documents
@@ -113,6 +115,49 @@ class TestLoader:
         f.write_text("def hello():\n    print('world')")
         docs = load_file(f)
         assert "hello" in docs[0].page_content
+
+    def test_load_doc_uses_doc2txt(self):
+        """Mocked: .doc files go through doc2txt.extract_text()."""
+        mock_extract = MagicMock(return_value="Extracted .doc content")
+        with patch("maru_lang.graph.ingest.loader.langchain._doc2txt_available",
+                   return_value=True):
+            with patch("doc2txt.extract_text", mock_extract):
+                docs = load_file(Path("/fake/test.doc"))
+        assert len(docs) == 1
+        assert docs[0].page_content == "Extracted .doc content"
+        mock_extract.assert_called_once_with("/fake/test.doc")
+        assert docs[0].metadata["source"] == "/fake/test.doc"
+
+    @pytest.mark.parametrize(
+        "system,machine,expected",
+        [
+            ("Darwin", "arm64", True),     # macOS Apple Silicon
+            ("Linux", "x86_64", True),     # Linux AMD64
+            ("Windows", "AMD64", True),    # Windows AMD64
+            ("Darwin", "x86_64", False),   # macOS Intel — NOT supported
+            ("Linux", "aarch64", False),   # Linux ARM64
+            ("Darwin", "i386", False),     # macOS old Intel (rare)
+        ],
+    )
+    def test_doc2txt_platform_mapping(self, system, machine, expected):
+        """Verify _doc2txt_available() returns the correct value per platform."""
+        import unittest.mock
+        with unittest.mock.patch("platform.system", return_value=system):
+            with unittest.mock.patch("platform.machine", return_value=machine):
+                from maru_lang.graph.ingest.loader.langchain import _doc2txt_available
+                assert _doc2txt_available() is expected
+
+    def test_load_doc_raises_on_unsupported_platform(self):
+        """On unsupported platforms .doc must NOT silently ingest garbage.
+
+        Falling back to TextLoader on a binary OLE2 file would produce garbled
+        embeddings that could silently corrupt the vector store. Instead raise
+        so the caller can surface a clear platform-mismatch message.
+        """
+        with patch("maru_lang.graph.ingest.loader.langchain._doc2txt_available",
+                   return_value=False):
+            with pytest.raises(RuntimeError, match=r"\.doc files require a supported platform"):
+                load_file(Path("/fake/test.doc"))
 
 
 # ─── Splitter ─────────────────────────────────────────────────
