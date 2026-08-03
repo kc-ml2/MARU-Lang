@@ -89,5 +89,14 @@ def load_file(file_path: Path) -> list[Document]:
 
 
 def is_supported(file_path: Path) -> bool:
-    """Check if the file format is supported for ingestion."""
-    return file_path.suffix.lower() in SUPPORTED_EXTENSIONS
+    """Check if the file format is supported for ingestion.
+
+    Platform-aware: .doc files are only supported on platforms where
+    doc2txt/antiword is available (macOS Apple Silicon, Linux x86_64,
+    Windows AMD64). On unsupported platforms this returns False so the
+    UI never offers a .doc file that will fail at ingest time.
+    """
+    suffix = file_path.suffix.lower()
+    if suffix == ".doc" and not _doc2txt_available():
+        return False
+    return suffix in SUPPORTED_EXTENSIONS

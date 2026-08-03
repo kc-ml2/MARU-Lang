@@ -24,6 +24,7 @@ from maru_lang.graph.ingest.constants import (
     PARSER_KORDOC,
     PARSER_LANGCHAIN,
 )
+from maru_lang.graph.ingest.loader.langchain import _doc2txt_available
 from maru_lang.graph.ingest.loader import load_file
 from maru_lang.graph.ingest.loader.kordoc_mcp import parse_with_kordoc
 
@@ -35,10 +36,21 @@ def ingestible_extensions() -> set[str]:
     (hwp/hwpx/hwpml); when the KorDoc parser is disabled those would fail at
     parse time, so they're excluded here. GET /config serves this to clients
     so upload UIs offer only what will really work.
+
+    Platform-aware: .doc files are only ingestible when doc2txt/antiword
+    is available (macOS Apple Silicon, Linux x86_64, Windows AMD64).
+    On unsupported platforms .doc is excluded so the UI never offers a
+    .doc file that will fail at ingest time.
     """
+    extensions = set(SUPPORTED_EXTENSIONS)
     if get_config().kordoc_mcp_enabled:
-        return set(SUPPORTED_EXTENSIONS)
-    return set(SUPPORTED_EXTENSIONS) - KORDOC_ONLY_EXTENSIONS
+        # KorDoc-only formats are handled separately; include them.
+        pass
+    else:
+        extensions -= KORDOC_ONLY_EXTENSIONS
+    if not _doc2txt_available():
+        extensions.discard(".doc")
+    return extensions
 
 
 def select_parser(ext: str, doc_id: str) -> str:
