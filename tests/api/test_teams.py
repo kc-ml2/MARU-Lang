@@ -205,10 +205,7 @@ class TestDeleteTeam:
 
         mock_vdb = MagicMock()
         mock_vdb.delete_all_chunks_by_document_id.return_value = 1
-        mock_vdb.get_all_metadata.return_value = [
-            {"team_id": team_with_admin.id, "document_id": "orphan-doc"},
-            {"team_id": team_with_admin.id + 1, "document_id": "other-doc"},
-        ]
+        mock_vdb.delete_chunks_by_team_id.return_value = 1
         with (
             patch("maru_lang.services.ingest.get_vector_db", return_value=mock_vdb),
             patch("maru_lang.utils.file_storage.remove_team_storage") as remove_storage,
@@ -228,7 +225,7 @@ class TestDeleteTeam:
             action=AuditAction.DELETE,
         ).exists()
         mock_vdb.delete_all_chunks_by_document_id.assert_any_call("team-doc")
-        mock_vdb.delete_all_chunks_by_document_id.assert_any_call("orphan-doc")
+        mock_vdb.delete_chunks_by_team_id.assert_called_once_with(team_with_admin.id)
         remove_storage.assert_called_once_with(team_with_admin.id)
 
     async def test_non_admin_cannot_delete_team(
@@ -276,11 +273,7 @@ class TestDeleteTeam:
     ):
         """DB 문서가 없어도 VDB에 orphan chunk가 있으면 정리된다."""
         mock_vdb = MagicMock()
-        mock_vdb.delete_all_chunks_by_document_id.return_value = 3
-        mock_vdb.get_all_metadata.return_value = [
-            {"team_id": team_with_admin.id, "document_id": "ghost-chunk-1"},
-            {"team_id": team_with_admin.id, "document_id": "ghost-chunk-2"},
-        ]
+        mock_vdb.delete_chunks_by_team_id.return_value = 6
         with (
             patch("maru_lang.services.ingest.get_vector_db", return_value=mock_vdb),
             patch("maru_lang.utils.file_storage.remove_team_storage"),
@@ -291,9 +284,7 @@ class TestDeleteTeam:
             )
 
         assert resp.status_code == 204
-        assert mock_vdb.delete_all_chunks_by_document_id.call_count == 2
-        mock_vdb.delete_all_chunks_by_document_id.assert_any_call("ghost-chunk-1")
-        mock_vdb.delete_all_chunks_by_document_id.assert_any_call("ghost-chunk-2")
+        mock_vdb.delete_chunks_by_team_id.assert_called_once_with(team_with_admin.id)
 
 
 # ──────────────────────────────────────────────

@@ -48,6 +48,11 @@ class VectorDB(ABC):
         pass
 
     @abstractmethod
+    def delete_chunks_by_team_id(self, team_id: int) -> int:
+        """Delete all chunks belonging to a team by filtering on team_id."""
+        pass
+
+    @abstractmethod
     def count_documents(self) -> int:
         pass
 

@@ -204,6 +204,32 @@ class ChromaVectorDB(VectorDB):
         """
         return self.collection.get(include=["metadatas"])["metadatas"]
 
+    def delete_chunks_by_team_id(self, team_id: int) -> int:
+        """
+        특정 team_id를 가진 모든 청크를 team_id로 직접 필터링해 삭제합니다.
+
+        ChromaDB 컬렉션에는 문서가 chunk 단위로 저장되며, 각 chunk의
+        메타데이터에 team_id가 포함됩니다. where 필터로 team_id를 지정하면
+        ChromaDB 내부에서 직접 필터링하므로 전체 메타데이터를 로드할 필요가
+        없고, 대량 문서에서도 'too many SQL variables' 에러가 발생하지 않습니다.
+        """
+        try:
+            team_filter = {"team_id": team_id}
+            results = self.collection.get(
+                where=team_filter,
+                include=[]
+            )
+            chunk_ids = results.get("ids", [])
+            if not chunk_ids:
+                return 0
+            # Passing every chunk ID back to delete() can itself exceed the
+            # database's SQL variable limit. Keep the deletion server-side too.
+            self.collection.delete(where=team_filter)
+            return len(chunk_ids)
+        except Exception as e:
+            logger.error(f"Failed to delete team chunks from VectorDB: {e}")
+            return 0
+
     def get_documents(self, document_ids: list[str]) -> list[Document]:
         results = self.collection.get(
             where={"document_id": {"$in": document_ids}})

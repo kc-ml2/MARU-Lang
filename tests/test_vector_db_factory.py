@@ -82,3 +82,21 @@ class TestFactoryRouting:
     def test_unsupported_scheme_raises(self):
         with pytest.raises(ValueError, match="Unsupported vector_db scheme"):
             get_vector_db("lance://data/lance/maru")
+
+
+class TestChromaTeamCleanup:
+    def test_deletes_with_team_filter_instead_of_chunk_id_list(self):
+        patcher, chromadb = _patched_chromadb()
+        collection = (
+            chromadb.PersistentClient.return_value
+            .get_or_create_collection.return_value
+        )
+        collection.get.return_value = {"ids": ["chunk-a", "chunk-b"]}
+
+        with patcher:
+            vdb = get_vector_db("chroma://data/chroma/maru")
+            deleted = vdb.delete_chunks_by_team_id(7)
+
+        assert deleted == 2
+        collection.get.assert_called_once_with(where={"team_id": 7}, include=[])
+        collection.delete.assert_called_once_with(where={"team_id": 7})

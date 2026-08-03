@@ -285,18 +285,9 @@ def delete_team_chunks(team_id: int) -> int:
     ``asyncio.to_thread`` to avoid blocking the event loop.
     """
     vdb = get_vector_db()
-    document_ids = {
-        str(metadata["document_id"])
-        for metadata in (vdb.get_all_metadata() or [])
-        if isinstance(metadata, dict)
-        and str(metadata.get("team_id")) == str(team_id)
-        and metadata.get("document_id")
-    }
-
-    deleted = 0
-    for document_id in document_ids:
-        deleted += vdb.delete_all_chunks_by_document_id(document_id)
-    return deleted
+    # Delete chunks directly by team_id filter — avoids loading all metadata
+    # and prevents "too many SQL variables" with large collections.
+    return vdb.delete_chunks_by_team_id(team_id)
 
 
 async def delete_group_documents(
