@@ -286,12 +286,14 @@ class TestDeleteTeam:
         assert resp.status_code == 204
         mock_vdb.delete_chunks_by_team_id.assert_called_once_with(team_with_admin.id)
 
-    async def test_team_deletion_aborted_when_vdb_returns_zero(
+    async def test_team_deletion_aborted_when_vdb_fails(
         self, client: AsyncClient, user_alice: User, team_with_admin: Team,
     ):
-        """VDB chunk deletion returns 0 → team deletion is aborted."""
+        """VDB raises → team deletion is aborted and team row is preserved."""
         mock_vdb = MagicMock()
-        mock_vdb.delete_chunks_by_team_id.return_value = 0
+        mock_vdb.delete_chunks_by_team_id.side_effect = RuntimeError(
+            "ChromaDB connection lost"
+        )
         with (
             patch("maru_lang.services.ingest.get_vector_db", return_value=mock_vdb),
             patch("maru_lang.utils.file_storage.remove_team_storage") as remove_storage,

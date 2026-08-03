@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import List
 
-from maru_lang.constants import SUPPORTED_EXTENSIONS
+from maru_lang.graph.ingest.loader.langchain import is_supported
 
 
 def scan_directory(path: Path, recursive: bool = True) -> List[Path]:
@@ -9,7 +9,8 @@ def scan_directory(path: Path, recursive: bool = True) -> List[Path]:
 
     Only files with a supported extension are returned; hidden files (dotfiles
     like .DS_Store) and unsupported formats are skipped so junk never reaches
-    the upload/embed pipeline.
+    the upload/embed pipeline. Platform-aware: .doc is only offered when
+    doc2txt/antiword is available on this platform.
     """
     if not path.exists():
         raise ValueError(f"Path does not exist: {path}")
@@ -22,6 +23,6 @@ def scan_directory(path: Path, recursive: bool = True) -> List[Path]:
         f for f in entries
         if f.is_file()
         and not f.name.startswith(".")
-        and f.suffix.lower() in SUPPORTED_EXTENSIONS
+        and is_supported(f)
     ]
     return sorted(files)

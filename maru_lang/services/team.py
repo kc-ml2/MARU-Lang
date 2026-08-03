@@ -2,12 +2,9 @@
 Team management service
 """
 import asyncio
-import logging
 from typing import Optional
 
 from tortoise.exceptions import IntegrityError
-
-logger = logging.getLogger(__name__)
 
 from maru_lang.configs import get_config
 from maru_lang.constants import ADMIN_EMAIL
@@ -220,17 +217,7 @@ async def delete_team(team_id: int, requester: User) -> None:
             "처리 중인 문서의 삭제를 예약했습니다. 잠시 후 다시 시도해주세요"
         )
 
-    deleted = await asyncio.to_thread(delete_team_chunks, team_id)
-    if deleted == 0:
-        logger.warning(
-            "delete_team: no chunks removed from VectorDB for team %d – "
-            "skipping team deletion to prevent orphaned data",
-            team_id,
-        )
-        raise RuntimeError(
-            "VectorDB chunk deletion returned 0 — team deletion aborted. "
-            "Check VectorDB health and try again."
-        )
+    await asyncio.to_thread(delete_team_chunks, team_id)
     await asyncio.to_thread(remove_team_storage, team_id)
     await team.delete()
 
