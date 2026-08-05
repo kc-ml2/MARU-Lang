@@ -4,7 +4,7 @@ import pytest
 from maru_lang.core.relation_db.models.auth import Team
 from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
 from maru_lang.core.relation_db.models.chat import Conversation, ConversationReference, Session
-from maru_lang.services.chat import create_conversation
+from maru_lang.services.chat import create_conversation, fetch_recent_conversations_by_session
 from maru_lang.services.session import create_session
 
 
@@ -62,6 +62,72 @@ class TestCreateConversation:
         refs = await ConversationReference.filter(conversation=conv).all()
         assert len(refs) == 1
         assert refs[0].score == pytest.approx(0.5)
+
+    async def test_stores_team_scope_in_metadata(self, user_alice):
+        conv = await create_conversation(
+            user=user_alice,
+            session=None,
+            question="q",
+            answer="a",
+            references=[],
+            team_ids=[1, 2],
+        )
+        stored = await Conversation.get(id=conv.id)
+        assert stored.metadata == {"team_ids": [1, 2]}
+
+
+class TestRecentConversationsByTeamScope:
+    async def test_includes_narrower_history_in_broader_current_scope(self, user_alice):
+        """A turn scoped to A is safe to reuse when the current scope is A+B."""
+        session = await create_session(user_alice)
+        conv = await create_conversation(
+            user=user_alice,
+            session=session,
+            question="team A question",
+            answer="team A answer",
+            references=[],
+            team_ids=[1],
+        )
+
+        recent = await fetch_recent_conversations_by_session(
+            session.id, team_ids=[1, 2],
+        )
+
+        assert [item.id for item in recent] == [conv.id]
+
+    async def test_excludes_broader_history_from_narrower_current_scope(self, user_alice):
+        """A turn scoped to A+B may contain B data and must not be reused in A."""
+        session = await create_session(user_alice)
+        await create_conversation(
+            user=user_alice,
+            session=session,
+            question="team A+B question",
+            answer="team A+B answer",
+            references=[],
+            team_ids=[1, 2],
+        )
+
+        recent = await fetch_recent_conversations_by_session(
+            session.id, team_ids=[1],
+        )
+
+        assert recent == []
+
+    async def test_excludes_unscoped_legacy_history_from_team_scope(self, user_alice):
+        session = await create_session(user_alice)
+        await create_conversation(
+            user=user_alice,
+            session=session,
+            question="legacy question",
+            answer="legacy answer",
+            references=[],
+        )
+
+        recent = await fetch_recent_conversations_by_session(
+            session.id, team_ids=[1],
+        )
+
+        assert recent == []
 
 
 class TestContextBuilder:
