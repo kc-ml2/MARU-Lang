@@ -25,14 +25,15 @@ class TestUpsertTeamScope:
         group_b = await _team_with_group("teamB")
         path = "/mnt/shared/handbook.pdf"
 
-        doc_a, created_a = await upsert_document_from_file(
+        doc_a, created_a, action_a = await upsert_document_from_file(
             group=group_a, name="handbook", path=path, size=100, mtime_ns=111
         )
-        doc_b, created_b = await upsert_document_from_file(
+        doc_b, created_b, action_b = await upsert_document_from_file(
             group=group_b, name="handbook", path=path, size=100, mtime_ns=111
         )
 
         assert created_a and created_b
+        assert action_a == action_b == "created"
         assert doc_a.id != doc_b.id
         assert doc_a.group_id == group_a.id
         assert doc_b.group_id == group_b.id
@@ -46,13 +47,14 @@ class TestUpsertTeamScope:
         group = await _team_with_group("teamC")
         path = "/data/x.pdf"
 
-        doc1, _ = await upsert_document_from_file(
+        doc1, _, _ = await upsert_document_from_file(
             group=group, name="x", path=path, size=10, mtime_ns=1
         )
-        doc2, needs_processing = await upsert_document_from_file(
+        doc2, needs_processing, action = await upsert_document_from_file(
             group=group, name="x", path=path, size=10, mtime_ns=1
         )
 
         assert doc1.id == doc2.id
         assert needs_processing is False
+        assert action == "unchanged"
         assert await Document.all().count() == 1

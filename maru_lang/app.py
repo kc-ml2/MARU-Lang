@@ -24,6 +24,7 @@ from maru_lang.api.endpoints.teams import router as teams_router
 from maru_lang.api.endpoints.session import router as session_router
 from maru_lang.api.endpoints.memory import router as memory_router
 from maru_lang.api.endpoints.llm import router as llm_router
+from maru_lang.api.endpoints.source import router as source_router
 
 
 class MaruLangApp(FastAPI):
@@ -269,6 +270,7 @@ class MaruLangApp(FastAPI):
             self.include_router(session_router)
             self.include_router(memory_router)
             self.include_router(llm_router)
+            self.include_router(source_router)
 
         # Run custom router hooks
         for hook in self._router_hooks:

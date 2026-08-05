@@ -337,7 +337,7 @@ class TestIngestGraphExecution:
         synced.id = "d3"; synced.name = "doc"; synced.file_path = "/tmp/z.pdf"
         synced.storage_path = None; synced.group_id = 7; synced.metadata = {}
         synced.save = AsyncMock()
-        mock_upsert.return_value = (synced, True)   # unchanged check -> needs_processing
+        mock_upsert.return_value = (synced, True, "created")
         mock_group.return_value = MagicMock()
 
         m, _ = self._doc_mock()
@@ -464,7 +464,7 @@ class TestSyncDocument:
         mock_doc.storage_path = None
         mock_doc.group_id = 10
         mock_doc.metadata = {}
-        mock_upsert.return_value = (mock_doc, True)
+        mock_upsert.return_value = (mock_doc, True, "created")
 
         state = {
             "file": mock_file_info,
@@ -513,7 +513,7 @@ class TestSyncDocument:
         mock_doc.storage_path = None
         mock_doc.group_id = 10
         mock_doc.metadata = {}
-        mock_upsert.return_value = (mock_doc, False)
+        mock_upsert.return_value = (mock_doc, False, "unchanged")
 
         state = {"file": mock_file_info, "team_id": 1, "re_embed": False}
         result = await sync_document(state)

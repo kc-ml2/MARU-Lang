@@ -111,6 +111,25 @@ async def get_or_create_document_group(
     return group, created
 
 
+async def get_or_create_relative_group_hierarchy(
+    root_group: DocumentGroup,
+    relative_file_path: str,
+) -> DocumentGroup:
+    """Return the group for a file path relative to a managed source root.
+
+    Only directory components are materialized; the file name itself is not a
+    group. For ``guides/api/doc.pdf`` this creates ``root/guides/api``.
+    """
+    current_group = root_group
+    for part in Path(relative_file_path).parts[:-1]:
+        current_group, _ = await get_or_create_document_group(
+            team_id=root_group.team_id,
+            name=part,
+            parent=current_group,
+        )
+    return current_group
+
+
 async def get_or_create_group_hierarchy(abs_path: str, team_id: int) -> DocumentGroup:
     """Create a DocumentGroup hierarchy mirroring an absolute filesystem path.
 
@@ -262,7 +281,7 @@ async def upsert_document_from_file(
     mtime_ns: int,
     metadata: Optional[dict] = None,
     rag_components: Optional[dict] = None,
-) -> Tuple[Document, bool]:
+) -> Tuple[Document, bool, str]:
     """
     파일 기반 문서 업서트
 
@@ -276,7 +295,7 @@ async def upsert_document_from_file(
         rag_components: RAG 설정 (없으면 자동 감지)
 
     Returns:
-        Tuple[Document, bool]: (문서, 재처리필요여부)
+        Tuple[Document, bool, str]: (문서, 재처리필요여부, sync action)
     """
     # Identity and fingerprint are scoped by team: the same path synced by
     # different teams must be separate documents (each team sees only its own),
@@ -287,22 +306,27 @@ async def upsert_document_from_file(
     doc = await Document.get_or_none(file_path=path, group__team_id=group.team_id)
 
     if doc:
-        if doc.source_fingerprint == fp:
+        if (
+            doc.source_fingerprint == fp
+            and doc.status != DocumentStatus.INACTIVE
+        ):
             doc.name = name or doc.name
             doc.group = group
             doc.metadata = {**(doc.metadata or {}), **(metadata or {})}
             await doc.save()
-            return doc, False
+            return doc, False, "unchanged"
 
+        action = "restored" if doc.status == DocumentStatus.INACTIVE else "updated"
         doc.name = name
         doc.group = group
         doc.file_size = size
         doc.source_fingerprint = fp
-        doc.status = DocumentStatus.PROCESSING
+        doc.status = DocumentStatus.UPLOADING
+        doc.error_message = None
         doc.metadata = {**(doc.metadata or {}), **(metadata or {})}
         doc.rag_components = rag_components or {}
         await doc.save()
-        return doc, True
+        return doc, True, action
 
     new_doc = await Document.create(
         id=new_ulid(),
@@ -315,7 +339,7 @@ async def upsert_document_from_file(
         metadata=metadata or {},
         rag_components=rag_components or {},
     )
-    return new_doc, True
+    return new_doc, True, "created"
 
 
 async def update_document_status(doc: Document, status: DocumentStatus) -> None:

@@ -68,6 +68,7 @@ async def run_ingest(
     file: FileInfo,
     team_id: int,
     re_embed: bool = False,
+    source_context: dict | None = None,
 ) -> dict:
     """Run the ingest pipeline for a single file.
 
@@ -81,7 +82,12 @@ async def run_ingest(
     Returns:
         Final state dict with document, total_chunks, error, messages.
     """
-    state = build_ingest_input(team_id, file=file, re_embed=re_embed)
+    state = build_ingest_input(
+        team_id,
+        file=file,
+        re_embed=re_embed,
+        source_context=source_context,
+    )
     return await get_ingest_graph().ainvoke(state)
 
 

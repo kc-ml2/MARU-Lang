@@ -17,3 +17,9 @@ class AuditAction(IntEnum):
     DELETE         = 3
     INGEST_SUCCESS = 4
     INGEST_ERROR   = 5
+    SYNC           = 6
+
+
+class DocumentSourceStatus(IntEnum):
+    CONNECTED    = 1   # Active, synced to one or more teams
+    DISCONNECTED = 2   # Disconnected from all teams

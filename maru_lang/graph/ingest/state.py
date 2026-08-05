@@ -24,10 +24,12 @@ class IngestState(TypedDict):
     file: FileInfo
     team_id: int
     re_embed: bool
+    source_context: Optional[dict]
 
     # Progress
     document: Optional[dict]
     needs_processing: bool
+    sync_action: Optional[str]
     parsed_docs: Optional[list[dict]]
     parser: Optional[str]
     cancelled: bool   # delete won the race → caller finalizes the deletion
@@ -44,6 +46,7 @@ def build_ingest_input(
     re_embed: bool = False,
     document: Optional[dict] = None,
     needs_processing: bool = False,
+    source_context: Optional[dict] = None,
 ) -> IngestState:
     """Build the graph's initial state — the single source of its key set.
 
@@ -60,8 +63,10 @@ def build_ingest_input(
         "file": file,
         "team_id": team_id,
         "re_embed": re_embed,
+        "source_context": source_context,
         "document": document,
         "needs_processing": needs_processing,
+        "sync_action": None,
         "parsed_docs": None,
         "parser": None,
         "cancelled": False,

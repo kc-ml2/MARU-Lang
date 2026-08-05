@@ -1,7 +1,7 @@
 """Document, DocumentGroup, and DocumentAuditLog models."""
 from tortoise.models import Model
 from tortoise import fields
-from maru_lang.enums.documents import DocumentStatus, AuditAction
+from maru_lang.enums.documents import DocumentStatus, AuditAction, DocumentSourceStatus
 
 
 class Document(Model):
@@ -69,3 +69,49 @@ class DocumentGroup(Model):
 
     class Meta:  # type: ignore
         table = "document_group"
+
+
+class DocumentSource(Model):
+    """Server-managed file source (e.g. /data/readme/) that can be connected to teams."""
+    id = fields.IntField(pk=True)
+    name = fields.CharField(max_length=255, index=True)
+    description = fields.TextField(null=True)
+    source_path = fields.CharField(max_length=500, unique=True, index=True)
+    file_pattern = fields.CharField(max_length=255, null=True)  # optional glob pattern
+    status = fields.IntEnumField(
+        DocumentSourceStatus, default=DocumentSourceStatus.CONNECTED,
+    )
+
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:  # type: ignore
+        table = "document_source"
+
+
+class SourceTeamLink(Model):
+    """N:N link between DocumentSource and Team."""
+    id = fields.IntField(pk=True)
+    source = fields.ForeignKeyField(
+        "models.DocumentSource",
+        related_name="team_links",
+        on_delete=fields.CASCADE,
+        index=True,
+    )
+    team = fields.ForeignKeyField(
+        "models.Team",
+        related_name="source_links",
+        on_delete=fields.CASCADE,
+        index=True,
+    )
+    # The root DocumentGroup that mirrors this source's top-level structure
+    root_group = fields.ForeignKeyField(
+        "models.DocumentGroup",
+        null=True,
+        on_delete=fields.SET_NULL,
+        unique=True,  # 1:1 between DocumentSource and its root DocumentGroup
+    )
+
+    class Meta:  # type: ignore
+        table = "source_team_link"
+        unique_together = (("source", "team"))

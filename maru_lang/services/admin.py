@@ -53,3 +53,8 @@ async def ensure_admin_user() -> User:
     public_team = await get_or_create_public_team()
     await add_member_to_team(public_team, admin_user, role="admin")
     return admin_user
+
+
+async def is_admin_user(user: User) -> bool:
+    """Check if a user is the system admin (matched by ADMIN_EMAIL)."""
+    return user.email == ADMIN_EMAIL

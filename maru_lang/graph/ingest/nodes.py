@@ -7,10 +7,11 @@ from langchain_core.documents import Document as LCDocument
 from maru_lang.graph.ingest.state import IngestState
 from maru_lang.graph.ingest.parser import parse_file
 from maru_lang.graph.ingest.splitter import split_documents
-from maru_lang.core.relation_db.models.documents import Document
+from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
 from maru_lang.enums.documents import DocumentStatus
 from maru_lang.services.document import (
     get_or_create_group_hierarchy,
+    get_or_create_relative_group_hierarchy,
     upsert_document_from_file,
     begin_processing,
     try_activate,
@@ -36,19 +37,41 @@ async def sync_document(state: IngestState) -> dict:
 
     try:
         file_abs_path = Path(file_info.absolutePath).resolve()
-        dir_abs_path = str(file_abs_path.parent)
+        source_context = state.get("source_context")
+        if source_context:
+            group = await DocumentGroup.get(
+                id=source_context["root_group_id"],
+                team_id=team_id,
+            )
+            group = await get_or_create_relative_group_hierarchy(
+                group,
+                source_context["relative_path"],
+            )
+        else:
+            group = await get_or_create_group_hierarchy(
+                str(file_abs_path.parent), team_id
+            )
 
-        group = await get_or_create_group_hierarchy(dir_abs_path, team_id)
+        metadata = {"original_filename": file_info.fileName}
+        if source_context:
+            metadata.update({
+                "source_id": source_context["source_id"],
+                "source_name": source_context["source_name"],
+                "source_relative_path": source_context["relative_path"],
+                "synced": True,
+            })
 
-        doc, needs_processing = await upsert_document_from_file(
+        doc, needs_processing, sync_action = await upsert_document_from_file(
             group=group,
             name=Path(file_info.fileName).stem,
             path=file_info.absolutePath,
             size=file_info.size,
-            mtime_ns=int(file_info.createdAt.timestamp() * 1e9),
-            metadata={
-                "original_filename": file_info.fileName,
-            },
+            mtime_ns=(
+                file_info.mtimeNs
+                if file_info.mtimeNs is not None
+                else int(file_info.createdAt.timestamp() * 1e9)
+            ),
+            metadata=metadata,
         )
 
         # Set storage_path if provided (API upload saves file first)
@@ -68,13 +91,15 @@ async def sync_document(state: IngestState) -> dict:
         return {
             "document": document,
             "needs_processing": re_embed or needs_processing,
-            "messages": [f"Synced: {file_info.fileName}"],
+            "sync_action": sync_action,
+            "messages": [f"Synced ({sync_action}): {file_info.fileName}"],
         }
 
     except Exception as e:
         return {
             "document": None,
             "needs_processing": False,
+            "sync_action": None,
             "error": str(e),
             "messages": [f"Failed to sync {file_info.fileName}: {e}"],
         }

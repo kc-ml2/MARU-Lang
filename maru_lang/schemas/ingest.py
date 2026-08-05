@@ -10,6 +10,7 @@ class FileInfo(BaseModel):
     createdAt: datetime
     absolutePath: str
     size: int
+    mtimeNs: Optional[int] = None  # exact filesystem mtime when available
     tempFilePath: Optional[str] = None  # storage path after upload
 
 
