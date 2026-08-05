@@ -44,11 +44,33 @@ async def fetch_conversation_by_user_and_date(
 async def fetch_recent_conversations_by_session(
     session_id: str,
     limit: int = 3,
+    team_ids: list[int] | None = None,
 ) -> List[Conversation]:
-    """Fetch the session's recent conversations, newest first (for memory context)."""
-    return await Conversation.filter(
-        session_id=session_id,
-    ).order_by("-created_at").limit(limit).all()
+    """Fetch the session's recent conversations, newest first (for memory context).
+
+    If ``team_ids`` is provided, only conversations whose stored
+    ``metadata.team_ids`` are fully contained within the given ids are returned
+    (Python-level filter for DB portability). When absent, all conversations for
+    the session are returned (backwards-compatible with sessions that have no
+    metadata).
+    """
+    qs = Conversation.filter(session_id=session_id).order_by("-created_at")
+    results = await qs.limit(limit * 10).all()  # fetch extra room for filtering
+
+    if team_ids:
+        team_ids_set = set(team_ids)
+        filtered: list[Conversation] = []
+        for conv in results:
+            meta = conv.metadata or {}
+            conv_teams = meta.get("team_ids") or []
+            conv_team_set = set(conv_teams)
+            if conv_team_set and conv_team_set.issubset(team_ids_set):
+                filtered.append(conv)
+        results = filtered[:limit]
+    else:
+        results = results[:limit]
+
+    return results
 
 
 def fetch_conversations_by_session(session_id: str):
@@ -67,6 +89,7 @@ async def create_conversation(
     feedback_score: int | None = None,
     feedback_reason: str | None = None,
     llm_used: "Llm | None" = None,
+    team_ids: list[int] | None = None,
 ) -> Conversation:
     """
     Create a conversation (one completed graph turn) with its references.
@@ -82,7 +105,12 @@ async def create_conversation(
         feedback_score: User feedback score for this turn (optional)
         feedback_reason: User feedback reason for this turn (optional)
         llm_used: LLM that actually ran this turn (audit record, optional)
+        team_ids: Team scope for this turn (stored in metadata for filtering)
     """
+    metadata: dict = {}
+    if team_ids:
+        metadata["team_ids"] = team_ids
+
     conversation = await Conversation.create(
         user=user,
         session=session,
@@ -90,6 +118,7 @@ async def create_conversation(
         answer=answer,
         enhanced_question=enhanced_question,
         summary=summary,
+        metadata=metadata,
         feedback_score=feedback_score,
         feedback_reason=feedback_reason,
         llm_used=llm_used,

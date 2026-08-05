@@ -27,11 +27,20 @@ def make_context_builder_node(recent_turns: int = 3):
 
         session_id = state.get("session_id")
         if session_id:
-            session = await get_session(session_id)
-            if session and session.summary:
-                parts.append(f"[이전 대화 요약]\n{session.summary}")
+            team_ids = state.get("team_ids") or None
 
-            recent = await fetch_recent_conversations_by_session(session_id, limit=recent_turns)
+            # Skip global session summary when operating within a team scope
+            # to avoid leaking unrelated team information.
+            if not team_ids:
+                session = await get_session(session_id)
+                if session and session.summary:
+                    parts.append(f"[이전 대화 요약]\n{session.summary}")
+
+            # Filter recent conversations by the current turn's team scope.
+            # When team_ids is absent, load all conversations (backwards-compatible).
+            recent = await fetch_recent_conversations_by_session(
+                session_id, limit=recent_turns, team_ids=team_ids,
+            )
             for conv in reversed(recent):  # oldest → newest
                 answer = conv.summary or conv.answer
                 parts.append(f"Q: {conv.question}\nA: {answer}")

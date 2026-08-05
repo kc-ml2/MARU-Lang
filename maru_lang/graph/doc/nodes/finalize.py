@@ -77,6 +77,7 @@ def make_finalize_node():
                     references=canvas.references or [],
                     session=session,
                     summary=summary,
+                    team_ids=state.get("team_ids"),
                 )
 
         return {"finalized": True, "messages": [AIMessage(content=confirmation)]}

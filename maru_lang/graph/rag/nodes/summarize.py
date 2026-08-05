@@ -56,6 +56,7 @@ def make_summarize_node(llm: BaseChatModel):
         )
         session_summary = session_summary_raw or prev
 
+        team_ids = state.get("team_ids")
         await create_conversation(
             user=user,
             session=session,
@@ -66,6 +67,7 @@ def make_summarize_node(llm: BaseChatModel):
             feedback_score=state.get("feedback_score"),
             feedback_reason=state.get("feedback_reason"),
             llm_used=llm_used,
+            team_ids=team_ids,
         )
 
         await update_session_summary(session, session_summary)
