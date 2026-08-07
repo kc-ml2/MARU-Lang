@@ -1,117 +1,97 @@
-"""
-Remove 명령어: DocumentGroup 및 관련 데이터 삭제
-"""
+"""Safe CLI deletion commands for ingested documents and folders."""
+
 import typer
 
-from maru_lang.core.relation_db.models.documents import (
-    DocumentGroup,
-    Document,
-)
+from maru_lang.core.relation_db.connection import run_with_orm_context
+from maru_lang.core.relation_db.models.documents import Document, DocumentGroup
+from maru_lang.enums.documents import DocumentStatus
 from maru_lang.services.document import get_all_descendant_groups
-from maru_lang.core.vector_db import get_vector_db
+from maru_lang.services.ingest import delete_document_by_id, delete_group_documents
+
+remove_app = typer.Typer(help="Delete ingested documents or folder subtrees safely.")
 
 
-async def remove_function(
-    group_name: str,
-    force: bool = False,
-):
-    """
-    DocumentGroup과 모든 하위 그룹, 문서, 임베딩 삭제
-
-    Args:
-        group_name: 삭제할 DocumentGroup 이름
-        force: 확인 없이 강제 삭제
-    """
-    # ========== 1. DocumentGroup 확인 ==========
-    typer.echo("\n" + "=" * 50)
-    typer.secho("DocumentGroup 삭제", fg=typer.colors.RED, bold=True)
-    typer.echo("=" * 50)
-
-    group = await DocumentGroup.get_or_none(name=group_name).prefetch_related("team__manager")
-    if not group:
+async def _remove_document(target: str, team_id: int, force: bool) -> None:
+    """Resolve a document ID/path and remove its DB, vector, and storage data."""
+    doc = await Document.get_or_none(id=target, group__team_id=team_id)
+    if doc is None:
+        # A path is often easier to obtain than the generated document ID. Match
+        # the exact stored path only; names alone can be ambiguous.
+        doc = await Document.get_or_none(file_path=target, group__team_id=team_id)
+    if doc is None:
         typer.secho(
-            f"DocumentGroup '{group_name}'을 찾을 수 없습니다.",
+            f"Document '{target}' was not found in team {team_id}.",
             fg=typer.colors.RED,
+            err=True,
         )
         raise typer.Exit(1)
 
-    # ========== 2. 하위 그룹 및 문서 수집 ==========
-    typer.echo(f"\n삭제 대상 분석 중...")
+    status = DocumentStatus(doc.status).name.lower()
+    typer.echo(f"Document: {doc.name}")
+    typer.echo(f"ID:       {doc.id}")
+    typer.echo(f"Path:     {doc.file_path or '-'}")
+    typer.echo(f"Status:   {status}")
+    if not force and not typer.confirm("Delete this document and all of its embeddings?"):
+        typer.echo("Deletion cancelled.")
+        return
 
-    # 하위 그룹 포함 모든 그룹 수집 (재귀)
-    all_groups = await get_all_descendant_groups(group)
-    all_group_ids = [g.id for g in all_groups]
-    group_names = [g.name for g in all_groups]
-
-    # 모든 문서 수집
-    all_documents = await Document.filter(group_id__in=all_group_ids).all()
-
-    # ========== 3. 삭제 정보 출력 ==========
-    typer.echo("\n삭제될 항목:")
-    typer.echo(f"   DocumentGroup: {len(all_groups)}개")
-    for name in group_names:
-        typer.echo(f"      - {name}")
-    typer.echo(f"   Documents: {len(all_documents)}개")
-    typer.echo(f"   VectorDB: 청크 삭제 예정")
-
-    # ========== 4. 확인 ==========
-    if not force:
-        typer.echo("\n" + "=" * 50)
+    in_flight = doc.status in {DocumentStatus.UPLOADING, DocumentStatus.PROCESSING}
+    await delete_document_by_id(doc.id, team_id, user_id=None)
+    if in_flight:
         typer.secho(
-            "경고: 이 작업은 되돌릴 수 없습니다!",
+            "Deletion requested. The ingest worker will finalize this in-flight document.",
             fg=typer.colors.YELLOW,
-            bold=True,
         )
-        typer.echo("=" * 50)
+    else:
+        typer.secho("Document deleted.", fg=typer.colors.GREEN)
 
-        confirm = typer.confirm(
-            f"\n정말로 '{group_name}'과 모든 관련 데이터를 삭제하시겠습니까?"
+
+async def _remove_group(group_id: int, team_id: int, force: bool) -> None:
+    """Remove a folder subtree using the same safe semantics as the API."""
+    group = await DocumentGroup.get_or_none(id=group_id, team_id=team_id)
+    if group is None:
+        typer.secho(
+            f"Folder {group_id} was not found in team {team_id}.",
+            fg=typer.colors.RED,
+            err=True,
         )
-        if not confirm:
-            typer.secho("\n삭제 작업이 취소되었습니다.", fg=typer.colors.RED)
-            raise typer.Exit(0)
+        raise typer.Exit(1)
 
-    # ========== 5. VDB에서 임베딩 삭제 ==========
-    if all_documents:
-        typer.echo("\nVectorDB에서 임베딩 삭제 중...")
-        try:
-            vdb = get_vector_db()
+    groups = await get_all_descendant_groups(group)
+    group_ids = [item.id for item in groups]
+    document_count = await Document.filter(group_id__in=group_ids).count()
+    typer.echo(f"Folder:      {group.name} (ID: {group.id})")
+    typer.echo(f"Subtree:     {len(groups)} folder(s)")
+    typer.echo(f"Documents:   {document_count}")
+    if not force and not typer.confirm("Delete this folder subtree and all of its documents?"):
+        typer.echo("Deletion cancelled.")
+        return
 
-            total_deleted = 0
-            for doc in all_documents:
-                deleted_count = vdb.delete_all_chunks_by_document_id(doc.id)
-                total_deleted += deleted_count
+    result = await delete_group_documents(group_id, team_id, user_id=None)
+    typer.secho(
+        f"Deletion complete: {result['deleted']} deleted, "
+        f"{result['deferred']} deferred.",
+        fg=typer.colors.GREEN if not result["deferred"] else typer.colors.YELLOW,
+    )
+    if not result["group_removed"]:
+        typer.echo("The folder will remain until in-flight document deletion is finalized.")
 
-            typer.secho(
-                f"   {len(all_documents)}개 문서의 {total_deleted}개 청크 삭제 완료",
-                fg=typer.colors.GREEN,
-            )
-        except Exception as e:
-            typer.secho(
-                f"   VDB 임베딩 삭제 실패: {e}",
-                fg=typer.colors.YELLOW,
-            )
-            typer.echo("   RDB 삭제는 계속 진행됩니다.")
 
-    # ========== 6. RDB 레코드 삭제 ==========
-    typer.echo("\n데이터베이스 레코드 삭제 중...")
+@remove_app.command("document")
+def remove_document(
+    target: str = typer.Argument(..., help="Document ID or exact stored file path"),
+    team_id: int = typer.Option(..., "--team-id", "-t", help="Owning team ID"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+) -> None:
+    """Delete one document, its embeddings, and its stored file."""
+    run_with_orm_context(_remove_document, target, team_id, force)
 
-    # Documents 삭제
-    deleted_docs = await Document.filter(group_id__in=all_group_ids).delete()
-    typer.echo(f"   문서: {deleted_docs}개")
 
-    # DocumentGroup 삭제 (CASCADE로 하위 그룹도 함께 삭제됨)
-    # 하위 그룹부터 삭제해야 FK 제약 없음
-    for g in reversed(all_groups):
-        await g.delete()
-    typer.echo(f"   DocumentGroup: {len(all_groups)}개")
-
-    # ========== 완료 ==========
-    typer.echo("\n" + "=" * 50)
-    typer.secho("삭제 완료!", fg=typer.colors.GREEN, bold=True)
-    typer.echo("=" * 50)
-    typer.echo(f"삭제된 항목:")
-    typer.echo(f"   DocumentGroup: {len(all_groups)}개")
-    typer.echo(f"   Documents: {deleted_docs}개")
-    typer.echo(f"   임베딩: {len(all_documents) if all_documents else 0}개")
-    typer.echo()
+@remove_app.command("group")
+def remove_group(
+    group_id: int = typer.Argument(..., help="Folder (DocumentGroup) ID"),
+    team_id: int = typer.Option(..., "--team-id", "-t", help="Owning team ID"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+) -> None:
+    """Delete a folder subtree and every document it contains."""
+    run_with_orm_context(_remove_group, group_id, team_id, force)
