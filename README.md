@@ -200,6 +200,22 @@ maru run --attach              # attach a chat REPL to the running server (same 
 
 **Chat REPL commands:** `/team` switch teams · `/ingest <path>` upload & embed · `/status` document states · `/retry [force]` re-process failed (or all) docs · `/llms` · `/function feedback` · `/help`
 
+**Safe deletion from the CLI:**
+
+```bash
+# Target one document by ID or its exact stored path
+maru remove document <document-id-or-path> --team-id <team-id>
+
+# Delete a folder and its complete subtree
+maru remove group <group-id> --team-id <team-id>
+
+# Add --force / -f to skip the confirmation prompt
+```
+
+These commands remove relational records, vector embeddings, and stored upload
+files together. In-flight ingests are marked for cooperative deletion and are
+finalized by the ingest worker.
+
 ### 📚 API
 
 - Interactive docs: `http://localhost:8000/docs` (Swagger)

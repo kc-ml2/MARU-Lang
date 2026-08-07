@@ -218,7 +218,7 @@ async def check_files_to_upload(
 async def delete_document_by_id(
     document_id: str,
     team_id: int,
-    user_id: int,
+    user_id: Optional[int],
 ) -> None:
     """Delete a document from VectorDB and RDB, recording audit log.
 
@@ -293,7 +293,7 @@ def delete_team_chunks(team_id: int) -> int:
 async def delete_group_documents(
     group_id: int,
     team_id: int,
-    user_id: int,
+    user_id: Optional[int],
 ) -> dict:
     """Delete a folder's entire subtree: all documents in it and its descendant
     folders, then the now-empty folder rows themselves.

@@ -1118,7 +1118,11 @@ async def _api_status(
             data = resp.json()
             docs = data.get("documents", [])
 
-            table = Table(title=f"Team: {team_name} ({data.get('total', 0)} docs)")
+            table = Table(
+                title=f"Team: {team_name} [ID: {team_id}] "
+                      f"({data.get('total', 0)} docs)"
+            )
+            table.add_column("Document ID", style="magenta", no_wrap=True)
             table.add_column("Name", style="cyan")
             table.add_column("Status", style="yellow")
             table.add_column("Size", justify="right")
@@ -1128,6 +1132,7 @@ async def _api_status(
                 size = doc.get("file_size", 0)
                 size_str = f"{size:,}" if size else "-"
                 table.add_row(
+                    doc.get("id", "?"),
                     doc.get("name", "?"),
                     doc.get("status", "?"),
                     size_str,

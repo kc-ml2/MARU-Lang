@@ -2,6 +2,7 @@ from maru_lang.commands.status import show_status
 from maru_lang.commands.install import install_configs
 from maru_lang.commands.run import run_session
 from maru_lang.commands.test import run_test_command
+from maru_lang.commands.remove import remove_app
 from maru_lang.core.relation_db.connection import run_with_orm_context
 from maru_lang.constants import PUBLIC_TEAM_NAME
 import asyncio
@@ -16,6 +17,7 @@ from typing import Optional
 from maru_lang.configs import get_config
 
 app = typer.Typer()
+app.add_typer(remove_app, name="remove")
 
 
 def _enable_verbose_logging() -> None:
