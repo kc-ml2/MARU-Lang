@@ -11,6 +11,7 @@ from maru_lang.utils.document import new_ulid
 from maru_lang.services.admin import get_or_create_admin_user
 from maru_lang.services.team import get_or_create_team
 from maru_lang.schemas.ingest import FileInfo
+from maru_lang.utils.rclone import materialize_rclone_file
 
 
 async def ingest_function(
@@ -50,29 +51,32 @@ async def ingest_function(
 
     try:
         for fp in file_paths:
-            # Save to permanent storage
-            doc_id = new_ulid()
-            storage_path = save_file(fp, team_obj.id, doc_id)
+            # rclone mounts may expose Google-native exports as zero-byte files.
+            # Copy the remote object locally before permanent storage/parsing,
+            # while retaining the mounted path as the document identity.
+            with materialize_rclone_file(fp) as readable_fp:
+                doc_id = new_ulid()
+                storage_path = save_file(readable_fp, team_obj.id, doc_id)
 
-            file_info = FileInfo(
-                fileName=fp.name,
-                createdAt=datetime.fromtimestamp(fp.stat().st_ctime),
-                absolutePath=str(fp.resolve()),
-                size=fp.stat().st_size,
-                tempFilePath=storage_path,
-            )
+                file_info = FileInfo(
+                    fileName=fp.name,
+                    createdAt=datetime.fromtimestamp(fp.stat().st_ctime),
+                    absolutePath=str(fp.resolve()),
+                    size=readable_fp.stat().st_size,
+                    tempFilePath=storage_path,
+                )
 
-            async for node_name, messages in stream_ingest(
-                file=file_info,
-                team_id=team_obj.id,
-                re_embed=re_embed,
-            ):
-                for msg in messages:
-                    if "ERROR" in msg:
-                        typer.secho(f"  {msg}", fg=typer.colors.RED)
-                        failed += 1
-                    else:
-                        typer.secho(f"  {msg}", fg=typer.colors.CYAN)
+                async for node_name, messages in stream_ingest(
+                    file=file_info,
+                    team_id=team_obj.id,
+                    re_embed=re_embed,
+                ):
+                    for msg in messages:
+                        if "ERROR" in msg:
+                            typer.secho(f"  {msg}", fg=typer.colors.RED)
+                            failed += 1
+                        else:
+                            typer.secho(f"  {msg}", fg=typer.colors.CYAN)
             processed += 1
 
     except ValueError as e:

@@ -22,6 +22,8 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
+from maru_lang.utils.rclone import materialize_rclone_file
+
 console = Console()
 
 # Slash commands available in the chat REPL (used for autocomplete + help).
@@ -1003,19 +1005,24 @@ async def _api_ingest(
 
     headers = _auth_headers(access_token)
 
-    # Check which files actually need uploading
-    check_payload = {
-        "team_id": team_id,
-        "files": [
-            {
-                "fileName": fp.name,
-                "absolutePath": str(fp.resolve()),
-                "size": fp.stat().st_size,
-                "mtime": fp.stat().st_mtime,
-            }
-            for fp in files
-        ],
-    }
+    # Check which files actually need uploading. Google-native documents on an
+    # rclone mount can report a zero stat size; materialize those exports so the
+    # server sees the real size in both change detection and multipart upload.
+    check_files = []
+    try:
+        for fp in files:
+            with materialize_rclone_file(fp) as readable_fp:
+                check_files.append({
+                    "fileName": fp.name,
+                    "absolutePath": str(fp.resolve()),
+                    "size": readable_fp.stat().st_size,
+                    "mtime": fp.stat().st_mtime,
+                })
+    except RuntimeError as e:
+        console.print(f"[red]Failed to read rclone file: {e}[/red]")
+        return
+
+    check_payload = {"team_id": team_id, "files": check_files}
 
     async with httpx.AsyncClient(timeout=60) as client:
         try:
@@ -1049,20 +1056,20 @@ async def _api_ingest(
     async with httpx.AsyncClient(timeout=300) as client:
         for fp in files:
             try:
-                with open(fp, "rb") as f:
-                    resp = await client.post(
-                        f"{base_url}/ingest/upload",
-                        headers=headers,
-                        files={"file": (fp.name, f)},
-                        data={
-                            "team_id": str(team_id),
-                            # Real parent dir: upload identity/fingerprint then
-                            # matches /ingest/check's absolutePath, and the group
-                            # is named after the actual folder.
-                            "folder_path": str(fp.resolve().parent),
-                            "mtime": str(fp.stat().st_mtime),
-                        },
-                    )
+                with materialize_rclone_file(fp) as readable_fp:
+                    with open(readable_fp, "rb") as f:
+                        resp = await client.post(
+                            f"{base_url}/ingest/upload",
+                            headers=headers,
+                            files={"file": (fp.name, f)},
+                            data={
+                                "team_id": str(team_id),
+                                # Keep identity/grouping based on the mounted
+                                # source path, not the temporary rclone export.
+                                "folder_path": str(fp.resolve().parent),
+                                "mtime": str(fp.stat().st_mtime),
+                            },
+                        )
                 if resp.status_code == 200:
                     data = resp.json()
                     if data.get("status") == "error":

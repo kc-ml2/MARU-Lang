@@ -322,6 +322,27 @@ class TestCheck:
         assert data["indices_to_upload"] == [1]  # only b.md needs upload
 
 
+class TestUploadFormatValidation:
+
+    @pytest.mark.parametrize("filename", [
+        "dataset.json", "rows.csv", "config.yaml", "source.py", "model.ckpt",
+    ])
+    async def test_rejects_non_document_formats(
+        self, filename: str, client: AsyncClient, team_setup
+    ):
+        team, user = team_setup
+        resp = await client.post(
+            "/ingest/upload",
+            headers=await auth_header(user.id),
+            data={"team_id": str(team.id), "mtime": "1712000000.0"},
+            files={"file": (filename, io.BytesIO(b"not a document"), "application/octet-stream")},
+        )
+
+        assert resp.status_code == 415
+        assert "Unsupported document format" in resp.json()["detail"]
+        assert await Document.all().count() == 0
+
+
 # ──────────────────────────────────────────────
 # 3.5 Upload group naming
 # ──────────────────────────────────────────────

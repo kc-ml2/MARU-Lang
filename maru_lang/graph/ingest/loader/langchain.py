@@ -24,7 +24,7 @@ def _doc2txt_available() -> bool:
 def load_file(file_path: Path) -> list[Document]:
     """Load a file into LangChain Documents.
 
-    Supported formats: PDF, DOCX, PPTX, XLSX, CSV, HTML, JSON, Markdown, TXT, etc.
+    Supported formats are deliberately limited to human-authored documents.
     """
     suffix = file_path.suffix.lower()
 
@@ -62,30 +62,15 @@ def load_file(file_path: Path) -> list[Document]:
         from langchain_community.document_loaders import UnstructuredExcelLoader
         return UnstructuredExcelLoader(str(file_path)).load()
 
-    elif suffix in (".csv", ".tsv"):
-        from langchain_community.document_loaders import CSVLoader
-        return CSVLoader(str(file_path)).load()
-
     elif suffix in (".html", ".htm"):
         from langchain_community.document_loaders import BSHTMLLoader
         return BSHTMLLoader(str(file_path)).load()
 
-    elif suffix == ".json":
-        from langchain_community.document_loaders import JSONLoader
-        return JSONLoader(
-            file_path=str(file_path),
-            jq_schema=".",
-            text_content=False,
-        ).load()
-
-    elif suffix in (".md", ".markdown", ".yaml", ".yml", ".xml"):
+    elif suffix in (".md", ".markdown", ".txt", ".text"):
         from langchain_community.document_loaders import TextLoader
         return TextLoader(str(file_path), encoding="utf-8").load()
 
-    else:
-        # Default: load as plain text (txt, log, py, js, ts, etc.)
-        from langchain_community.document_loaders import TextLoader
-        return TextLoader(str(file_path), encoding="utf-8").load()
+    raise ValueError(f"Unsupported document format: {suffix or '(none)'}")
 
 
 def is_supported(file_path: Path) -> bool:

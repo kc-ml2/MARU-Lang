@@ -74,13 +74,13 @@ def long_text(tmp_path):
 
 
 class TestConstants:
-    def test_supported_extensions_has_common_formats(self):
-        for ext in [".pdf", ".docx", ".txt", ".md", ".csv", ".json", ".html"]:
+    def test_supported_extensions_are_document_focused(self):
+        for ext in [".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md", ".html", ".hwpx"]:
             assert ext in SUPPORTED_EXTENSIONS
 
-    def test_supported_extensions_has_code_formats(self):
-        for ext in [".py", ".js", ".ts", ".go"]:
-            assert ext in SUPPORTED_EXTENSIONS
+    def test_supported_extensions_exclude_data_code_and_logs(self):
+        for ext in [".json", ".csv", ".tsv", ".yaml", ".xml", ".log", ".py", ".js", ".go"]:
+            assert ext not in SUPPORTED_EXTENSIONS
 
 
 # ─── Loader ───────────────────────────────────────────────────
@@ -97,24 +97,24 @@ class TestLoader:
         assert len(docs) >= 1
         assert "MARU" in docs[0].page_content
 
-    def test_load_csv(self, sample_csv):
-        docs = load_file(sample_csv)
-        assert len(docs) >= 1
-        content = " ".join(d.page_content for d in docs)
-        assert "Alice" in content
+    def test_load_csv_is_rejected(self, sample_csv):
+        with pytest.raises(ValueError, match="Unsupported document format"):
+            load_file(sample_csv)
 
     def test_is_supported(self, tmp_path):
         assert is_supported(tmp_path / "test.txt")
         assert is_supported(tmp_path / "test.pdf")
-        assert is_supported(tmp_path / "test.py")
+        assert not is_supported(tmp_path / "test.py")
+        assert not is_supported(tmp_path / "test.json")
+        assert not is_supported(tmp_path / "test.csv")
         assert not is_supported(tmp_path / "test.xyz")
         assert not is_supported(tmp_path / "test.bin")
 
-    def test_load_unknown_as_text(self, tmp_path):
+    def test_load_code_is_rejected(self, tmp_path):
         f = tmp_path / "code.py"
         f.write_text("def hello():\n    print('world')")
-        docs = load_file(f)
-        assert "hello" in docs[0].page_content
+        with pytest.raises(ValueError, match="Unsupported document format"):
+            load_file(f)
 
     def test_load_doc_uses_doc2txt(self):
         """Mocked: .doc files go through doc2txt.extract_text()."""
@@ -378,10 +378,9 @@ class TestLoadAndSplit:
         chunks = split_documents(docs)
         assert len(chunks) >= 1
 
-    def test_csv_e2e(self, sample_csv):
-        docs = load_file(sample_csv)
-        chunks = split_documents(docs)
-        assert len(chunks) >= 1
+    def test_csv_e2e_is_rejected(self, sample_csv):
+        with pytest.raises(ValueError, match="Unsupported document format"):
+            load_file(sample_csv)
 
     def test_multiple_files(self, sample_txt, sample_md):
         all_docs = load_file(sample_txt) + load_file(sample_md)
