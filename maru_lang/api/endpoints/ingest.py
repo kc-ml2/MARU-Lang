@@ -10,6 +10,7 @@ from maru_lang.enums.documents import DocumentStatus, AuditAction
 
 logger = logging.getLogger(__name__)
 from maru_lang.dependencies.auth import get_user_with_role, User
+from maru_lang.graph.ingest.loader import is_supported
 from maru_lang.schemas.ingest import (
     UploadResponse,
     StatusResponse,
@@ -60,6 +61,11 @@ async def upload_file(
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
+    if not is_supported(Path(file.filename)):
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported document format: {Path(file.filename).suffix.lower() or '(none)'}",
+        )
 
     try:
         await require_team_member(team_id, user)

@@ -20,7 +20,8 @@ from maru_lang.utils.file_scanner import scan_directory
 def tree(tmp_path):
     for rel in [
         ".DS_Store", "a.md", "b.pdf", "c.exe", ".hidden.md",
-        "sub/d.txt", "sub/e.bin", "졸업.hwpx",
+        "sub/d.txt", "sub/e.bin", "sub/data.json", "sub/source.py",
+        "sub/dataset.csv", "sub/model.ckpt", "졸업.hwpx",
     ]:
         f = tmp_path / rel
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -37,7 +38,11 @@ def test_excludes_junk_and_unsupported(tree):
     names = {f.name for f in scan_directory(tree)}
     assert ".DS_Store" not in names      # macOS junk (no supported suffix)
     assert "c.exe" not in names          # unsupported
-    assert "e.bin" not in names          # unsupported
+    assert "e.bin" not in names          # unsupported binary
+    assert "data.json" not in names      # structured data
+    assert "dataset.csv" not in names    # dataset
+    assert "source.py" not in names      # source code
+    assert "model.ckpt" not in names     # model checkpoint
     assert ".hidden.md" not in names     # dotfile skipped even if extension ok
 
 

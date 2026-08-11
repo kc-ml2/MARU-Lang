@@ -2,19 +2,16 @@
 
 # --- Ingest ---
 
+# Deliberately document-focused. Data files (CSV/JSON/YAML/XML), logs, source
+# code, model checkpoints, and arbitrary binaries are excluded so recursive
+# directory ingest does not accidentally embed repositories or datasets.
 SUPPORTED_EXTENSIONS = {
-    # Documents
+    # Office documents
     ".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xls",
     # Korean documents (require KorDoc MCP parser; no LangChain loader)
     ".hwp", ".hwpx", ".hwpml",
-    # Data
-    ".csv", ".tsv", ".json",
-    # Web/Markup
-    ".html", ".htm", ".xml", ".yaml", ".yml",
-    # Text/Markdown
-    ".md", ".markdown", ".txt", ".text", ".log",
-    # Code
-    ".py", ".js", ".ts", ".java", ".go", ".rs", ".cpp", ".c", ".h",
+    # Human-authored web/text documents
+    ".html", ".htm", ".md", ".markdown", ".txt", ".text",
 }
 # Parser routing vocabulary (PARSER_*, KORDOC_*_EXTENSIONS) is cohesive to the
 # ingest graph and lives in maru_lang.graph.ingest.constants.
