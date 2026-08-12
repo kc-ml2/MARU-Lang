@@ -22,7 +22,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from maru_lang.utils.file_materialization import materialize_file
+from maru_lang.graph.ingest.materialization import materialize_file
 
 console = Console()
 

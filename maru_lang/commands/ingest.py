@@ -11,7 +11,7 @@ from maru_lang.utils.document import new_ulid
 from maru_lang.services.admin import get_or_create_admin_user
 from maru_lang.services.team import get_or_create_team
 from maru_lang.schemas.ingest import FileInfo
-from maru_lang.utils.file_materialization import materialize_file
+from maru_lang.graph.ingest.materialization import materialize_file
 
 
 async def ingest_function(

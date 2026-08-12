@@ -7,6 +7,14 @@ maru_lang.constants instead; these stay here because nothing outside the ingest
 graph needs them.
 """
 
+# Export formats that may appear as zero-byte Google-native placeholders on an
+# rclone mount. Restrict materialization to formats rclone/Google Drive exports
+# as binary office documents, rather than treating every empty text file as a
+# remotely retrievable object.
+RCLONE_PLACEHOLDER_EXTENSIONS = {
+    ".docx", ".pptx", ".xlsx", ".pdf",
+}
+
 # Parser identifiers recorded in Document.metadata["parser"] (a stored contract,
 # so the string values are stable) and used to route in parser.py.
 PARSER_KORDOC = "kordoc"

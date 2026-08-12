@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from maru_lang.utils.file_materialization import Materialization, materialize_file
+from maru_lang.graph.ingest.materialization import Materialization, materialize_file
 
 
 def test_unmatched_file_is_yielded_unchanged(tmp_path):
