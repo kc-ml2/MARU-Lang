@@ -48,6 +48,19 @@ auth:
 vector_db_url: chroma://data/chroma/maru
 storage_dir: data/storage
 
+# --- Ingest source materialization (optional) ---
+# rclone mount names are detected automatically from the OS by default. If
+# detection fails, list EVERY rclone mount here. The longest matching
+# local_path wins. Set config_path only when rclone uses a non-default config.
+# ingest_materialization:
+#   rclone:
+#     config_path: ${ENV:RCLONE_CONFIG:}
+#     mounts:
+#       - local_path: /mnt/company-drive
+#         remote: company-drive:
+#       - local_path: /mnt/shared-drive
+#         remote: shared-drive:
+
 # --- LLMs ---
 
 llms:

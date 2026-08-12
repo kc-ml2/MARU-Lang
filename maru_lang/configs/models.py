@@ -84,6 +84,26 @@ class SMTPConfig:
 
 
 @dataclass
+class RcloneMountConfig:
+    """Fallback mapping when an rclone mount cannot be discovered from the OS."""
+    local_path: str = ""
+    remote: str = ""
+
+
+@dataclass
+class RcloneMaterializationConfig:
+    """rclone settings for ingest source materialization."""
+    config_path: Optional[str] = None
+    mounts: list[RcloneMountConfig] = field(default_factory=list)
+
+
+@dataclass
+class IngestMaterializationConfig:
+    """Provider settings for preparing ingest sources."""
+    rclone: RcloneMaterializationConfig = field(default_factory=RcloneMaterializationConfig)
+
+
+@dataclass
 class LangfuseConfig:
     """Langfuse observability (LLM tracing) configuration.
 
@@ -125,6 +145,9 @@ class MaruConfig:
     langfuse: LangfuseConfig = field(default_factory=LangfuseConfig)
     vector_db_url: str = "chroma://data/chroma/maru"
     storage_dir: str = "data/storage"
+    ingest_materialization: IngestMaterializationConfig = field(
+        default_factory=IngestMaterializationConfig
+    )
     # LangGraph checkpointer. If None, derived from database_url
     # (sqlite -> sibling "<db>.checkpoints" file; postgres -> same DB, separate tables).
     checkpoint_db_url: Optional[str] = None
@@ -254,6 +277,24 @@ class MaruConfig:
             password=smtp_data.get("password"),
         )
 
+        # Ingest source materialization
+        materialization_data = data.get("ingest_materialization", {}) or {}
+        rclone_data = materialization_data.get("rclone", {}) or {}
+        rclone_mounts = []
+        for mount_data in (rclone_data.get("mounts") or []):
+            if not isinstance(mount_data, dict):
+                continue
+            local_path = str(mount_data.get("local_path", "")).strip()
+            remote = str(mount_data.get("remote", "")).strip()
+            if local_path and remote:
+                rclone_mounts.append(RcloneMountConfig(local_path=local_path, remote=remote))
+        ingest_materialization = IngestMaterializationConfig(
+            rclone=RcloneMaterializationConfig(
+                config_path=rclone_data.get("config_path") or None,
+                mounts=rclone_mounts,
+            )
+        )
+
         # Langfuse (observability)
         lf_data = data.get("langfuse", {}) or {}
         langfuse = LangfuseConfig(
@@ -273,6 +314,7 @@ class MaruConfig:
             langfuse=langfuse,
             vector_db_url=data.get("vector_db_url", cls.vector_db_url),
             storage_dir=data.get("storage_dir", cls.storage_dir),
+            ingest_materialization=ingest_materialization,
             checkpoint_db_url=data.get("checkpoint_db_url"),
             llms=llms,
             embedding_model=data.get("embedding_model", cls.embedding_model),

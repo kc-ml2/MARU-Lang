@@ -54,6 +54,29 @@ class TestLLMConfig:
 
 
 class TestMaruConfig:
+    def test_rclone_materialization_defaults_to_auto_detection(self):
+        config = MaruConfig.from_dict({})
+        assert config.ingest_materialization.rclone.config_path is None
+        assert config.ingest_materialization.rclone.mounts == []
+
+    def test_rclone_materialization_parses_mount_mappings(self):
+        config = MaruConfig.from_dict({
+            "ingest_materialization": {
+                "rclone": {
+                    "config_path": "/etc/rclone.conf",
+                    "mounts": [
+                        {"local_path": "/mnt/drive", "remote": "drive:"},
+                        {"local_path": "", "remote": "ignored:"},
+                    ],
+                }
+            }
+        })
+        rclone = config.ingest_materialization.rclone
+        assert rclone.config_path == "/etc/rclone.conf"
+        assert [(m.local_path, m.remote) for m in rclone.mounts] == [
+            ("/mnt/drive", "drive:")
+        ]
+
     def test_from_dict_full(self):
         data = {
             "production": True,

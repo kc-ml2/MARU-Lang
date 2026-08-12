@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from maru_lang.configs import get_config
 from maru_lang.graph.ingest.constants import RCLONE_PLACEHOLDER_EXTENSIONS
 from maru_lang.graph.ingest.materialization.base import Materialization
 
@@ -67,9 +68,24 @@ def _mount_from_mount_command(path: Path) -> tuple[str, Path] | None:
     return max(candidates, key=lambda item: len(item[1].parts), default=None)
 
 
+def _configured_mount(path: Path) -> tuple[str, Path] | None:
+    """Return the most specific configured mount containing ``path``."""
+    resolved = path.resolve()
+    candidates = []
+    for mount in get_config().ingest_materialization.rclone.mounts:
+        target = Path(mount.local_path).expanduser().resolve()
+        if _is_relative_to(resolved, target):
+            candidates.append((mount.remote, target))
+    return max(candidates, key=lambda item: len(item[1].parts), default=None)
+
+
 def _rclone_remote_path(path: Path) -> str | None:
-    """Map a mounted local path to its ``remote:path`` rclone object name."""
-    mount = _mount_from_findmnt(path) or _mount_from_mount_command(path)
+    """Map a local path to rclone object name, preferring explicit mappings."""
+    mount = (
+        _configured_mount(path)
+        or _mount_from_findmnt(path)
+        or _mount_from_mount_command(path)
+    )
     if mount is None:
         return None
 
@@ -96,13 +112,22 @@ def resolve_rclone_materialization(path: Path) -> Materialization | None:
 
     remote_path = _rclone_remote_path(path)
     if remote_path is None:
-        return None
+        raise RuntimeError(
+            f"Could not detect the rclone mount for {path}. Add every mount to "
+            "ingest_materialization.rclone.mounts in maru_config.yaml "
+            "(local_path + remote)."
+        )
     if shutil.which("rclone") is None:
         raise RuntimeError(f"rclone executable not found while downloading {path}")
 
     def copy_to(destination: Path) -> None:
+        command = ["rclone"]
+        config_path = get_config().ingest_materialization.rclone.config_path
+        if config_path:
+            command.extend(["--config", str(Path(config_path).expanduser())])
+        command.extend(["copyto", remote_path, str(destination)])
         result = subprocess.run(
-            ["rclone", "copyto", remote_path, str(destination)],
+            command,
             check=False,
             capture_output=True,
             text=True,
