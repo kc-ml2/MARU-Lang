@@ -4,7 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from maru_lang.utils.rclone import _rclone_remote_path, materialize_rclone_file
+from maru_lang.utils.file_materialization import materialize_file
+from maru_lang.utils.rclone import _rclone_remote_path, resolve_rclone_materialization
 
 
 def test_remote_path_preserves_remote_base_and_relative_path(tmp_path):
@@ -17,14 +18,12 @@ def test_remote_path_preserves_remote_base_and_relative_path(tmp_path):
         assert _rclone_remote_path(source) == "gdrive:shared/folder/deck.pptx"
 
 
-def test_non_empty_file_is_used_without_rclone(tmp_path):
+def test_non_empty_file_does_not_match_rclone_provider(tmp_path):
     source = tmp_path / "report.docx"
     source.write_bytes(b"docx-content")
 
     with patch("maru_lang.utils.rclone._rclone_remote_path") as remote:
-        with materialize_rclone_file(source) as readable:
-            assert readable == source.resolve()
-            assert readable.read_bytes() == b"docx-content"
+        assert resolve_rclone_materialization(source) is None
         remote.assert_not_called()
 
 
@@ -43,7 +42,7 @@ def test_zero_byte_rclone_file_is_downloaded_and_cleaned_up(tmp_path):
         patch("maru_lang.utils.rclone.shutil.which", return_value="/usr/bin/rclone"),
         patch("maru_lang.utils.rclone.subprocess.run", side_effect=fake_run) as run,
     ):
-        with materialize_rclone_file(source) as readable:
+        with materialize_file(source, resolvers=(resolve_rclone_materialization,)) as readable:
             materialized = readable
             assert readable != source
             assert readable.name == source.name
@@ -67,15 +66,13 @@ def test_failed_rclone_download_has_useful_error_and_cleans_up(tmp_path):
         ),
     ):
         with pytest.raises(RuntimeError, match="permission denied"):
-            with materialize_rclone_file(source):
+            with materialize_file(source, resolvers=(resolve_rclone_materialization,)):
                 pass
 
 
-def test_zero_byte_regular_file_remains_unchanged(tmp_path):
+def test_zero_byte_regular_file_does_not_match_rclone_provider(tmp_path):
     source = tmp_path / "empty.txt"
     source.touch()
 
     with patch("maru_lang.utils.rclone._rclone_remote_path", return_value=None):
-        with materialize_rclone_file(source) as readable:
-            assert readable == source.resolve()
-            assert readable.stat().st_size == 0
+        assert resolve_rclone_materialization(source) is None

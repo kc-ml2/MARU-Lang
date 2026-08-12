@@ -11,7 +11,7 @@ from maru_lang.utils.document import new_ulid
 from maru_lang.services.admin import get_or_create_admin_user
 from maru_lang.services.team import get_or_create_team
 from maru_lang.schemas.ingest import FileInfo
-from maru_lang.utils.rclone import materialize_rclone_file
+from maru_lang.utils.file_materialization import materialize_file
 
 
 async def ingest_function(
@@ -51,10 +51,9 @@ async def ingest_function(
 
     try:
         for fp in file_paths:
-            # rclone mounts may expose Google-native exports as zero-byte files.
-            # Copy the remote object locally before permanent storage/parsing,
-            # while retaining the mounted path as the document identity.
-            with materialize_rclone_file(fp) as readable_fp:
+            # Resolve placeholders or provider-backed files before storage and
+            # parsing, while retaining the source path as document identity.
+            with materialize_file(fp) as readable_fp:
                 doc_id = new_ulid()
                 storage_path = save_file(readable_fp, team_obj.id, doc_id)
 
