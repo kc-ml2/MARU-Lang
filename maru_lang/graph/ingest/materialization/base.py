@@ -33,7 +33,7 @@ class MaterializationResolver(Protocol):
 def default_resolvers() -> tuple[MaterializationResolver, ...]:
     """Resolvers enabled by default, ordered by precedence."""
     # Lazy import avoids coupling the generic orchestration layer to providers.
-    from maru_lang.utils.rclone import resolve_rclone_materialization
+    from maru_lang.graph.ingest.materialization.rclone import resolve_rclone_materialization
 
     return (resolve_rclone_materialization,)
 

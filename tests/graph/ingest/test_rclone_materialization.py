@@ -4,8 +4,11 @@ from unittest.mock import patch
 
 import pytest
 
-from maru_lang.utils.file_materialization import materialize_file
-from maru_lang.utils.rclone import _rclone_remote_path, resolve_rclone_materialization
+from maru_lang.graph.ingest.materialization import materialize_file
+from maru_lang.graph.ingest.materialization.rclone import (
+    _rclone_remote_path,
+    resolve_rclone_materialization,
+)
 
 
 def test_remote_path_preserves_remote_base_and_relative_path(tmp_path):
@@ -14,7 +17,10 @@ def test_remote_path_preserves_remote_base_and_relative_path(tmp_path):
     source.parent.mkdir(parents=True)
     source.touch()
 
-    with patch("maru_lang.utils.rclone._mount_from_findmnt", return_value=("gdrive:shared", mount)):
+    with patch(
+        "maru_lang.graph.ingest.materialization.rclone._mount_from_findmnt",
+        return_value=("gdrive:shared", mount),
+    ):
         assert _rclone_remote_path(source) == "gdrive:shared/folder/deck.pptx"
 
 
@@ -22,7 +28,7 @@ def test_non_empty_file_does_not_match_rclone_provider(tmp_path):
     source = tmp_path / "report.docx"
     source.write_bytes(b"docx-content")
 
-    with patch("maru_lang.utils.rclone._rclone_remote_path") as remote:
+    with patch("maru_lang.graph.ingest.materialization.rclone._rclone_remote_path") as remote:
         assert resolve_rclone_materialization(source) is None
         remote.assert_not_called()
 
@@ -38,9 +44,18 @@ def test_zero_byte_rclone_file_is_downloaded_and_cleaned_up(tmp_path):
         return CompletedProcess(command, 0, stdout="", stderr="")
 
     with (
-        patch("maru_lang.utils.rclone._rclone_remote_path", return_value="drive:slides.pptx"),
-        patch("maru_lang.utils.rclone.shutil.which", return_value="/usr/bin/rclone"),
-        patch("maru_lang.utils.rclone.subprocess.run", side_effect=fake_run) as run,
+        patch(
+            "maru_lang.graph.ingest.materialization.rclone._rclone_remote_path",
+            return_value="drive:slides.pptx",
+        ),
+        patch(
+            "maru_lang.graph.ingest.materialization.rclone.shutil.which",
+            return_value="/usr/bin/rclone",
+        ),
+        patch(
+            "maru_lang.graph.ingest.materialization.rclone.subprocess.run",
+            side_effect=fake_run,
+        ) as run,
     ):
         with materialize_file(source, resolvers=(resolve_rclone_materialization,)) as readable:
             materialized = readable
@@ -58,10 +73,16 @@ def test_failed_rclone_download_has_useful_error_and_cleans_up(tmp_path):
     source.touch()
 
     with (
-        patch("maru_lang.utils.rclone._rclone_remote_path", return_value="drive:doc.docx"),
-        patch("maru_lang.utils.rclone.shutil.which", return_value="/usr/bin/rclone"),
         patch(
-            "maru_lang.utils.rclone.subprocess.run",
+            "maru_lang.graph.ingest.materialization.rclone._rclone_remote_path",
+            return_value="drive:doc.docx",
+        ),
+        patch(
+            "maru_lang.graph.ingest.materialization.rclone.shutil.which",
+            return_value="/usr/bin/rclone",
+        ),
+        patch(
+            "maru_lang.graph.ingest.materialization.rclone.subprocess.run",
             return_value=CompletedProcess([], 1, stdout="", stderr="permission denied"),
         ),
     ):
@@ -70,9 +91,12 @@ def test_failed_rclone_download_has_useful_error_and_cleans_up(tmp_path):
                 pass
 
 
-def test_zero_byte_regular_file_does_not_match_rclone_provider(tmp_path):
+def test_zero_byte_non_export_format_does_not_probe_rclone_mount(tmp_path):
     source = tmp_path / "empty.txt"
     source.touch()
 
-    with patch("maru_lang.utils.rclone._rclone_remote_path", return_value=None):
+    with patch(
+        "maru_lang.graph.ingest.materialization.rclone._rclone_remote_path"
+    ) as remote_path:
         assert resolve_rclone_materialization(source) is None
+        remote_path.assert_not_called()

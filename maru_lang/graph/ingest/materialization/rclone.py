@@ -7,7 +7,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from maru_lang.utils.file_materialization import Materialization
+from maru_lang.graph.ingest.constants import RCLONE_PLACEHOLDER_EXTENSIONS
+from maru_lang.graph.ingest.materialization.base import Materialization
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -87,7 +88,10 @@ def resolve_rclone_materialization(path: Path) -> Materialization | None:
     The generic materializer owns temporary-file lifecycle. This provider owns
     only the rclone-specific condition, remote-path lookup, and copy action.
     """
-    if path.stat().st_size != 0:
+    if (
+        path.stat().st_size != 0
+        or path.suffix.lower() not in RCLONE_PLACEHOLDER_EXTENSIONS
+    ):
         return None
 
     remote_path = _rclone_remote_path(path)
