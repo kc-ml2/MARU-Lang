@@ -1,14 +1,13 @@
-"""Materialize zero-byte Google-native files exposed by an rclone mount."""
+"""rclone provider for the generic file-materialization layer."""
 from __future__ import annotations
 
 import json
 import re
 import shutil
 import subprocess
-import tempfile
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+
+from maru_lang.utils.file_materialization import Materialization
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -58,9 +57,7 @@ def _mount_from_mount_command(path: Path) -> tuple[str, Path] | None:
         # macOS rclone mounts normally report macfuse; Linux reports fuse.rclone.
         # A colon-bearing source distinguishes an rclone remote from other FUSE mounts.
         mount_info = options.lower()
-        if "rclone" not in mount_info and not (
-            "fuse" in mount_info and ":" in source
-        ):
+        if "rclone" not in mount_info and not ("fuse" in mount_info and ":" in source):
             continue
         target = Path(target_text.replace("\\040", " ")).resolve()
         if _is_relative_to(resolved, target):
@@ -84,30 +81,22 @@ def _rclone_remote_path(path: Path) -> str | None:
     return f"{source}{separator}{relative}"
 
 
-@contextmanager
-def materialize_rclone_file(path: Path) -> Iterator[Path]:
-    """Yield readable content for a possibly zero-byte rclone mount entry.
+def resolve_rclone_materialization(path: Path) -> Materialization | None:
+    """Prepare retrieval for a zero-byte placeholder on an rclone mount.
 
-    Ordinary files, and zero-byte files outside an identifiable rclone mount,
-    are yielded unchanged. A zero-byte rclone entry is downloaded with
-    ``rclone copyto`` into a temporary directory and removed on context exit.
-    This handles Google Docs/Slides/Sheets exports whose FUSE stat size is zero.
+    The generic materializer owns temporary-file lifecycle. This provider owns
+    only the rclone-specific condition, remote-path lookup, and copy action.
     """
-    path = path.resolve()
     if path.stat().st_size != 0:
-        yield path
-        return
+        return None
 
     remote_path = _rclone_remote_path(path)
     if remote_path is None:
-        yield path
-        return
+        return None
     if shutil.which("rclone") is None:
         raise RuntimeError(f"rclone executable not found while downloading {path}")
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="maru-rclone-"))
-    destination = temp_dir / path.name
-    try:
+    def copy_to(destination: Path) -> None:
         result = subprocess.run(
             ["rclone", "copyto", remote_path, str(destination)],
             check=False,
@@ -117,8 +106,9 @@ def materialize_rclone_file(path: Path) -> Iterator[Path]:
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "unknown rclone error"
             raise RuntimeError(f"rclone download failed for {path.name}: {detail}")
-        if not destination.is_file() or destination.stat().st_size == 0:
-            raise RuntimeError(f"rclone downloaded an empty file for {path.name} ({remote_path})")
-        yield destination
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return Materialization(
+        provider="rclone",
+        write_to=copy_to,
+        validate=lambda destination: destination.is_file() and destination.stat().st_size > 0,
+    )

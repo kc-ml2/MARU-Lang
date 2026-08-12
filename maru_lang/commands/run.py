@@ -22,7 +22,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from maru_lang.utils.rclone import materialize_rclone_file
+from maru_lang.utils.file_materialization import materialize_file
 
 console = Console()
 
@@ -1005,13 +1005,12 @@ async def _api_ingest(
 
     headers = _auth_headers(access_token)
 
-    # Check which files actually need uploading. Google-native documents on an
-    # rclone mount can report a zero stat size; materialize those exports so the
-    # server sees the real size in both change detection and multipart upload.
+    # Materialize provider-backed placeholders before change detection so the
+    # server sees the readable file's actual size.
     check_files = []
     try:
         for fp in files:
-            with materialize_rclone_file(fp) as readable_fp:
+            with materialize_file(fp) as readable_fp:
                 check_files.append({
                     "fileName": fp.name,
                     "absolutePath": str(fp.resolve()),
@@ -1056,7 +1055,7 @@ async def _api_ingest(
     async with httpx.AsyncClient(timeout=300) as client:
         for fp in files:
             try:
-                with materialize_rclone_file(fp) as readable_fp:
+                with materialize_file(fp) as readable_fp:
                     with open(readable_fp, "rb") as f:
                         resp = await client.post(
                             f"{base_url}/ingest/upload",
@@ -1064,8 +1063,8 @@ async def _api_ingest(
                             files={"file": (fp.name, f)},
                             data={
                                 "team_id": str(team_id),
-                                # Keep identity/grouping based on the mounted
-                                # source path, not the temporary rclone export.
+                                # Keep identity/grouping based on the source
+                                # path, not the temporary materialized file.
                                 "folder_path": str(fp.resolve().parent),
                                 "mtime": str(fp.stat().st_mtime),
                             },
