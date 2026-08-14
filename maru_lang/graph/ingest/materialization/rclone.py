@@ -1,8 +1,6 @@
 """rclone provider for the generic file-materialization layer."""
 from __future__ import annotations
 
-import json
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,54 +18,6 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return False
 
 
-def _mount_from_findmnt(path: Path) -> tuple[str, Path] | None:
-    """Find an rclone mount on Linux."""
-    if shutil.which("findmnt") is None:
-        return None
-    try:
-        result = subprocess.run(
-            ["findmnt", "--json", "--target", str(path), "--output", "SOURCE,TARGET,FSTYPE"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        mounts = json.loads(result.stdout).get("filesystems", [])
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return None
-
-    if not mounts or "rclone" not in str(mounts[0].get("fstype", "")).lower():
-        return None
-    source = str(mounts[0].get("source", ""))
-    target = str(mounts[0].get("target", ""))
-    return (source, Path(target)) if source and target else None
-
-
-def _mount_from_mount_command(path: Path) -> tuple[str, Path] | None:
-    """Find an rclone/macFUSE mount on systems without findmnt (notably macOS)."""
-    try:
-        result = subprocess.run(["mount"], check=True, capture_output=True, text=True)
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-    resolved = path.resolve()
-    candidates: list[tuple[str, Path]] = []
-    for line in result.stdout.splitlines():
-        match = re.match(r"^(.*?) on (.*?) \((.*?)\)$", line)
-        if not match:
-            continue
-        source, target_text, options = match.groups()
-        # macOS rclone mounts normally report macfuse; Linux reports fuse.rclone.
-        # A colon-bearing source distinguishes an rclone remote from other FUSE mounts.
-        mount_info = options.lower()
-        if "rclone" not in mount_info and not ("fuse" in mount_info and ":" in source):
-            continue
-        target = Path(target_text.replace("\\040", " ")).resolve()
-        if _is_relative_to(resolved, target):
-            candidates.append((source, target))
-
-    return max(candidates, key=lambda item: len(item[1].parts), default=None)
-
-
 def _configured_mount(path: Path) -> tuple[str, Path] | None:
     """Return the most specific configured mount containing ``path``."""
     resolved = path.resolve()
@@ -80,12 +30,8 @@ def _configured_mount(path: Path) -> tuple[str, Path] | None:
 
 
 def _rclone_remote_path(path: Path) -> str | None:
-    """Map a local path to rclone object name, preferring explicit mappings."""
-    mount = (
-        _configured_mount(path)
-        or _mount_from_findmnt(path)
-        or _mount_from_mount_command(path)
-    )
+    """Map a configured local mount path to its rclone object name."""
+    mount = _configured_mount(path)
     if mount is None:
         return None
 
@@ -112,11 +58,10 @@ def resolve_rclone_materialization(path: Path) -> Materialization | None:
 
     remote_path = _rclone_remote_path(path)
     if remote_path is None:
-        raise RuntimeError(
-            f"Could not detect the rclone mount for {path}. Add every mount to "
-            "ingest_materialization.rclone.mounts in maru_config.yaml "
-            "(local_path + remote)."
-        )
+        # Never infer an rclone remote from OS mount output. An unconfigured
+        # zero-byte document may simply be an empty local file, so leave it to
+        # the normal ingest pipeline instead of performing remote I/O.
+        return None
     if shutil.which("rclone") is None:
         raise RuntimeError(f"rclone executable not found while downloading {path}")
 

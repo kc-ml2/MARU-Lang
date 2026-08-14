@@ -85,7 +85,7 @@ class SMTPConfig:
 
 @dataclass
 class RcloneMountConfig:
-    """Fallback mapping when an rclone mount cannot be discovered from the OS."""
+    """Explicit mapping from a local mount path to an rclone remote."""
     local_path: str = ""
     remote: str = ""
 
