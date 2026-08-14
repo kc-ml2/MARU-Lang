@@ -12,19 +12,6 @@ from maru_lang.graph.ingest.materialization.rclone import (
 )
 
 
-def test_remote_path_preserves_remote_base_and_relative_path(tmp_path):
-    mount = tmp_path / "drive"
-    source = mount / "folder" / "deck.pptx"
-    source.parent.mkdir(parents=True)
-    source.touch()
-
-    with patch(
-        "maru_lang.graph.ingest.materialization.rclone._mount_from_findmnt",
-        return_value=("gdrive:shared", mount),
-    ):
-        assert _rclone_remote_path(source) == "gdrive:shared/folder/deck.pptx"
-
-
 def _config(*, config_path=None, mounts=()):
     return SimpleNamespace(
         ingest_materialization=SimpleNamespace(
@@ -129,16 +116,36 @@ def test_custom_rclone_config_is_passed_to_copyto(tmp_path):
     ]
 
 
-def test_detection_failure_points_to_mount_config(tmp_path):
+def test_unconfigured_zero_byte_file_does_not_materialize(tmp_path):
     source = tmp_path / "slides.pptx"
     source.touch()
 
-    with patch(
-        "maru_lang.graph.ingest.materialization.rclone._rclone_remote_path",
-        return_value=None,
+    with (
+        patch(
+            "maru_lang.graph.ingest.materialization.rclone.get_config",
+            return_value=_config(),
+        ),
+        patch("maru_lang.graph.ingest.materialization.rclone.subprocess.run") as run,
     ):
-        with pytest.raises(RuntimeError, match="ingest_materialization.rclone.mounts"):
-            resolve_rclone_materialization(source)
+        assert resolve_rclone_materialization(source) is None
+        run.assert_not_called()
+
+
+def test_os_mount_commands_are_never_used(tmp_path):
+    source = tmp_path / "slides.pptx"
+    source.touch()
+
+    with (
+        patch(
+            "maru_lang.graph.ingest.materialization.rclone.get_config",
+            return_value=_config(),
+        ),
+        patch("maru_lang.graph.ingest.materialization.rclone.shutil.which") as which,
+        patch("maru_lang.graph.ingest.materialization.rclone.subprocess.run") as run,
+    ):
+        assert _rclone_remote_path(source) is None
+        which.assert_not_called()
+        run.assert_not_called()
 
 
 def test_failed_rclone_download_has_useful_error_and_cleans_up(tmp_path):

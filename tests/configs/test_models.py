@@ -54,7 +54,7 @@ class TestLLMConfig:
 
 
 class TestMaruConfig:
-    def test_rclone_materialization_defaults_to_auto_detection(self):
+    def test_rclone_materialization_defaults_to_no_registered_mounts(self):
         config = MaruConfig.from_dict({})
         assert config.ingest_materialization.rclone.config_path is None
         assert config.ingest_materialization.rclone.mounts == []
