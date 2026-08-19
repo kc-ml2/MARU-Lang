@@ -35,7 +35,9 @@ def install_configs(
         else:
             template = _get_template_path("python", "main.py")
             if template:
-                main_py.write_text(template.read_text())
+                main_py.write_text(
+                    template.read_text(encoding="utf-8"), encoding="utf-8"
+                )
                 console.print("  Created main.py")
 
         # 3. Email message templates (inert ".example" copies — rename to
@@ -62,7 +64,7 @@ def _install_template(target: Path, template_name: str, force: bool) -> None:
 
     template = _get_template_path("yaml", template_name)
     if template:
-        target.write_text(template.read_text())
+        target.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
         console.print(f"  Created {target.name}")
 
 
