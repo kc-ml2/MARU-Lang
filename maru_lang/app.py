@@ -133,8 +133,12 @@ class MaruLangApp(FastAPI):
             scheme, _ = cfg.resolve_checkpoint_target()
             print(f"✓ Checkpointer initialized ({scheme})")
 
-            # 4.5 Mirror config LLMs into the DB (source of truth = config).
-            #     Enables FK integrity for User.assigned_llm / Conversation.llm_used.
+            # 4.5 Reconcile team source folders (also provisions teams that
+            #     predate team_storage) and mirror config LLMs into the DB.
+            from maru_lang.services.team import reconcile_team_storage
+            provisioned = await reconcile_team_storage()
+            if provisioned:
+                print(f"✓ Team source folders ready: {provisioned}")
             await sync_llms_from_config()
 
             # 5. Compile every registered graph once (app-scoped, shared across
@@ -187,6 +191,17 @@ class MaruLangApp(FastAPI):
                 self.state.arq = await create_pool(RedisSettings.from_dsn(cfg.redis_url))
                 print(f"✓ Ingest task queue enabled (ARQ @ {cfg.redis_url})")
 
+            # 6.5 Optional team-folder scanner. Keep the Task handle so shutdown
+            #     can cancel and await it cleanly.
+            self.state.team_sync_task = None
+            if cfg.team_storage.base_path and cfg.team_storage.scan_interval_seconds > 0:
+                from maru_lang.services.team_sync import run_team_sync_loop
+                self.state.team_sync_task = asyncio.create_task(run_team_sync_loop(self))
+                print(
+                    "✓ Team folder scanner enabled "
+                    f"(every {cfg.team_storage.scan_interval_seconds}s)"
+                )
+
             # 7. Observability (optional). Initialize Langfuse eagerly so key/
             #    install problems surface at startup, not on the first chat turn.
             from maru_lang.core.observability import get_langfuse_handler
@@ -201,6 +216,16 @@ class MaruLangApp(FastAPI):
         """Default shutdown routine."""
         # Clean up resources such as database connections
         print("🔄 Shutting down application...")
+
+        # Stop the periodic scanner before closing its queue/DB dependencies.
+        team_sync_task = getattr(self.state, "team_sync_task", None)
+        if team_sync_task is not None:
+            team_sync_task.cancel()
+            try:
+                await team_sync_task
+            except asyncio.CancelledError:
+                pass
+            print("✓ Team folder scanner stopped")
 
         # Close the ingest task queue pool, if it was created.
         arq = getattr(self.state, "arq", None)

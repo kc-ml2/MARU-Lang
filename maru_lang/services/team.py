@@ -18,6 +18,22 @@ from maru_lang.services.llm import assign_balanced_llm
 config = get_config()
 
 
+async def _provision_team(team: Team) -> None:
+    """Create the configured team-owned source folder without blocking the loop."""
+    from maru_lang.utils.file_storage import provision_team_storage
+    await asyncio.to_thread(provision_team_storage, team.id, team.name)
+
+
+async def reconcile_team_storage() -> int:
+    """Idempotently provision source folders for teams created before this feature."""
+    if not config.team_storage.base_path:
+        return 0
+    teams = await Team.all()
+    for team in teams:
+        await _provision_team(team)
+    return len(teams)
+
+
 class TeamDeletionPendingError(Exception):
     """The team has ingest jobs that must finish cancellation before deletion."""
 
@@ -182,7 +198,14 @@ async def create_team(
     team = await Team.create(
         name=name, description=description, manager=creator, is_private=True
     )
-    await TeamMember.create(user=creator, team=team, role="admin")
+    try:
+        await _provision_team(team)
+        await TeamMember.create(user=creator, team=team, role="admin")
+    except Exception:
+        # Filesystem provisioning is part of team creation. Do not leave a DB
+        # team that has no usable source space when it fails.
+        await team.delete()
+        raise
     return team
 
 
@@ -202,7 +225,7 @@ async def delete_team(team_id: int, requester: User) -> None:
     # Lazy imports keep ordinary team/list operations from loading the ingest
     # graph and VectorDB stack.
     from maru_lang.services.ingest import delete_document_by_id, delete_team_chunks
-    from maru_lang.utils.file_storage import remove_team_storage
+    from maru_lang.utils.file_storage import remove_team_storage, remove_team_source_storage
 
     documents = await Document.filter(group__team_id=team_id).all()
     for document in documents:
@@ -219,6 +242,8 @@ async def delete_team(team_id: int, requester: User) -> None:
 
     await asyncio.to_thread(delete_team_chunks, team_id)
     await asyncio.to_thread(remove_team_storage, team_id)
+    if config.team_storage.delete_on_team_delete:
+        await asyncio.to_thread(remove_team_source_storage, team_id, team.name)
     await team.delete()
 
 
@@ -355,6 +380,7 @@ async def get_or_create_team(
     """
     team = await Team.get_or_none(name=name)
     if team:
+        await _provision_team(team)
         return team, False
 
     team = await Team.create(
@@ -362,6 +388,11 @@ async def get_or_create_team(
         manager=manager,
         is_private=is_private,
     )
+    try:
+        await _provision_team(team)
+    except Exception:
+        await team.delete()
+        raise
     return team, True
 
 

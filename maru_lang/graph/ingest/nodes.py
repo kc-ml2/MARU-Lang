@@ -119,11 +119,25 @@ async def parse_document(state: IngestState) -> dict:
         }
 
     try:
-        # Read from storage_path (permanent) or file_path (original)
-        read_path = doc.get("storage_path") or doc["file_path"]
+        # Managed team documents point directly at their source-of-truth file;
+        # legacy/CLI documents continue to use storage_path or file_path.
+        read_path = doc.get("source_path") or doc.get("storage_path") or doc["file_path"]
         file_path = Path(read_path)
+        expected = doc.get("expected_source")
+        if expected:
+            before = file_path.stat()
+            if (before.st_size, before.st_mtime_ns) != (
+                expected["size"], expected["mtime_ns"]
+            ):
+                raise RuntimeError("원본 파일이 ingest 시작 전에 변경되었습니다")
 
         lc_docs, parser = await parse_file(file_path, doc["id"])
+        if expected:
+            after = file_path.stat()
+            if (after.st_size, after.st_mtime_ns) != (
+                expected["size"], expected["mtime_ns"]
+            ):
+                raise RuntimeError("원본 파일이 ingest 중 변경되었습니다")
         if not lc_docs or not any(d.page_content.strip() for d in lc_docs):
             await fail_processing(doc["id"], "Empty content")
             return {
@@ -215,6 +229,21 @@ def make_process_document_node(vdb, embeddings):
                         "chunk_number": idx,
                     },
                 })
+
+            # Recheck the direct source after the expensive embedding step and
+            # before writing any result to the Vector DB.
+            expected = doc.get("expected_source")
+            source_path = doc.get("source_path")
+            if expected and source_path:
+                source_stat = Path(source_path).stat()
+                if (source_stat.st_size, source_stat.st_mtime_ns) != (
+                    expected["size"], expected["mtime_ns"]
+                ):
+                    await fail_processing(doc["id"], "원본 파일이 ingest 중 변경되었습니다")
+                    return {
+                        "error": "원본 파일이 ingest 중 변경되었습니다",
+                        "messages": [f"{doc['name']}: SOURCE CHANGED"],
+                    }
 
             await asyncio.to_thread(
                 vdb.upsert_documents, documents=vdb_docs, embeddings=vectors

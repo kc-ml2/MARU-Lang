@@ -789,6 +789,44 @@ class TestParseDocument:
     @patch("maru_lang.graph.ingest.nodes.begin_processing", new_callable=AsyncMock)
     @patch("maru_lang.graph.ingest.nodes.Document")
     @patch("maru_lang.graph.ingest.nodes.parse_file")
+    async def test_rejects_direct_source_changed_during_parse(
+        self, mock_parse, mock_doc_model, mock_begin, mock_fail, tmp_path
+    ):
+        from maru_lang.graph.ingest.nodes import parse_document
+        from langchain_core.documents import Document as LCDoc
+
+        source = tmp_path / "doc.md"
+        source.write_text("before", encoding="utf-8")
+        before = source.stat()
+        mock_db_doc = MagicMock(metadata={})
+        mock_doc_model.get_or_none = AsyncMock(return_value=mock_db_doc)
+        mock_doc_model.filter.return_value.update = AsyncMock(return_value=1)
+        mock_begin.return_value = True
+
+        async def change_source(*args):
+            source.write_text("after-change", encoding="utf-8")
+            return [LCDoc(page_content="before")], "langchain"
+
+        mock_parse.side_effect = change_source
+        state = {
+            "document": {
+                "id": 1, "name": "doc", "file_path": "doc.md",
+                "source_path": str(source), "storage_path": None,
+                "expected_source": {"size": before.st_size, "mtime_ns": before.st_mtime_ns},
+                "group_id": 10, "metadata": {},
+            },
+            "needs_processing": True,
+            "team_id": 1,
+        }
+        result = await parse_document(state)
+        assert "ingest 중 변경" in result["error"]
+        mock_fail.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("maru_lang.graph.ingest.nodes.fail_processing", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.begin_processing", new_callable=AsyncMock)
+    @patch("maru_lang.graph.ingest.nodes.Document")
+    @patch("maru_lang.graph.ingest.nodes.parse_file")
     async def test_parse_handles_empty_content(
         self, mock_parse, mock_doc_model, mock_begin, mock_fail
     ):

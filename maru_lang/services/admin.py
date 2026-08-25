@@ -34,10 +34,19 @@ async def get_or_create_public_team() -> Team:
         Public Team 인스턴스
     """
     admin_user = await get_or_create_admin_user()
-    public_team, _ = await Team.get_or_create(
+    public_team, created = await Team.get_or_create(
         name=PUBLIC_TEAM_NAME,
         defaults={"manager": admin_user, "is_private": False},
     )
+    from maru_lang.services.team import _provision_team
+    if created:
+        try:
+            await _provision_team(public_team)
+        except Exception:
+            await public_team.delete()
+            raise
+    else:
+        await _provision_team(public_team)
     return public_team
 
 

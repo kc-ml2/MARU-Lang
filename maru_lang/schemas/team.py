@@ -58,3 +58,13 @@ class SetTeamGraphsRequest(BaseModel):
 class TeamGraphsResponse(BaseModel):
     id: int
     allowed_graphs: list[str]
+
+
+class TeamSyncResponse(BaseModel):
+    team_id: int
+    discovered: int
+    queued: int
+    unchanged: int
+    unstable: int
+    deleted: int
+    errors: list[str]
