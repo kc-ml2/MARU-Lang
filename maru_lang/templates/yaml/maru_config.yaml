@@ -46,7 +46,19 @@ auth:
 #   host: https://cloud.langfuse.com   # self-hosted: http://localhost:3000
 
 vector_db_url: chroma://data/chroma/maru
+# Legacy/CLI upload storage. Managed team-folder documents are read directly
+# from team_storage and do not create private snapshots.
 storage_dir: data/storage
+
+# --- Team-owned document space (optional) ---
+# Each team gets "<team-id>/" below base_path. Team names are display-only. This folder is the
+# source of truth; API uploads are atomically placed here and ingested directly.
+# Team deletion preserves source files by default.
+# team_storage:
+#   base_path: /srv/maru/teams
+#   delete_on_team_delete: false
+#   scan_interval_seconds: 10  # 0 disables automatic scan; POST /teams/{id}/sync still works
+#   stable_for_seconds: 3      # wait this long after last modification before ingest
 
 # --- Ingest source materialization (optional) ---
 # For safety, rclone mounts are never detected automatically. Explicitly map

@@ -127,6 +127,22 @@ class TestGetTeamDetail:
 class TestCreateTeam:
     """새 팀을 생성하는 API 테스트. 생성자는 자동으로 admin이 된다."""
 
+    async def test_create_team_provisions_configured_source_folder(
+        self, client: AsyncClient, user_alice: User, tmp_path, monkeypatch,
+    ):
+        from maru_lang.services import team as team_service
+        from maru_lang.utils import file_storage
+
+        monkeypatch.setattr(team_service.config.team_storage, "base_path", str(tmp_path))
+        resp = await client.post(
+            "/teams",
+            json={"name": "Source Team"},
+            headers=await auth_header(user_alice.id),
+        )
+        assert resp.status_code == 201
+        team_id = resp.json()["id"]
+        assert file_storage.get_team_source_dir(team_id, "Source Team").is_dir()
+
     async def test_create_team_success(
         self, client: AsyncClient, user_alice: User
     ):

@@ -12,7 +12,12 @@ from maru_lang.core.relation_db.models.documents import (
 from maru_lang.enums.documents import DocumentStatus, AuditAction
 from maru_lang.services.document import get_or_create_upload_group, mark_deleting
 from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
-from maru_lang.utils.file_storage import save_upload, remove_document_storage
+from maru_lang.utils.file_storage import (
+    save_upload,
+    save_team_source_upload,
+    get_team_source_dir,
+    remove_document_storage,
+)
 from maru_lang.graph.ingest.graph import get_ingest_graph
 from maru_lang.graph.ingest.state import build_ingest_input
 from maru_lang.core.vector_db import get_vector_db
@@ -65,10 +70,33 @@ async def upload_and_ingest(
     # (and its chunks) behind.
     existing = await Document.get_or_none(file_path=abs_path, group__team_id=team_id)
 
-    # Re-uploads overwrite the existing document's storage dir; new docs get a
-    # fresh ulid. (Old code always minted a new dir, leaking the previous file.)
+    # Team storage is the source of truth and is parsed directly. Deployments
+    # without team_storage retain the legacy private-storage behavior.
     doc_id = existing.id if existing else new_ulid()
-    storage_path = await save_upload(file_obj, filename, team_id, doc_id)
+    from maru_lang.configs import get_config
+    from maru_lang.core.relation_db.models.auth import Team
+    cfg = get_config()
+    if cfg.team_storage.base_path:
+        team = await Team.get(id=team_id)
+        source_path = await asyncio.to_thread(
+            save_team_source_upload,
+            file_obj,
+            filename,
+            team_id,
+            team.name,
+            folder_path,
+        )
+        storage_path = None
+        actual_size = source_path.stat().st_size
+        if actual_size != file_size:
+            logger.warning(
+                "Upload size mismatch for %s: client=%d stored=%d",
+                abs_path, file_size, actual_size,
+            )
+            file_size = actual_size
+            fingerprint = _upload_fingerprint(team_id, abs_path, file_size, mtime)
+    else:
+        storage_path = await save_upload(file_obj, filename, team_id, doc_id)
 
     if existing:
         existing.storage_path = storage_path
@@ -76,6 +104,8 @@ async def upload_and_ingest(
         existing.source_fingerprint = fingerprint  # latest ingested version mark
         existing.status = DocumentStatus.UPLOADING
         existing.error_message = None
+        if cfg.team_storage.base_path:
+            existing.metadata = {**(existing.metadata or {}), "source": "team_storage"}
         await existing.save()
 
         await _record_audit(
@@ -99,7 +129,10 @@ async def upload_and_ingest(
         file_size=file_size,
         source_fingerprint=fingerprint,
         status=DocumentStatus.UPLOADING,
-        metadata={"original_filename": filename},
+        metadata={
+            "original_filename": filename,
+            **({"source": "team_storage"} if cfg.team_storage.base_path else {}),
+        },
     )
 
     await _record_audit(
@@ -119,13 +152,28 @@ async def run_ingest_for_document(doc: Document, team_id: int) -> None:
     so the graph's sync_document step passes through and only parse + embedding
     run — the same compiled graph the CLI sync path uses.
     """
+    source_path = doc.storage_path or doc.file_path
+    expected_source = None
+    if (doc.metadata or {}).get("source") == "team_storage":
+        from maru_lang.core.relation_db.models.auth import Team
+        team = await Team.get(id=team_id)
+        team_dir = get_team_source_dir(team_id, team.name)
+        relative = Path(doc.file_path or "")
+        if team_dir is None or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("잘못된 팀 원본 경로입니다")
+        source_path = str(team_dir / relative)
+        stat = await asyncio.to_thread(Path(source_path).stat)
+        expected_source = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
     state = build_ingest_input(
         team_id,
         document={
             "id": doc.id,
             "name": doc.name,
             "file_path": doc.file_path,
+            "source_path": source_path,
             "storage_path": doc.storage_path,
+            "expected_source": expected_source,
             "group_id": doc.group_id,
             "metadata": doc.metadata,
         },

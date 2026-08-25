@@ -104,6 +104,22 @@ class IngestMaterializationConfig:
 
 
 @dataclass
+class TeamStorageConfig:
+    """Team-owned source folders.
+
+    ``base_path=None`` keeps the feature disabled for backwards compatibility.
+    Files below this root are the source of truth and are ingested directly.
+    ``storage_dir`` remains only for legacy/CLI upload flows.
+    """
+    base_path: Optional[str] = None
+    delete_on_team_delete: bool = False
+    # 0 disables the background scanner. Manual sync remains available.
+    scan_interval_seconds: float = 0.0
+    # Ignore files modified too recently (e.g. still being copied).
+    stable_for_seconds: float = 3.0
+
+
+@dataclass
 class LangfuseConfig:
     """Langfuse observability (LLM tracing) configuration.
 
@@ -145,6 +161,7 @@ class MaruConfig:
     langfuse: LangfuseConfig = field(default_factory=LangfuseConfig)
     vector_db_url: str = "chroma://data/chroma/maru"
     storage_dir: str = "data/storage"
+    team_storage: TeamStorageConfig = field(default_factory=TeamStorageConfig)
     ingest_materialization: IngestMaterializationConfig = field(
         default_factory=IngestMaterializationConfig
     )
@@ -277,6 +294,21 @@ class MaruConfig:
             password=smtp_data.get("password"),
         )
 
+        # Team-owned source folders
+        team_storage_data = data.get("team_storage", {}) or {}
+        team_storage = TeamStorageConfig(
+            base_path=team_storage_data.get("base_path") or None,
+            delete_on_team_delete=bool(
+                team_storage_data.get("delete_on_team_delete", False)
+            ),
+            scan_interval_seconds=float(
+                team_storage_data.get("scan_interval_seconds", 0.0)
+            ),
+            stable_for_seconds=float(
+                team_storage_data.get("stable_for_seconds", 3.0)
+            ),
+        )
+
         # Ingest source materialization
         materialization_data = data.get("ingest_materialization", {}) or {}
         rclone_data = materialization_data.get("rclone", {}) or {}
@@ -314,6 +346,7 @@ class MaruConfig:
             langfuse=langfuse,
             vector_db_url=data.get("vector_db_url", cls.vector_db_url),
             storage_dir=data.get("storage_dir", cls.storage_dir),
+            team_storage=team_storage,
             ingest_materialization=ingest_materialization,
             checkpoint_db_url=data.get("checkpoint_db_url"),
             llms=llms,

@@ -5,6 +5,69 @@ import pytest
 from maru_lang.utils import file_storage
 
 
+def test_team_source_provision_and_atomic_upload(tmp_path, monkeypatch):
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        file_storage,
+        "get_config",
+        lambda: SimpleNamespace(team_storage=SimpleNamespace(base_path=str(tmp_path))),
+    )
+    team_dir = file_storage.provision_team_storage(7, "영업 / Sales")
+    assert team_dir == tmp_path / "7"
+
+    stored = file_storage.save_team_source_upload(
+        BytesIO(b"hello"), "report.txt", 7, "영업 / Sales", "quarterly"
+    )
+    assert stored.read_bytes() == b"hello"
+    assert not list(stored.parent.glob("*.part"))
+
+
+def test_team_source_folder_is_stable_when_team_name_changes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        file_storage,
+        "get_config",
+        lambda: SimpleNamespace(team_storage=SimpleNamespace(base_path=str(tmp_path))),
+    )
+    assert file_storage.provision_team_storage(7, "Old Name") == tmp_path / "7"
+    assert file_storage.provision_team_storage(7, "New Name") == tmp_path / "7"
+
+
+def test_legacy_named_team_folder_is_migrated(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        file_storage,
+        "get_config",
+        lambda: SimpleNamespace(team_storage=SimpleNamespace(base_path=str(tmp_path))),
+    )
+    legacy = tmp_path / "7-Old-Name"
+    legacy.mkdir()
+    (legacy / "document.md").write_text("kept", encoding="utf-8")
+    migrated = file_storage.provision_team_storage(7, "New Name")
+    assert migrated == tmp_path / "7"
+    assert (migrated / "document.md").read_text(encoding="utf-8") == "kept"
+    assert not legacy.exists()
+
+
+def test_team_source_upload_rejects_path_traversal(tmp_path, monkeypatch):
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        file_storage,
+        "get_config",
+        lambda: SimpleNamespace(team_storage=SimpleNamespace(base_path=str(tmp_path))),
+    )
+    with pytest.raises(ValueError, match="잘못된 팀 파일 경로"):
+        file_storage.save_team_source_upload(
+            BytesIO(b"bad"), "escape.txt", 7, "sales", "../outside"
+        )
+
+
 def test_remove_team_storage_removes_only_team_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(file_storage, "get_storage_dir", lambda: tmp_path)
     team_dir = tmp_path / "7"

@@ -54,6 +54,27 @@ class TestLLMConfig:
 
 
 class TestMaruConfig:
+    def test_team_storage_defaults_disabled_and_preserves_on_delete(self):
+        config = MaruConfig.from_dict({})
+        assert config.team_storage.base_path is None
+        assert config.team_storage.delete_on_team_delete is False
+        assert config.team_storage.scan_interval_seconds == 0.0
+        assert config.team_storage.stable_for_seconds == 3.0
+
+    def test_team_storage_parses(self):
+        config = MaruConfig.from_dict({
+            "team_storage": {
+                "base_path": "/srv/maru/teams",
+                "delete_on_team_delete": True,
+                "scan_interval_seconds": 10,
+                "stable_for_seconds": 5,
+            }
+        })
+        assert config.team_storage.base_path == "/srv/maru/teams"
+        assert config.team_storage.delete_on_team_delete is True
+        assert config.team_storage.scan_interval_seconds == 10.0
+        assert config.team_storage.stable_for_seconds == 5.0
+
     def test_rclone_materialization_defaults_to_no_registered_mounts(self):
         config = MaruConfig.from_dict({})
         assert config.ingest_materialization.rclone.config_path is None
