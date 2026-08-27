@@ -51,8 +51,9 @@ vector_db_url: chroma://data/chroma/maru
 storage_dir: data/storage
 
 # --- Team-owned document space (optional) ---
-# Each team gets "<team-id>/" below base_path. Team names are display-only. This folder is the
-# source of truth; API uploads are atomically placed here and ingested directly.
+# Each independent storage gets "<storage-id>/" below base_path. A storage is
+# owned by one team and may be connected read-only to other teams. API uploads
+# are allowed only through the owner team and are atomically placed here.
 # Team deletion preserves source files by default.
 # team_storage:
 #   base_path: /srv/maru/teams

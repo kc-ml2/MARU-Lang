@@ -3,7 +3,7 @@ import time
 from types import SimpleNamespace
 
 from maru_lang.core.relation_db.models.auth import Team, User
-from maru_lang.core.relation_db.models.documents import Document
+from maru_lang.core.relation_db.models.documents import Document, SourceStorage, TeamStorageLink
 from maru_lang.enums.documents import DocumentStatus
 from maru_lang.services import team_sync
 from maru_lang.utils import file_storage
@@ -27,7 +27,9 @@ async def _team(tmp_path, monkeypatch):
     _configure(monkeypatch, tmp_path)
     owner = await User.create(name="owner", email="owner@sync.test")
     team = await Team.create(name="Sync Team", manager=owner)
-    source_dir = file_storage.provision_team_storage(team.id, team.name)
+    storage = await SourceStorage.create(id=f"storage-{team.id}", name="Sync", owner_team=team)
+    await TeamStorageLink.create(team=team, storage=storage)
+    source_dir = file_storage.provision_source_storage(storage.id)
     return team, source_dir
 
 
@@ -85,7 +87,9 @@ async def test_sync_defers_recent_and_inflight_changes(tmp_path, monkeypatch):
     _configure(monkeypatch, tmp_path, stable=30)
     owner = await User.create(name="owner", email="recent@sync.test")
     team = await Team.create(name="Recent", manager=owner)
-    source_dir = file_storage.provision_team_storage(team.id, team.name)
+    storage = await SourceStorage.create(id=f"storage-{team.id}", name="Recent", owner_team=team)
+    await TeamStorageLink.create(team=team, storage=storage)
+    source_dir = file_storage.provision_source_storage(storage.id)
     source = source_dir / "recent.md"
     source.write_text("new", encoding="utf-8")
 

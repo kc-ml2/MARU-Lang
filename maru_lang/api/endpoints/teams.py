@@ -79,23 +79,15 @@ async def create_new_team(request: CreateTeamRequest, user=Depends(get_user)):
 @router.post("/{team_id}/sync", response_model=TeamSyncResponse)
 async def sync_team_source_folder(team_id: int, request: Request, user=Depends(get_user)):
     """Scan a team's source folder now (admin only) and enqueue changed files."""
-    from maru_lang.services.team_sync import sync_team_folder
+    from maru_lang.services.team_sync import enqueue_team_document, sync_team_folder
     try:
         await _check_admin(team_id, user)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
     async def enqueue(document_id: str, scoped_team_id: int) -> None:
-        arq = getattr(request.app.state, "arq", None)
-        if arq is not None:
-            from maru_lang.constants import INGEST_TASK_NAME
-            await arq.enqueue_job(INGEST_TASK_NAME, document_id, scoped_team_id)
-            return
         # Queue-free development mode is synchronous and easy to debug.
-        from maru_lang.core.relation_db.models.documents import Document
-        from maru_lang.services.ingest import run_ingest_for_document
-        doc = await Document.get(id=document_id)
-        await run_ingest_for_document(doc, scoped_team_id)
+        await enqueue_team_document(request.app, document_id, scoped_team_id)
 
     try:
         result = await sync_team_folder(team_id, enqueue=enqueue)

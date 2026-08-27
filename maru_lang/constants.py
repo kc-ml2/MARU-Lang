@@ -30,6 +30,11 @@ LOCALHOST_HOSTS = {"127.0.0.1", "::1", "localhost"}
 # (api/endpoints/ingest.py) and the worker registration (worker.py) must agree.
 INGEST_TASK_NAME = "ingest_document_task"
 
+# Relational Document.metadata markers for files managed by team_storage.
+DOCUMENT_SOURCE_METADATA_KEY = "source"
+TEAM_STORAGE_SOURCE = "team_storage"
+ORIGINAL_FILENAME_METADATA_KEY = "original_filename"
+
 # --- Admin ---
 
 ADMIN_EMAIL = "admin@maru.local"

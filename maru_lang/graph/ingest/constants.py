@@ -20,6 +20,11 @@ RCLONE_PLACEHOLDER_EXTENSIONS = {
 PARSER_KORDOC = "kordoc"
 PARSER_LANGCHAIN = "langchain"
 
+# Direct-source consistency error surfaced when a managed team file changes
+# after a scan has scheduled its ingest.
+SOURCE_CHANGED_ERROR = "원본 파일이 ingest 중 변경되었습니다"
+SOURCE_CHANGED_BEFORE_INGEST_ERROR = "원본 파일이 ingest 시작 전에 변경되었습니다"
+
 # Formats the KorDoc MCP server (`parse_document` tool) can parse to Markdown.
 KORDOC_EXTENSIONS = {
     ".hwp", ".hwpx", ".hwpml", ".pdf", ".xls", ".xlsx", ".docx",

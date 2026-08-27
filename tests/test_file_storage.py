@@ -14,17 +14,17 @@ def test_team_source_provision_and_atomic_upload(tmp_path, monkeypatch):
         "get_config",
         lambda: SimpleNamespace(team_storage=SimpleNamespace(base_path=str(tmp_path))),
     )
-    team_dir = file_storage.provision_team_storage(7, "영업 / Sales")
-    assert team_dir == tmp_path / "7"
+    team_dir = file_storage.provision_source_storage("storage-7", legacy_team_id=7)
+    assert team_dir == tmp_path / "storage-7"
 
     stored = file_storage.save_team_source_upload(
-        BytesIO(b"hello"), "report.txt", 7, "영업 / Sales", "quarterly"
+        BytesIO(b"hello"), "report.txt", "storage-7", "quarterly"
     )
     assert stored.read_bytes() == b"hello"
     assert not list(stored.parent.glob("*.part"))
 
 
-def test_team_source_folder_is_stable_when_team_name_changes(tmp_path, monkeypatch):
+def test_team_source_folder_is_stable_across_reconciliation(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
@@ -32,8 +32,8 @@ def test_team_source_folder_is_stable_when_team_name_changes(tmp_path, monkeypat
         "get_config",
         lambda: SimpleNamespace(team_storage=SimpleNamespace(base_path=str(tmp_path))),
     )
-    assert file_storage.provision_team_storage(7, "Old Name") == tmp_path / "7"
-    assert file_storage.provision_team_storage(7, "New Name") == tmp_path / "7"
+    assert file_storage.provision_source_storage("storage-7", legacy_team_id=7) == tmp_path / "storage-7"
+    assert file_storage.provision_source_storage("storage-7", legacy_team_id=7) == tmp_path / "storage-7"
 
 
 def test_legacy_named_team_folder_is_migrated(tmp_path, monkeypatch):
@@ -47,8 +47,8 @@ def test_legacy_named_team_folder_is_migrated(tmp_path, monkeypatch):
     legacy = tmp_path / "7-Old-Name"
     legacy.mkdir()
     (legacy / "document.md").write_text("kept", encoding="utf-8")
-    migrated = file_storage.provision_team_storage(7, "New Name")
-    assert migrated == tmp_path / "7"
+    migrated = file_storage.provision_source_storage("storage-7", legacy_team_id=7)
+    assert migrated == tmp_path / "storage-7"
     assert (migrated / "document.md").read_text(encoding="utf-8") == "kept"
     assert not legacy.exists()
 
@@ -64,7 +64,7 @@ def test_team_source_upload_rejects_path_traversal(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="잘못된 팀 파일 경로"):
         file_storage.save_team_source_upload(
-            BytesIO(b"bad"), "escape.txt", 7, "sales", "../outside"
+            BytesIO(b"bad"), "escape.txt", "storage-7", "../outside"
         )
 
 

@@ -4,6 +4,10 @@ from pathlib import Path
 
 from langchain_core.documents import Document as LCDocument
 
+from maru_lang.graph.ingest.constants import (
+    SOURCE_CHANGED_BEFORE_INGEST_ERROR,
+    SOURCE_CHANGED_ERROR,
+)
 from maru_lang.graph.ingest.state import IngestState
 from maru_lang.graph.ingest.parser import parse_file
 from maru_lang.graph.ingest.splitter import split_documents
@@ -129,7 +133,7 @@ async def parse_document(state: IngestState) -> dict:
             if (before.st_size, before.st_mtime_ns) != (
                 expected["size"], expected["mtime_ns"]
             ):
-                raise RuntimeError("원본 파일이 ingest 시작 전에 변경되었습니다")
+                raise RuntimeError(SOURCE_CHANGED_BEFORE_INGEST_ERROR)
 
         lc_docs, parser = await parse_file(file_path, doc["id"])
         if expected:
@@ -137,7 +141,7 @@ async def parse_document(state: IngestState) -> dict:
             if (after.st_size, after.st_mtime_ns) != (
                 expected["size"], expected["mtime_ns"]
             ):
-                raise RuntimeError("원본 파일이 ingest 중 변경되었습니다")
+                raise RuntimeError(SOURCE_CHANGED_ERROR)
         if not lc_docs or not any(d.page_content.strip() for d in lc_docs):
             await fail_processing(doc["id"], "Empty content")
             return {
@@ -239,9 +243,9 @@ def make_process_document_node(vdb, embeddings):
                 if (source_stat.st_size, source_stat.st_mtime_ns) != (
                     expected["size"], expected["mtime_ns"]
                 ):
-                    await fail_processing(doc["id"], "원본 파일이 ingest 중 변경되었습니다")
+                    await fail_processing(doc["id"], SOURCE_CHANGED_ERROR)
                     return {
-                        "error": "원본 파일이 ingest 중 변경되었습니다",
+                        "error": SOURCE_CHANGED_ERROR,
                         "messages": [f"{doc['name']}: SOURCE CHANGED"],
                     }
 

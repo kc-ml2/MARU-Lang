@@ -1,8 +1,26 @@
 """Ingest graph state schema."""
-from typing import Annotated, Optional, TypedDict
+from typing import Annotated, Any, Optional, TypedDict
 import operator
 
 from maru_lang.schemas.ingest import FileInfo
+
+
+class SourceRevision(TypedDict):
+    """Filesystem revision expected throughout a direct-source ingest."""
+    size: int
+    mtime_ns: int
+
+
+class IngestDocument(TypedDict, total=False):
+    """Document payload passed between ingest graph nodes."""
+    id: str
+    name: str
+    file_path: str | None
+    storage_path: str | None
+    source_path: str
+    expected_source: SourceRevision
+    group_id: int
+    metadata: dict[str, Any] | None
 
 
 class IngestState(TypedDict):
@@ -26,7 +44,7 @@ class IngestState(TypedDict):
     re_embed: bool
 
     # Progress
-    document: Optional[dict]
+    document: Optional[IngestDocument]
     needs_processing: bool
     parsed_docs: Optional[list[dict]]
     parser: Optional[str]
@@ -42,7 +60,7 @@ def build_ingest_input(
     *,
     file: Optional[FileInfo] = None,
     re_embed: bool = False,
-    document: Optional[dict] = None,
+    document: Optional[IngestDocument] = None,
     needs_processing: bool = False,
 ) -> IngestState:
     """Build the graph's initial state — the single source of its key set.

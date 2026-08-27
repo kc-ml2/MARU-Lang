@@ -4,6 +4,42 @@ from tortoise import fields
 from maru_lang.enums.documents import DocumentStatus, AuditAction
 
 
+class SourceStorage(Model):
+    """A physical source folder that can be connected to multiple teams."""
+    id = fields.CharField(pk=True, max_length=64)
+    name = fields.CharField(max_length=255)
+    owner_team = fields.ForeignKeyField(
+        "models.Team",
+        related_name="owned_source_storages",
+        on_delete=fields.RESTRICT,
+        index=True,
+    )
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:  # type: ignore
+        table = "source_storage"
+
+
+class TeamStorageLink(Model):
+    """Grant a team read access to a source storage.
+
+    Only ``SourceStorage.owner_team`` may mutate files; every linked team gets
+    its own Document/chunk projection for existing team-scoped retrieval.
+    """
+    id = fields.IntField(pk=True)
+    team = fields.ForeignKeyField(
+        "models.Team", related_name="source_storage_links", on_delete=fields.CASCADE
+    )
+    storage = fields.ForeignKeyField(
+        "models.SourceStorage", related_name="team_links", on_delete=fields.CASCADE
+    )
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:  # type: ignore
+        table = "team_storage_link"
+        unique_together = (("team", "storage"),)
+
+
 class Document(Model):
     id = fields.CharField(pk=True, max_length=64)
     name = fields.CharField(max_length=255, index=True)
@@ -14,6 +50,13 @@ class Document(Model):
         index=True,
     )
 
+    storage = fields.ForeignKeyField(
+        "models.SourceStorage",
+        related_name="documents",
+        null=True,
+        on_delete=fields.CASCADE,
+        index=True,
+    )
     file_path = fields.CharField(max_length=500, null=True)
     storage_path = fields.CharField(max_length=500, null=True)  # permanent local copy
     file_size = fields.BigIntField(null=True)

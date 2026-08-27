@@ -11,6 +11,15 @@ class DocumentStatus(IntEnum):
     DELETING   = 6   # Delete requested while in-flight; worker/sweep finalizes
 
 
+# Jobs in these states still own or may mutate ingest resources. Folder sync
+# defers revisions and absence deletion until the current job becomes terminal.
+IN_FLIGHT_DOCUMENT_STATUSES = frozenset({
+    DocumentStatus.UPLOADING,
+    DocumentStatus.PROCESSING,
+    DocumentStatus.DELETING,
+})
+
+
 class AuditAction(IntEnum):
     UPLOAD         = 1
     RE_UPLOAD      = 2

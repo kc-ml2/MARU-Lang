@@ -21,6 +21,7 @@ from maru_lang.api.endpoints.config import router as config_router
 from maru_lang.api.endpoints.ingest import router as ingest_router
 from maru_lang.api.endpoints.internal import router as internal_router
 from maru_lang.api.endpoints.teams import router as teams_router
+from maru_lang.api.endpoints.storages import router as storages_router
 from maru_lang.api.endpoints.session import router as session_router
 from maru_lang.api.endpoints.memory import router as memory_router
 
@@ -132,12 +133,12 @@ class MaruLangApp(FastAPI):
             scheme, _ = cfg.resolve_checkpoint_target()
             print(f"✓ Checkpointer initialized ({scheme})")
 
-            # 4.5 Reconcile team source folders (also provisions teams that
-            #     predate team_storage) and mirror config LLMs into the DB.
+            # 4.5 Reconcile each team's default source storage (including teams
+            #     that predate this feature) and mirror config LLMs into the DB.
             from maru_lang.services.team import reconcile_team_storage
             provisioned = await reconcile_team_storage()
             if provisioned:
-                print(f"✓ Team source folders ready: {provisioned}")
+                print(f"✓ Team source storages ready: {provisioned}")
             await sync_llms_from_config()
 
             # 5. Use the first enabled LLM as the process-wide chat model and
@@ -180,7 +181,7 @@ class MaruLangApp(FastAPI):
                 from maru_lang.services.team_sync import run_team_sync_loop
                 self.state.team_sync_task = asyncio.create_task(run_team_sync_loop(self))
                 print(
-                    "✓ Team folder scanner enabled "
+                    "✓ Source storage scanner enabled "
                     f"(every {cfg.team_storage.scan_interval_seconds}s)"
                 )
 
@@ -207,7 +208,7 @@ class MaruLangApp(FastAPI):
                 await team_sync_task
             except asyncio.CancelledError:
                 pass
-            print("✓ Team folder scanner stopped")
+            print("✓ Source storage scanner stopped")
 
         # Close the ingest task queue pool, if it was created.
         arq = getattr(self.state, "arq", None)
@@ -273,6 +274,7 @@ class MaruLangApp(FastAPI):
             self.include_router(ingest_router)
             self.include_router(internal_router)
             self.include_router(teams_router)
+            self.include_router(storages_router)
             self.include_router(session_router)
             self.include_router(memory_router)
 
