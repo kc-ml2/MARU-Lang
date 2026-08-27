@@ -39,7 +39,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.types import Command
 
 from maru_lang.configs import get_config
-from maru_lang.core.llm import get_model_with_fallbacks
+from maru_lang.core.llm import get_model
 from maru_lang.graph.rag.state import RagState, build_input
 from maru_lang.graph.rag.retriever import build_retriever
 from maru_lang.graph.rag.reranker import build_compressor
@@ -95,7 +95,7 @@ def create_rag_graph(
         RuntimeError: If no LLM model is available.
     """
     if model is None:
-        model = get_model_with_fallbacks()
+        model = get_model()
         if model is None:
             raise RuntimeError("No LLM model available. Check llms config.")
 

@@ -30,7 +30,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.types import Command
 
 from maru_lang.configs import get_config
-from maru_lang.core.llm import get_model_with_fallbacks
+from maru_lang.core.llm import get_model
 from maru_lang.graph.doc.state import DocState, build_doc_input
 from maru_lang.graph.doc.nodes import (
     entry_router,
@@ -73,7 +73,7 @@ def create_doc_graph(model: BaseChatModel | None = None, checkpointer=None):
     pauses at `await_edit` (interrupt) between edits; resume with an edit command.
     """
     if model is None:
-        model = get_model_with_fallbacks()
+        model = get_model()
         if model is None:
             raise RuntimeError("No LLM model available. Check llms config.")
 

@@ -1,6 +1,5 @@
 """LLM management - client, manager, and convenience accessors."""
 import threading
-from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
 
@@ -12,7 +11,7 @@ __all__ = [
     "LLMClient",
     "LLMManager",
     "merge_system_messages",
-    "get_model_with_fallbacks",
+    "get_model",
     "get_llm_manager",
 ]
 
@@ -31,9 +30,9 @@ def _get_llm_manager() -> LLMManager:
     return _llm_manager
 
 
-def get_model_with_fallbacks(primary_name: Optional[str] = None) -> Optional[BaseChatModel]:
-    """Return a ChatModel with fallback chain."""
-    return _get_llm_manager().get_model_with_fallbacks(primary_name)
+def get_model() -> BaseChatModel | None:
+    """Return the process-wide model (the first enabled LLM)."""
+    return _get_llm_manager().get_model()
 
 
 def get_llm_manager() -> LLMManager:

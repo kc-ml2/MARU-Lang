@@ -70,7 +70,7 @@ def _build_stack(cfg, tmp_path):
 
     manager = LLMManager(cfg.llms)
     enabled = [llm for llm in cfg.llms if llm.enabled]
-    assert len(manager.clients) == len(enabled)
+    assert manager.get_client() is not None
     llm = manager.get_model()
 
     embeddings = get_embeddings(

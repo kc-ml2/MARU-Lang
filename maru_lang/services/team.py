@@ -13,7 +13,6 @@ from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
 from maru_lang.dependencies.email import EmailService
 from maru_lang.enums.auth import UserRoleCode
 from maru_lang.enums.documents import DocumentStatus
-from maru_lang.services.llm import assign_balanced_llm
 
 config = get_config()
 
@@ -281,7 +280,6 @@ async def invite_member(
             name=email.split("@")[0],
             role=anonymous_role,
         )
-        await assign_balanced_llm(target_user)
     # 기존 유저는 멤버십만 추가한다 (이름은 절대 건드리지 않음).
 
     # 유저 롤이 anonymous면 아직 미가입 상태 → pending
