@@ -23,7 +23,6 @@ from maru_lang.api.endpoints.internal import router as internal_router
 from maru_lang.api.endpoints.teams import router as teams_router
 from maru_lang.api.endpoints.session import router as session_router
 from maru_lang.api.endpoints.memory import router as memory_router
-from maru_lang.api.endpoints.llm import router as llm_router
 
 
 class MaruLangApp(FastAPI):
@@ -141,43 +140,26 @@ class MaruLangApp(FastAPI):
                 print(f"✓ Team source folders ready: {provisioned}")
             await sync_llms_from_config()
 
-            # 5. Compile every registered graph once (app-scoped, shared across
-            #    connections; state lives in the checkpointer keyed by thread_id).
-            #    Two maps are built:
-            #      - graphs: a default/fallback map (gid -> graph) using the config
-            #        fallback chain, for users with no/disabled assignment.
-            #      - graphs_by_llm: one graph per enabled LLM (llm_name -> {gid -> graph}),
-            #        so each user runs every node on their assigned LLM.
-            #    The graph_router picks the gid per request. Empty if no LLM.
+            # 5. Use the first enabled LLM as the process-wide chat model and
+            #    compile each registered graph once. State lives in the shared
+            #    checkpointer and is isolated by thread_id.
             self.state.graphs = {}
-            self.state.graphs_by_llm = {}
-            self.state.models_by_llm = {}    # llm_name -> BaseChatModel (for L1 routing)
-            self.state.default_llm_name = None
             self.state.router_model = None
+            self.state.llm_name = None
             try:
-                clients = get_llm_manager().clients  # enabled LLM clients (name + model)
-                if not clients:
+                client = get_llm_manager().get_client()
+                if client is None:
                     raise RuntimeError("No LLM model available. Check llms config.")
 
-                # Every graph/model is a single LLM with NO fallback chain: a turn
-                # (L1 routing + all graph nodes) runs on exactly one LLM, so
-                # Conversation.llm_used is an accurate record of what actually ran.
-                for client in clients:
-                    self.state.graphs_by_llm[client.config.name] = {
-                        gid: spec.factory(model=client.model, checkpointer=self.state.checkpointer)
-                        for gid, spec in GRAPH_REGISTRY.items()
-                    }
-                    self.state.models_by_llm[client.config.name] = client.model
-
-                # Default (used for unassigned/disabled): the first enabled LLM.
-                # Reuse its already-compiled per-LLM graphs/model (no re-compile).
-                default_client = clients[0]
-                self.state.default_llm_name = default_client.config.name
-                self.state.graphs = self.state.graphs_by_llm[default_client.config.name]
-                self.state.router_model = default_client.model
+                self.state.graphs = {
+                    gid: spec.factory(model=client.model, checkpointer=self.state.checkpointer)
+                    for gid, spec in GRAPH_REGISTRY.items()
+                }
+                self.state.router_model = client.model
+                self.state.llm_name = client.config.name
 
                 print(f"✓ Graphs compiled: {', '.join(self.state.graphs) or '(none)'} "
-                      f"× {len(self.state.graphs_by_llm)} LLM(s)")
+                      f"(LLM: {client.config.name})")
             except RuntimeError as e:
                 logger.warning(f"Graphs not compiled — chat disabled: {e}")
 
@@ -293,7 +275,6 @@ class MaruLangApp(FastAPI):
             self.include_router(teams_router)
             self.include_router(session_router)
             self.include_router(memory_router)
-            self.include_router(llm_router)
 
         # Run custom router hooks
         for hook in self._router_hooks:

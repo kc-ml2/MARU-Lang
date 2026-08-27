@@ -292,6 +292,6 @@ class TestCreateRagGraphAutoModel:
         from unittest.mock import patch
         from maru_lang.graph.rag.graph import create_rag_graph
 
-        with patch("maru_lang.graph.rag.graph.get_model_with_fallbacks", return_value=None):
+        with patch("maru_lang.graph.rag.graph.get_model", return_value=None):
             with pytest.raises(RuntimeError, match="No LLM model available"):
                 create_rag_graph()
