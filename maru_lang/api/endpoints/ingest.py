@@ -49,6 +49,7 @@ async def upload_file(
     file: UploadFile = File(...),
     team_id: int = Form(...),
     folder_path: str = Form(""),
+    storage_id: str | None = Form(None),
     mtime: float = Form(..., description="Original file modification time (unix timestamp)"),
     user: User = Depends(get_user_with_role(UserRoleCode.EDITOR)),
 ):
@@ -80,6 +81,7 @@ async def upload_file(
         folder_path=folder_path,
         mtime=mtime,
         user_id=user.id,
+        storage_id=storage_id,
     )
 
     arq = getattr(request.app.state, "arq", None)

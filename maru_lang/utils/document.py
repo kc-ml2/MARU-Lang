@@ -4,6 +4,12 @@ import time
 import random
 import uuid
 
+from maru_lang.constants import (
+    DOCUMENT_SOURCE_METADATA_KEY,
+    ORIGINAL_FILENAME_METADATA_KEY,
+    TEAM_STORAGE_SOURCE,
+)
+
 
 def new_ulid() -> str:
     """
@@ -66,6 +72,35 @@ def make_source_fingerprint_for_file(file_path: str, size: int, mtime_ns: int) -
     """
     raw = f"{file_path.lower()}|{size}|{mtime_ns}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]  # 128bit
+
+
+def make_storage_source_fingerprint(
+    team_id: int,
+    storage_id: str,
+    relative_path: str,
+    size: int,
+    mtime_ns: int,
+) -> str:
+    """Fingerprint one team's projection of a storage source revision."""
+    return make_source_fingerprint_for_file(
+        f"{team_id}:{storage_id}:{relative_path}", size, mtime_ns
+    )
+
+
+def team_storage_metadata(
+    filename: str, existing: dict | None = None
+) -> dict:
+    """Return Document metadata marking a team-storage-owned source."""
+    return {
+        **(existing or {}),
+        ORIGINAL_FILENAME_METADATA_KEY: filename,
+        DOCUMENT_SOURCE_METADATA_KEY: TEAM_STORAGE_SOURCE,
+    }
+
+
+def is_team_storage_metadata(metadata: dict | None) -> bool:
+    return (metadata or {}).get(DOCUMENT_SOURCE_METADATA_KEY) == TEAM_STORAGE_SOURCE
+
 
 def make_chunk_uid(document_id: str, number: int, content: str) -> str:
     raw = f"{document_id}|{number}|{canonicalize_text(content)}"

@@ -4,6 +4,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from maru_lang.configs import get_config
+from maru_lang.constants import ORIGINAL_FILENAME_METADATA_KEY
 from maru_lang.core.relation_db.models.documents import (
     Document,
     DocumentAuditLog,
@@ -11,30 +13,40 @@ from maru_lang.core.relation_db.models.documents import (
 )
 from maru_lang.enums.documents import DocumentStatus, AuditAction
 from maru_lang.services.document import get_or_create_upload_group, mark_deleting
-from maru_lang.utils.document import new_ulid, make_source_fingerprint_for_file
+from maru_lang.utils.document import (
+    is_team_storage_metadata,
+    make_source_fingerprint_for_file,
+    make_storage_source_fingerprint,
+    new_ulid,
+    team_storage_metadata,
+)
 from maru_lang.utils.file_storage import (
     save_upload,
     save_team_source_upload,
-    get_team_source_dir,
+    resolve_source_storage_path,
     remove_document_storage,
 )
 from maru_lang.graph.ingest.graph import get_ingest_graph
-from maru_lang.graph.ingest.state import build_ingest_input
+from maru_lang.graph.ingest.state import SourceRevision, build_ingest_input
 from maru_lang.core.vector_db import get_vector_db
 
 logger = logging.getLogger(__name__)
 
 
-def _upload_fingerprint(team_id: int, path: str, size: int, mtime: float) -> str:
+def _upload_fingerprint(
+    team_id: int,
+    path: str,
+    size: int,
+    mtime: float,
+    storage_id: str = "legacy",
+) -> str:
     """Change-detector fingerprint for API uploads (used by upload + check).
 
     Scoped by team so identical files uploaded by different teams never collide
     on the unique source_fingerprint column (or match each other in check).
     """
-    return make_source_fingerprint_for_file(
-        file_path=f"{team_id}:{path}",
-        size=size,
-        mtime_ns=int(mtime * 1e9),
+    return make_storage_source_fingerprint(
+        team_id, storage_id, path, size, int(mtime * 1e9)
     )
 
 
@@ -46,6 +58,7 @@ async def upload_and_ingest(
     folder_path: str = "",
     mtime: float = 0.0,
     user_id: Optional[int] = None,
+    storage_id: str | None = None,
 ) -> tuple[Document, bool]:
     """Save uploaded file, create or update DB record.
 
@@ -62,28 +75,34 @@ async def upload_and_ingest(
         Tuple of (Document, is_reupload).
     """
     abs_path = str(Path(folder_path) / filename) if folder_path else filename
-    fingerprint = _upload_fingerprint(team_id, abs_path, file_size, mtime)
+    cfg = get_config()
+    storage = None
+    if cfg.team_storage.base_path:
+        from maru_lang.services.storage import get_writable_storage
 
-    # Identity = (team, path); the fingerprint is only a change detector.
+        storage = await get_writable_storage(team_id, storage_id)
+        storage_id = storage.id
+    fingerprint = _upload_fingerprint(
+        team_id, abs_path, file_size, mtime, storage_id or "legacy"
+    )
+
+    # Identity = (team, storage, path); fingerprint is only a change detector.
     # It embeds size/mtime, so a MODIFIED file gets a new fingerprint — matching
     # on it (the old behavior) created a sibling document and left the stale one
     # (and its chunks) behind.
-    existing = await Document.get_or_none(file_path=abs_path, group__team_id=team_id)
+    existing = await Document.get_or_none(
+        file_path=abs_path, storage_id=storage_id, group__team_id=team_id
+    )
 
     # Team storage is the source of truth and is parsed directly. Deployments
     # without team_storage retain the legacy private-storage behavior.
     doc_id = existing.id if existing else new_ulid()
-    from maru_lang.configs import get_config
-    from maru_lang.core.relation_db.models.auth import Team
-    cfg = get_config()
     if cfg.team_storage.base_path:
-        team = await Team.get(id=team_id)
         source_path = await asyncio.to_thread(
             save_team_source_upload,
             file_obj,
             filename,
-            team_id,
-            team.name,
+            storage_id,
             folder_path,
         )
         storage_path = None
@@ -94,7 +113,9 @@ async def upload_and_ingest(
                 abs_path, file_size, actual_size,
             )
             file_size = actual_size
-            fingerprint = _upload_fingerprint(team_id, abs_path, file_size, mtime)
+            fingerprint = _upload_fingerprint(
+                team_id, abs_path, file_size, mtime, storage_id
+            )
     else:
         storage_path = await save_upload(file_obj, filename, team_id, doc_id)
 
@@ -105,7 +126,9 @@ async def upload_and_ingest(
         existing.status = DocumentStatus.UPLOADING
         existing.error_message = None
         if cfg.team_storage.base_path:
-            existing.metadata = {**(existing.metadata or {}), "source": "team_storage"}
+            existing.metadata = team_storage_metadata(
+                filename, existing.metadata
+            )
         await existing.save()
 
         await _record_audit(
@@ -124,15 +147,17 @@ async def upload_and_ingest(
         id=doc_id,
         name=Path(filename).stem,
         group=group,
+        storage=storage,
         file_path=abs_path,
         storage_path=storage_path,
         file_size=file_size,
         source_fingerprint=fingerprint,
         status=DocumentStatus.UPLOADING,
-        metadata={
-            "original_filename": filename,
-            **({"source": "team_storage"} if cfg.team_storage.base_path else {}),
-        },
+        metadata=(
+            team_storage_metadata(filename)
+            if cfg.team_storage.base_path
+            else {ORIGINAL_FILENAME_METADATA_KEY: filename}
+        ),
     )
 
     await _record_audit(
@@ -153,16 +178,13 @@ async def run_ingest_for_document(doc: Document, team_id: int) -> None:
     run — the same compiled graph the CLI sync path uses.
     """
     source_path = doc.storage_path or doc.file_path
-    expected_source = None
-    if (doc.metadata or {}).get("source") == "team_storage":
-        from maru_lang.core.relation_db.models.auth import Team
-        team = await Team.get(id=team_id)
-        team_dir = get_team_source_dir(team_id, team.name)
-        relative = Path(doc.file_path or "")
-        if team_dir is None or relative.is_absolute() or ".." in relative.parts:
-            raise ValueError("잘못된 팀 원본 경로입니다")
-        source_path = str(team_dir / relative)
-        stat = await asyncio.to_thread(Path(source_path).stat)
+    expected_source: SourceRevision | None = None
+    if is_team_storage_metadata(doc.metadata):
+        if not doc.storage_id:
+            raise ValueError("문서에 원본 스토리지가 연결되지 않았습니다")
+        source = resolve_source_storage_path(doc.storage_id, doc.file_path or "")
+        source_path = str(source)
+        stat = await asyncio.to_thread(source.stat)
         expected_source = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
     state = build_ingest_input(
@@ -234,6 +256,7 @@ async def get_team_documents(team_id: int, group_id: Optional[int] = None) -> li
 async def check_files_to_upload(
     team_id: int,
     files: list[dict],
+    storage_id: str | None = None,
 ) -> list[int]:
     """Check which files need uploading by fingerprint comparison (team-scoped).
 
@@ -248,9 +271,20 @@ async def check_files_to_upload(
     Returns:
         List of indices that need uploading.
     """
+    if get_config().team_storage.base_path:
+        from maru_lang.services.storage import get_writable_storage
+
+        storage = await get_writable_storage(team_id, storage_id)
+        storage_id = storage.id
     indices = []
     for i, f in enumerate(files):
-        fingerprint = _upload_fingerprint(team_id, f["absolutePath"], f["size"], f["mtime"])
+        fingerprint = _upload_fingerprint(
+            team_id,
+            f["absolutePath"],
+            f["size"],
+            f["mtime"],
+            storage_id or "legacy",
+        )
         # ERROR docs must NOT be skipped: their fingerprint was stored at upload
         # time but embedding failed, so the same unchanged file should be
         # re-uploadable to trigger re-processing (issue #15).

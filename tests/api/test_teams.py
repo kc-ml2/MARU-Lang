@@ -19,6 +19,7 @@ from maru_lang.core.relation_db.models.documents import (
     Document,
     DocumentAuditLog,
     DocumentGroup,
+    SourceStorage,
 )
 from maru_lang.dependencies.email import get_email_service_dependency
 from maru_lang.enums.auth import UserRoleCode
@@ -141,7 +142,8 @@ class TestCreateTeam:
         )
         assert resp.status_code == 201
         team_id = resp.json()["id"]
-        assert file_storage.get_team_source_dir(team_id, "Source Team").is_dir()
+        storage = await SourceStorage.get(owner_team_id=team_id)
+        assert file_storage.get_source_storage_dir(storage.id).is_dir()
 
     async def test_create_team_success(
         self, client: AsyncClient, user_alice: User

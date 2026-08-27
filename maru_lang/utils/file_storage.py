@@ -23,7 +23,7 @@ def get_document_dir(team_id: int, doc_id: str) -> Path:
 
 
 def get_team_storage_root() -> Path | None:
-    """Return the configured team-source root, or None when disabled."""
+    """Return the configured independent-storage root, or None when disabled."""
     base_path = get_config().team_storage.base_path
     if not base_path:
         return None
@@ -33,47 +33,59 @@ def get_team_storage_root() -> Path | None:
     return root
 
 
-def team_storage_key(team_id: int, team_name: str = "") -> str:
-    """Stable directory key. Team names are display-only and may change."""
-    return str(team_id)
-
-
-def get_team_source_dir(team_id: int, team_name: str) -> Path | None:
+def get_source_storage_dir(storage_id: str) -> Path | None:
     root = get_team_storage_root()
-    return None if root is None else root / team_storage_key(team_id, team_name)
+    return None if root is None else root / str(storage_id)
 
 
-def provision_team_storage(team_id: int, team_name: str) -> Path | None:
-    """Create a team source directory when team storage is configured.
+def provision_source_storage(storage_id: str, legacy_team_id: int | None = None) -> Path | None:
+    """Create an independent source-storage directory.
 
-    A sole legacy ``<id>-<name>`` directory is migrated to ``<id>``. Ambiguous
-    layouts fail rather than merging user files automatically.
+    ``legacy_team_id`` migrates the old sole ``<team-id>[-name]`` directory into
+    the new storage-ID path while bootstrapping existing teams.
     """
-    team_dir = get_team_source_dir(team_id, team_name)
-    if team_dir is None:
+    storage_dir = get_source_storage_dir(storage_id)
+    if storage_dir is None:
         return None
-    if not team_dir.exists():
-        legacy = list(team_dir.parent.glob(f"{team_id}-*")) if team_dir.parent.exists() else []
+    if not storage_dir.exists():
+        legacy: list[Path] = []
+        if legacy_team_id is not None and storage_dir.parent.exists():
+            exact = storage_dir.parent / str(legacy_team_id)
+            legacy = [exact] if exact.exists() else list(
+                storage_dir.parent.glob(f"{legacy_team_id}-*")
+            )
         if len(legacy) == 1 and legacy[0].is_dir() and not legacy[0].is_symlink():
-            legacy[0].rename(team_dir)
+            legacy[0].rename(storage_dir)
         elif len(legacy) > 1:
-            raise ValueError(f"팀 {team_id}의 기존 저장소 폴더가 여러 개입니다")
+            raise ValueError(
+                f"팀 {legacy_team_id}의 기존 저장소 폴더가 여러 개입니다"
+            )
         else:
-            team_dir.mkdir(parents=True, exist_ok=True)
-    if not team_dir.is_dir() or team_dir.is_symlink():
-        raise ValueError("팀 원본 저장소 경로가 안전한 디렉터리가 아닙니다")
-    return team_dir
+            storage_dir.mkdir(parents=True, exist_ok=True)
+    if not storage_dir.is_dir() or storage_dir.is_symlink():
+        raise ValueError("원본 저장소 경로가 안전한 디렉터리가 아닙니다")
+    return storage_dir
 
 
-def _safe_team_source_path(team_id: int, team_name: str, relative_path: str) -> Path:
-    team_dir = provision_team_storage(team_id, team_name)
+def resolve_source_storage_path(
+    storage_id: str,
+    relative_path: str,
+    *,
+    provision: bool = False,
+) -> Path:
+    """Resolve a relative path below a storage root without allowing escape."""
+    team_dir = (
+        provision_source_storage(storage_id)
+        if provision
+        else get_source_storage_dir(storage_id)
+    )
     if team_dir is None:
         raise ValueError("team_storage.base_path가 설정되지 않았습니다")
     relative = Path(relative_path)
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("잘못된 팀 파일 경로입니다")
-    destination = team_dir.joinpath(relative)
-    if destination.resolve().parent != team_dir.resolve() and team_dir.resolve() not in destination.resolve().parents:
+    destination = team_dir / relative
+    if not destination.resolve().is_relative_to(team_dir.resolve()):
         raise ValueError("팀 저장소 밖의 경로는 사용할 수 없습니다")
     return destination
 
@@ -81,15 +93,18 @@ def _safe_team_source_path(team_id: int, team_name: str, relative_path: str) -> 
 def save_team_source_upload(
     upload_file: BinaryIO,
     filename: str,
-    team_id: int,
-    team_name: str,
+    storage_id: str,
     folder_path: str = "",
 ) -> Path:
-    """Atomically place an API upload in the team's source-of-truth folder."""
+    """Atomically place an owner upload in a source-of-truth storage."""
     relative_path = str(Path(folder_path) / filename) if folder_path else filename
-    destination = _safe_team_source_path(team_id, team_name, relative_path)
+    destination = resolve_source_storage_path(
+        storage_id, relative_path, provision=True
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".part", dir=destination.parent)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".part", dir=destination.parent
+    )
     try:
         with os.fdopen(fd, "wb") as output:
             while chunk := upload_file.read(8192):
@@ -135,9 +150,9 @@ def remove_document_storage(storage_path: str | None, doc_id: str) -> None:
         shutil.rmtree(doc_dir, ignore_errors=True)
 
 
-def remove_team_source_storage(team_id: int, team_name: str) -> bool:
-    """Remove a team-owned source directory only when explicitly configured."""
-    team_dir = get_team_source_dir(team_id, team_name)
+def remove_source_storage(storage_id: str) -> bool:
+    """Remove an independent source directory only when explicitly requested."""
+    team_dir = get_source_storage_dir(storage_id)
     if team_dir is None or not team_dir.exists():
         return False
     root = get_team_storage_root()

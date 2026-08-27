@@ -9,7 +9,12 @@ from tortoise.exceptions import IntegrityError
 from maru_lang.configs import get_config
 from maru_lang.constants import ADMIN_EMAIL
 from maru_lang.core.relation_db.models.auth import Team, TeamMember, User, UserRole
-from maru_lang.core.relation_db.models.documents import DocumentGroup, Document
+from maru_lang.core.relation_db.models.documents import (
+    Document,
+    DocumentGroup,
+    SourceStorage,
+    TeamStorageLink,
+)
 from maru_lang.dependencies.email import EmailService
 from maru_lang.enums.auth import UserRoleCode
 from maru_lang.enums.documents import DocumentStatus
@@ -18,13 +23,14 @@ config = get_config()
 
 
 async def _provision_team(team: Team) -> None:
-    """Create the configured team-owned source folder without blocking the loop."""
-    from maru_lang.utils.file_storage import provision_team_storage
-    await asyncio.to_thread(provision_team_storage, team.id, team.name)
+    """Ensure the team's independently owned default source storage exists."""
+    from maru_lang.services.storage import ensure_default_source_storage
+
+    await ensure_default_source_storage(team)
 
 
 async def reconcile_team_storage() -> int:
-    """Idempotently provision source folders for teams created before this feature."""
+    """Idempotently bootstrap default storages for pre-existing teams."""
     if not config.team_storage.base_path:
         return 0
     teams = await Team.all()
@@ -221,10 +227,22 @@ async def delete_team(team_id: int, requester: User) -> None:
         raise LookupError("팀을 찾을 수 없습니다")
     await _check_admin(team_id, requester)
 
+    # An owned storage must outlive every team connected to it. Check this
+    # before deleting any document so a rejected team deletion is non-destructive.
+    owned_storages = await SourceStorage.filter(owner_team_id=team_id).all()
+    for storage in owned_storages:
+        shared = await TeamStorageLink.filter(storage_id=storage.id).exclude(
+            team_id=team_id
+        ).exists()
+        if shared:
+            raise TeamDeletionPendingError(
+                "다른 팀에 연결된 스토리지를 먼저 연결 해제해주세요"
+            )
+
     # Lazy imports keep ordinary team/list operations from loading the ingest
     # graph and VectorDB stack.
     from maru_lang.services.ingest import delete_document_by_id, delete_team_chunks
-    from maru_lang.utils.file_storage import remove_team_storage, remove_team_source_storage
+    from maru_lang.utils.file_storage import remove_team_storage
 
     documents = await Document.filter(group__team_id=team_id).all()
     for document in documents:
@@ -242,7 +260,11 @@ async def delete_team(team_id: int, requester: User) -> None:
     await asyncio.to_thread(delete_team_chunks, team_id)
     await asyncio.to_thread(remove_team_storage, team_id)
     if config.team_storage.delete_on_team_delete:
-        await asyncio.to_thread(remove_team_source_storage, team_id, team.name)
+        from maru_lang.utils.file_storage import remove_source_storage
+        for storage in owned_storages:
+            await asyncio.to_thread(remove_source_storage, storage.id)
+    for storage in owned_storages:
+        await storage.delete()
     await team.delete()
 
 

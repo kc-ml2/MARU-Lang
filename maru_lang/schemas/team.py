@@ -62,6 +62,7 @@ class TeamGraphsResponse(BaseModel):
 
 class TeamSyncResponse(BaseModel):
     team_id: int
+    storage_id: Optional[str] = None
     discovered: int
     queued: int
     unchanged: int

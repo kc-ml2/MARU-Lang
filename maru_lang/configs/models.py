@@ -104,10 +104,11 @@ class IngestMaterializationConfig:
 
 @dataclass
 class TeamStorageConfig:
-    """Team-owned source folders.
+    """Independent source storages connected to teams.
 
     ``base_path=None`` keeps the feature disabled for backwards compatibility.
-    Files below this root are the source of truth and are ingested directly.
+    Each storage lives below this root by immutable storage ID. Its owner team
+    may mutate files; linked teams receive read-only document projections.
     ``storage_dir`` remains only for legacy/CLI upload flows.
     """
     base_path: Optional[str] = None
