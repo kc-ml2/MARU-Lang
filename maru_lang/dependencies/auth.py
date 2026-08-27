@@ -3,7 +3,7 @@ from fastapi.security import OAuth2PasswordBearer
 from maru_lang.enums.auth import UserRoleCode
 from maru_lang.core.relation_db.models.auth import User, UserRole, UserToken
 from maru_lang.services.auth import is_token_valid
-from maru_lang.utils.security import decode_token
+from maru_lang.context import AppContext, get_app_context
 
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl="/auth/login",
@@ -13,7 +13,8 @@ oauth2_scheme = OAuth2PasswordBearer(
 
 async def get_user(
     request: Request,
-    token: str = Depends(oauth2_scheme)
+    token: str = Depends(oauth2_scheme),
+    context: AppContext = Depends(get_app_context),
 ) -> User:
     """Access token에서 유저 정보를 가져오는 함수. 만료 시 401 반환."""
     # SSE/EventSource는 커스텀 헤더를 지원하지 않으므로 쿼리 파라미터 지원
@@ -27,7 +28,7 @@ async def get_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    payload = decode_token(token)
+    payload = context.tokens.decode(token)
 
     if payload is None:
         raise HTTPException(
@@ -53,7 +54,7 @@ async def get_user(
 
     # JWT 서명/만료만으로는 logout을 반영할 수 없다. logout은 UserToken.revoked_at을
     # 설정하므로, DB에 저장된 access token이 폐기/만료되지 않았는지 함께 확인한다.
-    if not await is_token_valid(token, UserToken):
+    if not await is_token_valid(token, UserToken, tokens=context.tokens):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"message": "Token revoked", "code": "TOKEN_REVOKED"},
@@ -95,23 +96,3 @@ def get_user_with_role(
         return user
 
     return dependency
-
-
-async def get_user_from_websocket_token(token: str) -> User | None:
-    """
-    WebSocket용 토큰 검증 및 유저 조회
-
-    Note: WebSocket에서는 refresh token 로직을 사용하지 않습니다.
-    클라이언트에서 새 access token을 받아서 재연결해야 합니다.
-    """
-    payload = decode_token(token) if token else None
-
-    if payload is None:
-        return None
-
-    user_id = payload.get("sub")
-    if user_id is None:
-        return None
-
-    user = await User.get_or_none(id=user_id)
-    return user

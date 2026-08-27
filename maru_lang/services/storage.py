@@ -3,19 +3,20 @@ from __future__ import annotations
 
 import asyncio
 
-from maru_lang.configs import get_config
+from pathlib import Path
 from maru_lang.core.relation_db.models.auth import Team, User
+from maru_lang.core.relation_db.models.chunks import DocumentChunk
 from maru_lang.core.relation_db.models.documents import (
     Document,
     SourceStorage,
     TeamStorageLink,
 )
-from maru_lang.services.ingest import finalize_document_deletion
 from maru_lang.utils.document import new_ulid
 from maru_lang.utils.file_storage import provision_source_storage, remove_source_storage
 
 
 async def create_source_storage(
+    root: Path,
     owner_team: Team,
     name: str | None = None,
     *,
@@ -27,7 +28,7 @@ async def create_source_storage(
     )
     try:
         await asyncio.to_thread(
-            provision_source_storage, storage.id, legacy_team_id
+            provision_source_storage, root, storage.id, legacy_team_id
         )
         await TeamStorageLink.create(team=owner_team, storage=storage)
     except Exception:
@@ -36,25 +37,23 @@ async def create_source_storage(
     return storage
 
 
-async def ensure_default_source_storage(team: Team) -> SourceStorage | None:
+async def ensure_default_source_storage(root: Path, team: Team) -> SourceStorage:
     """Return a team's oldest owned storage, bootstrapping one when enabled."""
-    if not get_config().team_storage.base_path:
-        return None
     storage = await SourceStorage.filter(owner_team_id=team.id).order_by("created_at").first()
     if storage is None:
         return await create_source_storage(
-            team, f"{team.name} storage", legacy_team_id=team.id
+            root, team, f"{team.name} storage", legacy_team_id=team.id
         )
-    await asyncio.to_thread(provision_source_storage, storage.id)
+    await asyncio.to_thread(provision_source_storage, root, storage.id)
     await TeamStorageLink.get_or_create(team=team, storage=storage)
     return storage
 
 
-async def get_writable_storage(team_id: int, storage_id: str | None = None) -> SourceStorage:
+async def get_writable_storage(root: Path, team_id: int, storage_id: str | None = None) -> SourceStorage:
     """Resolve an owner-team storage; linked read-only storages are rejected."""
     if storage_id is None:
         team = await Team.get(id=team_id)
-        storage = await ensure_default_source_storage(team)
+        storage = await ensure_default_source_storage(root, team)
     else:
         storage = await SourceStorage.get_or_none(id=storage_id)
     if storage is None:
@@ -89,7 +88,7 @@ async def connect_storage(
 
 
 async def disconnect_storage(
-    storage_id: str, team_id: int, requester: User
+    root: Path, storage_id: str, team_id: int, requester: User
 ) -> None:
     """Remove a read-only connection and that team's document projections."""
     from maru_lang.services.team import _check_admin
@@ -102,14 +101,17 @@ async def disconnect_storage(
     await _check_admin(team_id, requester)
     await _check_admin(storage.owner_team_id, requester)
 
-    for doc in await Document.filter(
+    document_ids = await Document.filter(
         storage_id=storage_id, group__team_id=team_id
-    ).all():
-        await finalize_document_deletion(doc.id)
+    ).values_list("id", flat=True)
+    await DocumentChunk.filter(document_id__in=document_ids).delete()
+    await Document.filter(id__in=document_ids).delete()
     await TeamStorageLink.filter(team_id=team_id, storage_id=storage_id).delete()
 
 
-async def delete_source_storage(storage_id: str, requester: User) -> None:
+async def delete_source_storage(
+    root: Path, storage_id: str, requester: User
+) -> None:
     """Delete an unshared storage owned by requester's admin team."""
     from maru_lang.services.team import _check_admin
 
@@ -121,7 +123,10 @@ async def delete_source_storage(storage_id: str, requester: User) -> None:
         team_id=storage.owner_team_id
     ).exists():
         raise ValueError("연결된 팀이 있는 스토리지는 삭제할 수 없습니다")
-    for doc in await Document.filter(storage_id=storage_id).all():
-        await finalize_document_deletion(doc.id)
-    await asyncio.to_thread(remove_source_storage, storage_id)
+    document_ids = await Document.filter(storage_id=storage_id).values_list(
+        "id", flat=True
+    )
+    await DocumentChunk.filter(document_id__in=document_ids).delete()
+    await Document.filter(id__in=document_ids).delete()
+    await asyncio.to_thread(remove_source_storage, root, storage_id)
     await storage.delete()

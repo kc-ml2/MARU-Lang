@@ -1,350 +1,79 @@
-import asyncio
-import logging
-from typing import Optional, List, Callable
+"""FastAPI application composition root."""
+from __future__ import annotations
 
-logger = logging.getLogger(__name__)
-from contextlib import asynccontextmanager, AsyncExitStack
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_pagination import add_pagination
 
-from maru_lang.core.relation_db import get_register_orm
-from maru_lang.configs import get_config
-from maru_lang.graph.ingest.embedder import get_embeddings
-from maru_lang.graph.checkpoint import build_checkpointer
-from maru_lang.graph.registry import GRAPH_REGISTRY
-from maru_lang.core.llm import get_llm_manager
-from maru_lang.services.llm import sync_llms_from_config
 from maru_lang.api.endpoints.auth import router as auth_router
-from maru_lang.api.endpoints.chat import router as chat_router
-from maru_lang.api.endpoints.config import router as config_router
-from maru_lang.api.endpoints.ingest import router as ingest_router
-from maru_lang.api.endpoints.internal import router as internal_router
-from maru_lang.api.endpoints.teams import router as teams_router
 from maru_lang.api.endpoints.storages import router as storages_router
-from maru_lang.api.endpoints.session import router as session_router
-from maru_lang.api.endpoints.memory import router as memory_router
+from maru_lang.api.endpoints.teams import router as teams_router
+from maru_lang.context import AppContext
+from maru_lang.core.relation_db import database_context
+from maru_lang.dependencies.email import create_email_service
+from maru_lang.settings import Settings
+from maru_lang.utils.security import TokenCodec
+
+logger = logging.getLogger(__name__)
 
 
-class MaruLangApp(FastAPI):
-    """Extensible MaruLang application class.
+def create_app(settings: Settings | None = None) -> FastAPI:
+    """Build MARU with one validated settings object and one DB lifecycle."""
+    resolved_settings = settings or Settings.from_env()
+    context = AppContext(
+        settings=resolved_settings,
+        tokens=TokenCodec(resolved_settings.secret_key, resolved_settings.salt),
+        email=create_email_service(resolved_settings),
+    )
 
-    Other projects can inherit from this class to add custom functionality.
-    """
-
-    def __init__(
-        self,
-        title: str = "MaruLang API",
-        description: str = "Advanced AI Agent Framework with RAG capabilities",
-        version: str = "1.0.0",
-        cors_origins: Optional[List[str]] = None,
-        include_default_routers: bool = True,
-        **fastapi_kwargs
-    ):
-        # Initialize custom hooks (before calling FastAPI.__init__)
-        self._startup_hooks: List[Callable] = []
-        self._shutdown_hooks: List[Callable] = []
-        self._middleware_hooks: List[Callable] = []
-        self._router_hooks: List[Callable] = []
-
-        self.cors_origins = cors_origins or self._get_default_cors_origins()
-        self.include_default_routers = include_default_routers
-
-        # Create lifespan context manager
-        @asynccontextmanager
-        async def lifespan(app: FastAPI):
-            # When the app starts
-            await self._startup_sequence()
-            yield
-            # When the app shuts down
-            await self._shutdown_sequence()
-
-        # Initialize the FastAPI application
-        super().__init__(
-            title=title,
-            description=description,
-            version=version,
-            lifespan=lifespan,
-            **fastapi_kwargs
-        )
-
-        # Configure FastAPI extensions and middleware
-        add_pagination(self)
-        self._setup_middleware()
-        self._setup_routers()
-
-    def _get_default_cors_origins(self) -> List[str]:
-        """Return default CORS origins."""
-        return [
-            "http://localhost:5173",  # Vite dev server
-            # Add more default origins as needed
-        ]
-
-    async def _startup_sequence(self):
-        """App startup sequence."""
-        # Default startup logic
-        await self._default_startup()
-
-        # Run custom startup hooks
-        for hook in self._startup_hooks:
-            if asyncio.iscoroutinefunction(hook):
-                await hook(self)
-            else:
-                hook(self)
-
-    async def _shutdown_sequence(self):
-        """App shutdown sequence."""
-        # Default shutdown logic
-        await self._default_shutdown()
-
-        # Run custom shutdown hooks
-        for hook in self._shutdown_hooks:
-            if asyncio.iscoroutinefunction(hook):
-                await hook(self.app)
-            else:
-                hook(self.app)
-
-    async def _default_startup(self):
-        """Default startup routine."""
-        # TODO Initialize logging system
-        cfg = get_config()
-
-        if not cfg.llms:
-            logger.warning("No LLM configurations found - chat will not work until configured")
-
-        # 2. Register ORM
-        print("Initializing databases...")
-        register_orm = get_register_orm()
-        async with register_orm(self):
-
-            # 3. Pre-load embedding model (device from config; None=auto/GPU).
-            #    Pass embedding_device so the cache key matches the ingest path.
-            print(f"Loading embedding model: {cfg.embedding_model}...")
-            await asyncio.to_thread(get_embeddings, cfg.embedding_model, cfg.embedding_device)
-            print(f"✓ Embedding model loaded: {cfg.embedding_model} (device={cfg.embedding_device or 'auto'})")
-
-            # 4. Initialize the LangGraph checkpointer (app-scoped, persistent).
-            #    Kept alive for the whole app lifetime via an AsyncExitStack on
-            #    app.state; closed in _default_shutdown.
-            self.state.exit_stack = AsyncExitStack()
-            self.state.checkpointer = await self.state.exit_stack.enter_async_context(
-                build_checkpointer()
-            )
-            scheme, _ = cfg.resolve_checkpoint_target()
-            print(f"✓ Checkpointer initialized ({scheme})")
-
-            # 4.5 Reconcile each team's default source storage (including teams
-            #     that predate this feature) and mirror config LLMs into the DB.
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Schema creation remains temporary until migrations are introduced.
+        async with database_context(
+            resolved_settings.database_url,
+            generate_schemas=True,
+        ):
+            from maru_lang.services.admin import ensure_admin_user
             from maru_lang.services.team import reconcile_team_storage
-            provisioned = await reconcile_team_storage()
-            if provisioned:
-                print(f"✓ Team source storages ready: {provisioned}")
-            await sync_llms_from_config()
 
-            # 5. Use the first enabled LLM as the process-wide chat model and
-            #    compile each registered graph once. State lives in the shared
-            #    checkpointer and is isolated by thread_id.
-            self.state.graphs = {}
-            self.state.router_model = None
-            self.state.llm_name = None
-            try:
-                client = get_llm_manager().get_client()
-                if client is None:
-                    raise RuntimeError("No LLM model available. Check llms config.")
+            await ensure_admin_user(resolved_settings.filesystem_root)
+            resolved_settings.filesystem_root.mkdir(parents=True, exist_ok=True)
+            await reconcile_team_storage(resolved_settings.filesystem_root)
+            yield
 
-                self.state.graphs = {
-                    gid: spec.factory(model=client.model, checkpointer=self.state.checkpointer)
-                    for gid, spec in GRAPH_REGISTRY.items()
-                }
-                self.state.router_model = client.model
-                self.state.llm_name = client.config.name
+    app = FastAPI(
+        title="MaruLang API",
+        description="Filesystem retrieval server with HTTP API and MCP transports",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
+    app.state.context = context
+    add_pagination(app)
 
-                print(f"✓ Graphs compiled: {', '.join(self.state.graphs) or '(none)'} "
-                      f"(LLM: {client.config.name})")
-            except RuntimeError as e:
-                logger.warning(f"Graphs not compiled — chat disabled: {e}")
+    @app.middleware("http")
+    async def add_access_token_header(request: Request, call_next):
+        response = await call_next(request)
+        if hasattr(request.state, "new_access_token"):
+            response.headers["X-Access-Token"] = request.state.new_access_token
+        return response
 
-            # 6. Ingest task queue (optional). When task_queue_enabled, create an
-            #    ARQ Redis pool used by /ingest/upload to enqueue embedding jobs.
-            #    Its presence on app.state is the on/off switch for queue mode.
-            self.state.arq = None
-            if cfg.queue_enabled:
-                from arq import create_pool
-                from arq.connections import RedisSettings
-                self.state.arq = await create_pool(RedisSettings.from_dsn(cfg.redis_url))
-                print(f"✓ Ingest task queue enabled (ARQ @ {cfg.redis_url})")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["X-Access-Token"],
+    )
 
-            # 6.5 Optional team-folder scanner. Keep the Task handle so shutdown
-            #     can cancel and await it cleanly.
-            self.state.team_sync_task = None
-            if cfg.team_storage.base_path and cfg.team_storage.scan_interval_seconds > 0:
-                from maru_lang.services.team_sync import run_team_sync_loop
-                self.state.team_sync_task = asyncio.create_task(run_team_sync_loop(self))
-                print(
-                    "✓ Source storage scanner enabled "
-                    f"(every {cfg.team_storage.scan_interval_seconds}s)"
-                )
+    @app.get("/health")
+    async def health_check():
+        return {"status": "ok"}
 
-            # 7. Observability (optional). Initialize Langfuse eagerly so key/
-            #    install problems surface at startup, not on the first chat turn.
-            from maru_lang.core.observability import get_langfuse_handler
-            if get_langfuse_handler() is not None:
-                print(f"✓ Langfuse tracing enabled (@ {cfg.langfuse.host})")
-
-            print("=" * 60)
-            print("✨ Application startup complete!")
-            print("=" * 60)
-
-    async def _default_shutdown(self):
-        """Default shutdown routine."""
-        # Clean up resources such as database connections
-        print("🔄 Shutting down application...")
-
-        # Stop the periodic scanner before closing its queue/DB dependencies.
-        team_sync_task = getattr(self.state, "team_sync_task", None)
-        if team_sync_task is not None:
-            team_sync_task.cancel()
-            try:
-                await team_sync_task
-            except asyncio.CancelledError:
-                pass
-            print("✓ Source storage scanner stopped")
-
-        # Close the ingest task queue pool, if it was created.
-        arq = getattr(self.state, "arq", None)
-        if arq is not None:
-            await arq.close()
-            print("✓ Ingest task queue pool closed")
-
-        # Close the LangGraph checkpointer (and its DB connection).
-        exit_stack = getattr(self.state, "exit_stack", None)
-        if exit_stack is not None:
-            await exit_stack.aclose()
-            print("✓ Checkpointer closed")
-
-        # Close Tortoise ORM connections
-        from tortoise import Tortoise
-        await Tortoise.close_connections()
-        print("✓ Database connections closed")
-
-        # Flush any buffered Langfuse traces (no-op when disabled).
-        from maru_lang.core.observability import flush_langfuse
-        flush_langfuse()
-
-        print("✨ Shutdown complete")
-
-    def _setup_middleware(self):
-        """Configure middleware."""
-        # Add logging middleware
-
-        # Basic access-token middleware
-        @self.middleware("http")
-        async def add_access_token_header(request: Request, call_next):
-            response = await call_next(request)
-            if hasattr(request.state, "new_access_token"):
-                response.headers["X-Access-Token"] = request.state.new_access_token
-            return response
-
-        # CORS middleware
-        self.add_middleware(
-            CORSMiddleware,
-            allow_origins=self.cors_origins,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-            expose_headers=["X-Access-Token"],
-        )
-
-        # Run custom middleware hooks
-        for hook in self._middleware_hooks:
-            hook(self.app)
-
-    def _setup_routers(self):
-        """Configure routers."""
-        # Default health-check endpoint
-        @self.get("/health")
-        async def health_check():
-            return {"status": "ok"}
-
-        # Include default routers
-        if self.include_default_routers:
-            self.include_router(chat_router)
-            self.include_router(auth_router)
-            self.include_router(config_router)
-            self.include_router(ingest_router)
-            self.include_router(internal_router)
-            self.include_router(teams_router)
-            self.include_router(storages_router)
-            self.include_router(session_router)
-            self.include_router(memory_router)
-
-        # Run custom router hooks
-        for hook in self._router_hooks:
-            hook(self.app)
-
-    # Extension helpers
-    def add_startup_hook(self, func: Callable):
-        """Add a function to run at app startup."""
-        self._startup_hooks.append(func)
-        return self
-
-    def add_shutdown_hook(self, func: Callable):
-        """Add a function to run at app shutdown."""
-        self._shutdown_hooks.append(func)
-        return self
-
-    def add_middleware_hook(self, func: Callable):
-        """Add a middleware hook."""
-        self._middleware_hooks.append(func)
-        return self
-
-    def add_router_hook(self, func: Callable):
-        """Add a router hook."""
-        self._router_hooks.append(func)
-        return self
-
-    def get_fastapi_app(self) -> FastAPI:
-        """Return the underlying FastAPI app instance."""
-        return self
-
-    def on_event(self, event_type: str):
-        """Event decorator (deprecated in newer FastAPI, kept for compatibility)."""
-        if hasattr(super(), 'on_event'):
-            return super().on_event(event_type)
-        else:
-            # For newer FastAPI versions, use startup/shutdown hooks
-            if event_type == "startup":
-                def decorator(func):
-                    self.add_startup_hook(func)
-                    return func
-                return decorator
-            elif event_type == "shutdown":
-                def decorator(func):
-                    self.add_shutdown_hook(func)
-                    return func
-                return decorator
-            else:
-                raise ValueError(f"Unsupported event type: {event_type}")
-
-    def startup(self):
-        """Startup event decorator."""
-        def decorator(func):
-            self.add_startup_hook(func)
-            return func
-        return decorator
-
-    def shutdown(self):
-        """Shutdown event decorator."""
-        def decorator(func):
-            self.add_shutdown_hook(func)
-            return func
-        return decorator
-
-
-# Convenience factory for the default app instance
-def create_app(**kwargs) -> MaruLangApp:
-    """Create the default MaruLang app."""
-    return MaruLangApp(**kwargs)
-
-
-default_app = create_app()
+    app.include_router(auth_router)
+    app.include_router(teams_router)
+    app.include_router(storages_router)
+    return app

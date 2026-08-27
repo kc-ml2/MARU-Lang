@@ -1,25 +1,5 @@
-"""
-Unified utility module.
+"""Shared utility package."""
 
-This package exposes shared utility functions used across the project.
+from .security import TokenCodec
 
-Submodules:
-- security: Security and encryption utilities (JWT, AES, etc.)
-
-"""
-
-
-# Security utilities
-from .security import (
-    create_jwt_token,
-    decode_token,
-    hash_token,
-)
-
-__all__ = [
-
-    # Security helpers
-    "create_jwt_token",
-    "decode_token",
-    "hash_token",
-]
+__all__ = ["TokenCodec"]

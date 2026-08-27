@@ -6,9 +6,10 @@ from typing import Optional
 
 from tortoise.exceptions import IntegrityError
 
-from maru_lang.configs import get_config
+from pathlib import Path
 from maru_lang.constants import ADMIN_EMAIL
 from maru_lang.core.relation_db.models.auth import Team, TeamMember, User, UserRole
+from maru_lang.core.relation_db.models.chunks import DocumentChunk
 from maru_lang.core.relation_db.models.documents import (
     Document,
     DocumentGroup,
@@ -16,26 +17,22 @@ from maru_lang.core.relation_db.models.documents import (
     TeamStorageLink,
 )
 from maru_lang.dependencies.email import EmailService
+from maru_lang.settings import Settings
 from maru_lang.enums.auth import UserRoleCode
-from maru_lang.enums.documents import DocumentStatus
-
-config = get_config()
 
 
-async def _provision_team(team: Team) -> None:
+async def _provision_team(root: Path, team: Team) -> None:
     """Ensure the team's independently owned default source storage exists."""
     from maru_lang.services.storage import ensure_default_source_storage
 
-    await ensure_default_source_storage(team)
+    await ensure_default_source_storage(root, team)
 
 
-async def reconcile_team_storage() -> int:
+async def reconcile_team_storage(root: Path) -> int:
     """Idempotently bootstrap default storages for pre-existing teams."""
-    if not config.team_storage.base_path:
-        return 0
     teams = await Team.all()
     for team in teams:
-        await _provision_team(team)
+        await _provision_team(root, team)
     return len(teams)
 
 
@@ -86,68 +83,6 @@ def scope_team_ids(
     return [t["id"] for t in all_user_teams], [t["name"] for t in all_user_teams]
 
 
-async def resolve_user_graph_ids(
-    user: User, team_ids: list[int] | None = None
-) -> list[str]:
-    """Graph ids the user may access = union over their teams' allowed_graphs.
-
-    A team with an empty allowed_graphs grants only the default graph (not all),
-    so newly registered graphs are opt-in per team. The result is intersected
-    with the registry and returned in registry order.
-
-    `team_ids` restricts the union to that subset of the user's teams. Pass the
-    request's active_team_ids so graph opt-in is scoped to the teams actually being
-    searched — otherwise a user in team A (doc on) and team B (doc off) could run
-    the doc graph against B's documents. None = all of the user's teams.
-    """
-    # Imported lazily: the registry pulls in the graph stack (embeddings/transformers),
-    # which we don't want to load just by importing this service module.
-    from maru_lang.graph.registry import registry_graph_ids, DEFAULT_GRAPH_IDS
-
-    all_ids = registry_graph_ids()
-    memberships = await TeamMember.filter(user=user).select_related("team")
-    if team_ids is not None:
-        wanted = set(team_ids)
-        memberships = [m for m in memberships if m.team_id in wanted]
-
-    allowed: set[str] = set()
-    for m in memberships:
-        team_graphs = m.team.allowed_graphs or DEFAULT_GRAPH_IDS
-        allowed |= set(team_graphs)
-
-    return [gid for gid in all_ids if gid in allowed]
-
-
-async def set_team_allowed_graphs(
-    team_id: int, graph_ids: list[str], requester: User
-) -> list[str]:
-    """Set a team's allowed_graphs (admin only). Returns the saved list.
-
-    Validates against the registry (unknown ids → ValueError) and stores the
-    result in registry order. An empty list resets the team to the default set.
-    """
-    from maru_lang.graph.registry import registry_graph_ids
-
-    await _check_admin(team_id, requester)
-
-    all_ids = registry_graph_ids()
-    unknown = [g for g in graph_ids if g not in all_ids]
-    if unknown:
-        raise ValueError(f"등록되지 않은 그래프: {', '.join(unknown)}")
-
-    ordered = [gid for gid in all_ids if gid in set(graph_ids)]
-    team = await Team.get(id=team_id)
-    team.allowed_graphs = ordered
-    await team.save()
-    return ordered
-
-
-def list_registerable_graphs() -> list[dict]:
-    """Registered graphs as {id, description} for per-team configuration."""
-    from maru_lang.graph.registry import registerable_graphs
-    return registerable_graphs()
-
-
 async def get_team_detail(team_id: int, user: User) -> dict:
     """
     Team 상세 조회: 멤버 목록 + 폴더(DocumentGroup) 목록
@@ -159,8 +94,7 @@ async def get_team_detail(team_id: int, user: User) -> dict:
 
     team = await Team.get(id=team_id)
 
-    # 멤버 목록 — 시스템 admin(CLI 부트스트랩 유저)은 사람이 아니므로 제외.
-    # CLI가 닿는 모든 팀에 자동 가입되어, 빼지 않으면 모든 팀의 멤버 목록에 노출된다.
+    # 멤버 목록에서 사람이 아닌 시스템 admin 계정은 제외한다.
     members_qs = await TeamMember.filter(team_id=team_id).select_related("user")
     members = [
         {
@@ -186,12 +120,11 @@ async def get_team_detail(team_id: int, user: User) -> dict:
         "description": team.description,
         "members": members,
         "folders": folders,
-        "allowed_graphs": team.allowed_graphs or [],
     }
 
 
 async def create_team(
-    name: str, creator: User, description: Optional[str] = None
+    root: Path, name: str, creator: User, description: Optional[str] = None
 ) -> Team:
     """
     새 팀 생성. 생성자는 자동으로 admin.
@@ -204,7 +137,7 @@ async def create_team(
         name=name, description=description, manager=creator, is_private=True
     )
     try:
-        await _provision_team(team)
+        await _provision_team(root, team)
         await TeamMember.create(user=creator, team=team, role="admin")
     except Exception:
         # Filesystem provisioning is part of team creation. Do not leave a DB
@@ -214,14 +147,10 @@ async def create_team(
     return team
 
 
-async def delete_team(team_id: int, requester: User) -> None:
-    """Hard-delete a team after cleaning up its documents and external storage.
-
-    In-flight documents are atomically moved to DELETING by the existing ingest
-    deletion flow. The caller receives a conflict and can retry after the worker
-    (or deletion reconciler) has finalized those documents. This avoids deleting
-    the team while a worker can still write VectorDB chunks for it.
-    """
+async def delete_team(
+    root: Path, team_id: int, requester: User, *, delete_files: bool = False
+) -> None:
+    """Hard-delete a team, its document projections, and optional source files."""
     team = await Team.get_or_none(id=team_id)
     if team is None:
         raise LookupError("팀을 찾을 수 없습니다")
@@ -239,30 +168,20 @@ async def delete_team(team_id: int, requester: User) -> None:
                 "다른 팀에 연결된 스토리지를 먼저 연결 해제해주세요"
             )
 
-    # Lazy imports keep ordinary team/list operations from loading the ingest
-    # graph and VectorDB stack.
-    from maru_lang.services.ingest import delete_document_by_id, delete_team_chunks
-    from maru_lang.utils.file_storage import remove_team_storage
+    from maru_lang.utils.file_storage import remove_document_storage, remove_team_storage
 
     documents = await Document.filter(group__team_id=team_id).all()
+    document_ids = [document.id for document in documents]
+    await DocumentChunk.filter(document_id__in=document_ids).delete()
     for document in documents:
-        if document.status == DocumentStatus.DELETING:
-            continue
-        await delete_document_by_id(document.id, team_id, requester.id)
+        remove_document_storage(document.storage_path, document.id)
+        await document.delete()
 
-    # UPLOADING/PROCESSING documents remain as DELETING until their worker reaches
-    # a cancellation checkpoint. Never cascade-delete their team out from under it.
-    if await Document.filter(group__team_id=team_id).exists():
-        raise TeamDeletionPendingError(
-            "처리 중인 문서의 삭제를 예약했습니다. 잠시 후 다시 시도해주세요"
-        )
-
-    await asyncio.to_thread(delete_team_chunks, team_id)
-    await asyncio.to_thread(remove_team_storage, team_id)
-    if config.team_storage.delete_on_team_delete:
+    await asyncio.to_thread(remove_team_storage, root, team_id)
+    if delete_files:
         from maru_lang.utils.file_storage import remove_source_storage
         for storage in owned_storages:
-            await asyncio.to_thread(remove_source_storage, storage.id)
+            await asyncio.to_thread(remove_source_storage, root, storage.id)
     for storage in owned_storages:
         await storage.delete()
     await team.delete()
@@ -272,6 +191,8 @@ async def invite_member(
     team_id: int,
     email: str,
     inviter: User,
+    *,
+    settings: Settings,
     email_service: Optional[EmailService] = None,
 ) -> dict:
     """
@@ -285,7 +206,7 @@ async def invite_member(
     """
     await _check_admin(team_id, inviter)
 
-    if not config.auth.is_domain_allowed(email):
+    if not settings.is_domain_allowed(email):
         raise ValueError("허용되지 않은 이메일 도메인입니다")
 
     team = await Team.get(id=team_id)
@@ -383,6 +304,7 @@ async def require_team_member(team_id: int, user: User) -> TeamMember:
 
 
 async def get_or_create_team(
+    root: Path,
     name: str,
     manager: User,
     is_private: bool = False,
@@ -400,7 +322,7 @@ async def get_or_create_team(
     """
     team = await Team.get_or_none(name=name)
     if team:
-        await _provision_team(team)
+        await _provision_team(root, team)
         return team, False
 
     team = await Team.create(
@@ -409,7 +331,7 @@ async def get_or_create_team(
         is_private=is_private,
     )
     try:
-        await _provision_team(team)
+        await _provision_team(root, team)
     except Exception:
         await team.delete()
         raise
@@ -417,6 +339,7 @@ async def get_or_create_team(
 
 
 async def get_or_create_domain_team(
+    root: Path,
     email: str,
     manager: User,
 ) -> tuple[Team, bool]:
@@ -437,7 +360,7 @@ async def get_or_create_domain_team(
     email_domain = email.split("@")[-1].lower()
     domain_prefix = email_domain.split(".")[0]
 
-    team, created = await get_or_create_team(name=domain_prefix, manager=manager)
+    team, created = await get_or_create_team(root, name=domain_prefix, manager=manager)
     if not created:
         # 기존 prefix 팀의 실제 멤버 도메인과 비교(시스템 admin은 role로 제외).
         members = (
@@ -451,7 +374,7 @@ async def get_or_create_domain_team(
         if member_domains and email_domain not in member_domains:
             # 첫 라벨만 겹치는 다른 도메인 -> 전체 도메인 이름으로 격리(prefix 팀과 안 겹침).
             team, created = await get_or_create_team(
-                name=email_domain, manager=manager
+                root, name=email_domain, manager=manager
             )
     return team, created
 

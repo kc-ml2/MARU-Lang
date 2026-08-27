@@ -1,12 +1,5 @@
-"""Enums for the MARU-Lang application."""
+"""Enums for the MARU application."""
 from .auth import UserRoleCode
-from .documents import DocumentStatus, AuditAction
-from .chat import SessionStatus, UserMemoryKind
+from .documents import AuditAction, DocumentStatus
 
-__all__ = [
-    "UserRoleCode",
-    "DocumentStatus",
-    "AuditAction",
-    "SessionStatus",
-    "UserMemoryKind",
-]
+__all__ = ["UserRoleCode", "DocumentStatus", "AuditAction"]

@@ -1,19 +1,13 @@
-from typing import Optional
-
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends
 
 from maru_lang.dependencies.auth import get_user
-from maru_lang.dependencies.email import EmailService, get_email_service_dependency
+from maru_lang.context import AppContext, get_app_context
 from maru_lang.schemas.team import (
     CreateTeamRequest,
     InviteMemberRequest,
     TeamSummaryResponse,
     TeamDetailResponse,
     TeamMemberResponse,
-    GraphInfoResponse,
-    SetTeamGraphsRequest,
-    TeamGraphsResponse,
-    TeamSyncResponse,
 )
 from maru_lang.services.team import (
     TeamDeletionPendingError,
@@ -22,8 +16,6 @@ from maru_lang.services.team import (
     create_team,
     invite_member,
     remove_member,
-    set_team_allowed_graphs,
-    list_registerable_graphs,
     delete_team,
     _check_admin,
 )
@@ -37,24 +29,6 @@ async def get_my_teams(user=Depends(get_user)):
     return await list_teams_by_user(user)
 
 
-@router.get("/available-graphs", response_model=list[GraphInfoResponse])
-async def get_available_graphs(user=Depends(get_user)):
-    """팀에 설정 가능한 등록된 그래프 목록 (id + 설명)"""
-    return list_registerable_graphs()
-
-
-@router.put("/{team_id}/graphs", response_model=TeamGraphsResponse)
-async def set_team_graphs(team_id: int, request: SetTeamGraphsRequest, user=Depends(get_user)):
-    """팀의 사용 가능 그래프 설정 (팀 admin만 가능; []이면 기본값으로 리셋)"""
-    try:
-        allowed = await set_team_allowed_graphs(team_id, request.graphs, user)
-        return TeamGraphsResponse(id=team_id, allowed_graphs=allowed)
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
 @router.get("/{team_id}", response_model=TeamDetailResponse)
 async def get_team(team_id: int, user=Depends(get_user)):
     """팀 상세 조회 (멤버 + 폴더)"""
@@ -65,10 +39,16 @@ async def get_team(team_id: int, user=Depends(get_user)):
 
 
 @router.post("", response_model=TeamSummaryResponse, status_code=201)
-async def create_new_team(request: CreateTeamRequest, user=Depends(get_user)):
+async def create_new_team(
+    request: CreateTeamRequest,
+    user=Depends(get_user),
+    context: AppContext = Depends(get_app_context),
+):
     """새 팀 생성 (생성자는 자동 admin)"""
     try:
-        team = await create_team(request.name, user, request.description)
+        team = await create_team(
+            context.settings.filesystem_root, request.name, user, request.description
+        )
         return TeamSummaryResponse(
             id=team.id, name=team.name, description=team.description, role="admin"
         )
@@ -76,33 +56,20 @@ async def create_new_team(request: CreateTeamRequest, user=Depends(get_user)):
         raise HTTPException(status_code=409, detail=str(e))
 
 
-@router.post("/{team_id}/sync", response_model=TeamSyncResponse)
-async def sync_team_source_folder(team_id: int, request: Request, user=Depends(get_user)):
-    """Scan a team's source folder now (admin only) and enqueue changed files."""
-    from maru_lang.services.team_sync import enqueue_team_document, sync_team_folder
-    try:
-        await _check_admin(team_id, user)
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
-    async def enqueue(document_id: str, scoped_team_id: int) -> None:
-        # Queue-free development mode is synchronous and easy to debug.
-        await enqueue_team_document(request.app, document_id, scoped_team_id)
-
-    try:
-        result = await sync_team_folder(team_id, enqueue=enqueue)
-        return TeamSyncResponse(**result.__dict__)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
 @router.delete("/{team_id}", status_code=204)
-async def delete_team_endpoint(team_id: int, user=Depends(get_user)):
+async def delete_team_endpoint(
+    team_id: int,
+    user=Depends(get_user),
+    context: AppContext = Depends(get_app_context),
+):
     """팀 삭제 (admin 만 가능; 하드 삭제)"""
     try:
-        await delete_team(team_id, user)
+        await delete_team(
+            context.settings.filesystem_root,
+            team_id,
+            user,
+            delete_files=context.settings.delete_files_on_team_delete,
+        )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except LookupError as e:
@@ -118,12 +85,16 @@ async def invite_team_member(
     team_id: int,
     request: InviteMemberRequest,
     user=Depends(get_user),
-    email_service: Optional[EmailService] = Depends(get_email_service_dependency),
+    context: AppContext = Depends(get_app_context),
 ):
     """팀에 멤버 초대 (admin만 가능)"""
     try:
         return await invite_member(
-            team_id, request.email, user, email_service
+            team_id,
+            request.email,
+            user,
+            settings=context.settings,
+            email_service=context.email,
         )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))

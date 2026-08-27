@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+from maru_lang.context import AppContext, get_app_context
 from maru_lang.dependencies.auth import get_user
 from maru_lang.core.relation_db.models.auth import Team
 from maru_lang.schemas.storage import (
@@ -39,12 +40,17 @@ async def get_team_storages(team_id: int, user=Depends(get_user)):
 
 @router.post("/teams/{team_id}/storages", response_model=StorageResponse, status_code=201)
 async def create_storage(
-    team_id: int, body: CreateStorageRequest, user=Depends(get_user)
+    team_id: int,
+    body: CreateStorageRequest,
+    user=Depends(get_user),
+    context: AppContext = Depends(get_app_context),
 ):
     try:
         await _check_admin(team_id, user)
         team = await Team.get(id=team_id)
-        storage = await create_source_storage(team, body.name)
+        storage = await create_source_storage(
+            context.settings.filesystem_root, team, body.name
+        )
         await storage.fetch_related("owner_team")
         return _response(storage, team_id)
     except PermissionError as exc:
@@ -70,10 +76,15 @@ async def connect_team_storage(
 
 @router.delete("/teams/{team_id}/storages/{storage_id}", status_code=204)
 async def disconnect_team_storage(
-    team_id: int, storage_id: str, user=Depends(get_user)
+    team_id: int,
+    storage_id: str,
+    user=Depends(get_user),
+    context: AppContext = Depends(get_app_context),
 ):
     try:
-        await disconnect_storage(storage_id, team_id, user)
+        await disconnect_storage(
+            context.settings.filesystem_root, storage_id, team_id, user
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except LookupError as exc:
@@ -83,9 +94,15 @@ async def disconnect_team_storage(
 
 
 @router.delete("/storages/{storage_id}", status_code=204)
-async def delete_storage(storage_id: str, user=Depends(get_user)):
+async def delete_storage(
+    storage_id: str,
+    user=Depends(get_user),
+    context: AppContext = Depends(get_app_context),
+):
     try:
-        await delete_source_storage(storage_id, user)
+        await delete_source_storage(
+            context.settings.filesystem_root, storage_id, user
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except LookupError as exc:

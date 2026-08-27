@@ -1,47 +1,40 @@
+"""JWT and token hashing primitives with explicit configuration."""
+from __future__ import annotations
+
 import hashlib
 import hmac
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+
 from jose import jwt
-from maru_lang.configs import get_config
-
-config = get_config()
 
 
-def hash_token(token: str) -> str:
-    """토큰을 HMAC-SHA256으로 해싱하여 반환"""
-    return hmac.new(
-        config.auth.salt.encode(),
-        token.encode(),
-        hashlib.sha256
-    ).hexdigest()
+@dataclass(frozen=True, slots=True)
+class TokenCodec:
+    secret_key: str
+    salt: str
+    algorithm: str = "HS256"
 
+    def hash(self, token: str) -> str:
+        return hmac.new(
+            self.salt.encode(), token.encode(), hashlib.sha256
+        ).hexdigest()
 
-def create_jwt_token(
-    data: dict,
-    expires_delta: timedelta
-) -> tuple[str, datetime]:
-    """Create a JWT access token and return it with its expiry."""
-    expires_at = datetime.now(timezone.utc) + expires_delta
-    to_encode = data.copy()
-    to_encode.update({
-        "exp": expires_at,
-        "jti": str(uuid.uuid4()),  # 고유 토큰 ID
-    })
-    encoded_jwt = jwt.encode(
-        to_encode,
-        config.auth.secret_key,
-        algorithm=config.auth.algorithm)
-    return encoded_jwt, expires_at
+    def create(
+        self, data: dict, expires_delta: timedelta
+    ) -> tuple[str, datetime]:
+        expires_at = datetime.now(timezone.utc) + expires_delta
+        payload = {**data, "exp": expires_at, "jti": str(uuid.uuid4())}
+        return (
+            jwt.encode(payload, self.secret_key, algorithm=self.algorithm),
+            expires_at,
+        )
 
-
-def decode_token(token: str) -> dict | None:
-    """Decode a JWT token and return its payload."""
-    try:
-        payload = jwt.decode(
-            token,
-            config.auth.secret_key,
-            algorithms=[config.auth.algorithm])
-        return payload
-    except Exception:
-        return None
+    def decode(self, token: str) -> dict | None:
+        try:
+            return jwt.decode(
+                token, self.secret_key, algorithms=[self.algorithm]
+            )
+        except Exception:
+            return None

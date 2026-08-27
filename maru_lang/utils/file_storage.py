@@ -5,48 +5,34 @@ import tempfile
 from pathlib import Path
 from typing import BinaryIO
 
-from maru_lang.configs import get_config
 
 
-def get_storage_dir() -> Path:
-    """Get the absolute storage directory from config."""
-    cfg = get_config()
-    p = Path(cfg.storage_dir)
-    if not p.is_absolute():
-        p = Path.cwd() / p
-    return p
+def get_storage_dir(root: Path) -> Path:
+    """Return the legacy private-storage directory below the source root."""
+    return root / ".maru" / "documents"
 
 
-def get_document_dir(team_id: int, doc_id: str) -> Path:
+def get_document_dir(root: Path, team_id: int, doc_id: str) -> Path:
     """Get the legacy private storage directory for a specific document."""
-    return get_storage_dir() / str(team_id) / doc_id
+    return get_storage_dir(root) / str(team_id) / doc_id
 
 
-def get_team_storage_root() -> Path | None:
-    """Return the configured independent-storage root, or None when disabled."""
-    base_path = get_config().team_storage.base_path
-    if not base_path:
-        return None
-    root = Path(base_path).expanduser()
-    if not root.is_absolute():
-        root = Path.cwd() / root
+def get_team_storage_root(root: Path) -> Path:
+    """Return the configured source-storage root."""
     return root
 
 
-def get_source_storage_dir(storage_id: str) -> Path | None:
-    root = get_team_storage_root()
-    return None if root is None else root / str(storage_id)
+def get_source_storage_dir(root: Path, storage_id: str) -> Path:
+    return get_team_storage_root(root) / str(storage_id)
 
 
-def provision_source_storage(storage_id: str, legacy_team_id: int | None = None) -> Path | None:
+def provision_source_storage(root: Path, storage_id: str, legacy_team_id: int | None = None) -> Path:
     """Create an independent source-storage directory.
 
     ``legacy_team_id`` migrates the old sole ``<team-id>[-name]`` directory into
     the new storage-ID path while bootstrapping existing teams.
     """
-    storage_dir = get_source_storage_dir(storage_id)
-    if storage_dir is None:
-        return None
+    storage_dir = get_source_storage_dir(root, storage_id)
     if not storage_dir.exists():
         legacy: list[Path] = []
         if legacy_team_id is not None and storage_dir.parent.exists():
@@ -68,6 +54,7 @@ def provision_source_storage(storage_id: str, legacy_team_id: int | None = None)
 
 
 def resolve_source_storage_path(
+    root: Path,
     storage_id: str,
     relative_path: str,
     *,
@@ -75,12 +62,10 @@ def resolve_source_storage_path(
 ) -> Path:
     """Resolve a relative path below a storage root without allowing escape."""
     team_dir = (
-        provision_source_storage(storage_id)
+        provision_source_storage(root, storage_id)
         if provision
-        else get_source_storage_dir(storage_id)
+        else get_source_storage_dir(root, storage_id)
     )
-    if team_dir is None:
-        raise ValueError("team_storage.base_path가 설정되지 않았습니다")
     relative = Path(relative_path)
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("잘못된 팀 파일 경로입니다")
@@ -91,6 +76,7 @@ def resolve_source_storage_path(
 
 
 def save_team_source_upload(
+    root: Path,
     upload_file: BinaryIO,
     filename: str,
     storage_id: str,
@@ -99,7 +85,7 @@ def save_team_source_upload(
     """Atomically place an owner upload in a source-of-truth storage."""
     relative_path = str(Path(folder_path) / filename) if folder_path else filename
     destination = resolve_source_storage_path(
-        storage_id, relative_path, provision=True
+        root, storage_id, relative_path, provision=True
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(
@@ -119,7 +105,7 @@ def save_team_source_upload(
     return destination
 
 
-def save_file(source: Path, team_id: int, doc_id: str) -> str:
+def save_file(root: Path, source: Path, team_id: int, doc_id: str) -> str:
     """Copy a local file to permanent storage.
 
     Args:
@@ -130,7 +116,7 @@ def save_file(source: Path, team_id: int, doc_id: str) -> str:
     Returns:
         Absolute path to the stored file.
     """
-    dest_dir = get_document_dir(team_id, doc_id)
+    dest_dir = get_document_dir(root, team_id, doc_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"original{source.suffix}"
     shutil.copy2(source, dest)
@@ -150,13 +136,12 @@ def remove_document_storage(storage_path: str | None, doc_id: str) -> None:
         shutil.rmtree(doc_dir, ignore_errors=True)
 
 
-def remove_source_storage(storage_id: str) -> bool:
+def remove_source_storage(root: Path, storage_id: str) -> bool:
     """Remove an independent source directory only when explicitly requested."""
-    team_dir = get_source_storage_dir(storage_id)
+    team_dir = get_source_storage_dir(root, storage_id)
     if team_dir is None or not team_dir.exists():
         return False
-    root = get_team_storage_root()
-    assert root is not None
+    root = get_team_storage_root(root)
     if team_dir.parent.resolve() != root.resolve():
         raise ValueError("잘못된 팀 원본 저장소 경로입니다")
     if not team_dir.is_dir() or team_dir.is_symlink():
@@ -165,13 +150,13 @@ def remove_source_storage(storage_id: str) -> bool:
     return True
 
 
-def remove_team_storage(team_id: int) -> bool:
+def remove_team_storage(root: Path, team_id: int) -> bool:
     """Remove a team's complete legacy private storage directory.
 
     Unlike per-document best-effort cleanup, failures propagate so a team delete
     cannot report success while leaving its whole storage tree behind.
     """
-    storage_dir = get_storage_dir().resolve()
+    storage_dir = get_storage_dir(root).resolve()
     team_dir = storage_dir / str(team_id)
     if team_dir.parent.resolve() != storage_dir:
         raise ValueError("잘못된 팀 저장소 경로입니다")
@@ -183,7 +168,7 @@ def remove_team_storage(team_id: int) -> bool:
     return True
 
 
-async def save_upload(upload_file: BinaryIO, filename: str, team_id: int, doc_id: str) -> str:
+async def save_upload(root: Path, upload_file: BinaryIO, filename: str, team_id: int, doc_id: str) -> str:
     """Save an upload for legacy deployments without team_storage.
 
     Args:
@@ -196,7 +181,7 @@ async def save_upload(upload_file: BinaryIO, filename: str, team_id: int, doc_id
         Absolute path to the stored file.
     """
     ext = Path(filename).suffix
-    dest_dir = get_document_dir(team_id, doc_id)
+    dest_dir = get_document_dir(root, team_id, doc_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"original{ext}"
 

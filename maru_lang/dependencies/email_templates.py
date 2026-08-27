@@ -1,8 +1,8 @@
 """Email message templates.
 
 Built-in defaults live here as constants. To customize a message without a code
-change, drop a file at ``<email_template_dir>/<name>.txt`` (the directory is set
-by ``email_template_dir`` in maru_config.yaml). In each file the **first line is
+change, drop a file at ``<email_template_dir>/<name>.txt`` (configured by
+``MARU_EMAIL_TEMPLATE_DIR``). In each file the **first line is
 the subject** and the **rest is the body**; if the file is missing the built-in
 default is used.
 

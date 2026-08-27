@@ -1,49 +1,36 @@
-from tortoise import Tortoise
-from tortoise.contrib.fastapi import RegisterTortoise
-from functools import partial
-from maru_lang.configs import get_config
+"""Tortoise ORM 1.x context lifecycle."""
+from __future__ import annotations
+
 from contextlib import asynccontextmanager
-from typing import Awaitable, Callable
-import asyncio
+
+from tortoise import Tortoise
+from tortoise.context import TortoiseContext
+
+MODELS = ["maru_lang.core.relation_db.models"]
 
 
-
-def run_with_orm_context(coro: Callable[..., Awaitable], *args, **kwargs):
-    async def runner():
-        async with orm_context():
-            return await coro(*args, **kwargs)
-    return asyncio.run(runner())
-
-
-def get_register_orm():
-    config = get_config()
-    # partial을 사용해서 미리 설정된 RegisterTortoise를 반환
-    return partial(
-        RegisterTortoise,
-        generate_schemas=True,
-        add_exception_handlers=True,
-        db_url=config.get_database_url_absolute(),
-        modules={"models": ["maru_lang.core.relation_db.models"]},
+async def open_database(database_url: str) -> TortoiseContext:
+    """Open an isolated Tortoise 1.x context for the current async context."""
+    return await Tortoise.init(
+        db_url=database_url,
+        modules={"models": MODELS},
         use_tz=True,
+        _enable_global_fallback=False,
     )
 
 
 @asynccontextmanager
-async def orm_context():
-    config = get_config()
-
-    await Tortoise.init(
-        db_url=config.get_database_url_absolute(),
-        modules={"models": ["maru_lang.core.relation_db.models"]},
-        use_tz=True,
-    )
-    await Tortoise.generate_schemas()
-
-    # Admin 사용자 자동 생성
-    from maru_lang.services.admin import ensure_admin_user
-    await ensure_admin_user()
-
-    try:
-        yield
-    finally:
-        await Tortoise.close_connections()
+async def database_context(
+    database_url: str,
+    *,
+    generate_schemas: bool = False,
+):
+    """Enter and close a Tortoise 1.x context explicitly."""
+    context = await open_database(database_url)
+    async with context:
+        if generate_schemas:
+            await context.generate_schemas()
+        if database_url.startswith(("postgres://", "postgresql://", "asyncpg://")):
+            connection = context.get_connection("default")
+            await connection.execute_script("CREATE EXTENSION IF NOT EXISTS vector;")
+        yield context

@@ -5,7 +5,6 @@ from maru_lang.services.auth import (
     revoke_token,
     create_or_get_user,
     refresh_token_flow,
-    generate_chat_token,
     update_user_name,
 )
 from maru_lang.services.team import (
@@ -20,17 +19,12 @@ from maru_lang.schemas.auth import (
     VerifyCodeRequest,
     SignUpRequest,
     LogoutRequest,
-    ChatTokenResponse,
     UserResponse,
     UpdateMeRequest,
 )
-from maru_lang.dependencies.email import get_email_service_dependency, EmailService
-from typing import Optional
+from maru_lang.context import AppContext, get_app_context
 from fastapi import APIRouter, HTTPException, Depends, Response, Request, Query
-from maru_lang.configs import get_config
 from maru_lang.dependencies.auth import get_user
-
-config = get_config()
 
 
 router = APIRouter(
@@ -42,19 +36,18 @@ router = APIRouter(
 @router.post("/login")
 async def login(
     request: SignUpRequest,
-    email_service: Optional[EmailService] = Depends(
-        get_email_service_dependency)
+    context: AppContext = Depends(get_app_context),
 ) -> str:
     """Send OTP verification code to email."""
-    if not config.auth.is_domain_allowed(request.email):
+    if not context.settings.is_domain_allowed(request.email):
         raise HTTPException(
             status_code=403,
             detail="허용되지 않은 이메일 도메인입니다",
         )
     try:
-        otp = await generate_email_verification_code(request.email, email_service)
-        if email_service:
-            success = email_service.send_otp(request.email, otp.code)
+        otp = await generate_email_verification_code(request.email, context.email)
+        if context.email:
+            success = context.email.send_otp(request.email, otp.code)
             if not success:
                 await otp.delete()
                 raise Exception("Failed to send verification email")
@@ -90,6 +83,7 @@ async def refresh(
     request: Request,
     response: Response,
     device_id: str = Query(...),
+    context: AppContext = Depends(get_app_context),
 ):
     """Issue new access token using refresh token (rotation applied)."""
     refresh_token = request.cookies.get("refresh_token")
@@ -99,7 +93,9 @@ async def refresh(
             detail="Refresh token not found"
         )
 
-    result = await refresh_token_flow(refresh_token, device_id)
+    result = await refresh_token_flow(
+        refresh_token, device_id, config=context.settings, tokens=context.tokens
+    )
     if not result:
         response.delete_cookie(
             key="refresh_token",
@@ -120,7 +116,7 @@ async def refresh(
         httponly=True,
         secure=True,
         samesite="none",
-        max_age=config.auth.refresh_token_expire_minutes * 60,
+        max_age=context.settings.refresh_token_expire_minutes * 60,
     )
 
     return {"access_token": access_token}
@@ -129,7 +125,8 @@ async def refresh(
 @router.post("/verify/code")
 async def verify_code(
     response: Response,
-    request: VerifyCodeRequest
+    request: VerifyCodeRequest,
+    context: AppContext = Depends(get_app_context),
 ):
     """Verify OTP code and issue access/refresh tokens."""
     try:
@@ -147,8 +144,10 @@ async def verify_code(
         # 도메인이 한 팀으로 병합되지 않도록 가드 포함).
         admin_user = await get_or_create_admin_user()
         team, created = await get_or_create_domain_team(
+            context.settings.filesystem_root,
             request.email,
-            manager=admin_user)
+            manager=admin_user,
+        )
 
         if created:
             await add_member_to_team(
@@ -161,14 +160,16 @@ async def verify_code(
             user=user)
 
         # Add user to public team
-        public_team = await get_or_create_public_team()
+        public_team = await get_or_create_public_team(context.settings.filesystem_root)
         await add_member_to_team(
             team=public_team,
             user=user)
 
         access_token, refresh_token = await generate_token(
             user.id,
-            request.device_id
+            request.device_id,
+            config=context.settings,
+            tokens=context.tokens,
         )
 
         response.set_cookie(
@@ -177,7 +178,7 @@ async def verify_code(
             httponly=True,
             secure=True,
             samesite="none",
-            max_age=config.auth.refresh_token_expire_minutes * 60
+            max_age=context.settings.refresh_token_expire_minutes * 60
         )
 
         return access_token
@@ -189,13 +190,6 @@ async def verify_code(
 async def verify(_=Depends(get_user)):
     """Verify if access token is valid."""
     return {"message": "ok"}
-
-
-@router.post("/chat-token", response_model=ChatTokenResponse)
-async def get_chat_token(user=Depends(get_user)) -> ChatTokenResponse:
-    """Issue one-time chat token for WebSocket connection."""
-    token = await generate_chat_token(user.id)
-    return ChatTokenResponse(chat_token=token)
 
 
 @router.get("/me", response_model=UserResponse)
