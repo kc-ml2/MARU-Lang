@@ -47,22 +47,6 @@ async def ensure_default_source_storage(root: Path, team: Team) -> SourceStorage
     return storage
 
 
-async def get_writable_storage(root: Path, team_id: int, storage_id: str | None = None) -> SourceStorage:
-    """Resolve an owner-team storage; linked read-only storages are rejected."""
-    if storage_id is None:
-        team = await Team.get(id=team_id)
-        storage = await ensure_default_source_storage(root, team)
-    else:
-        storage = await SourceStorage.get_or_none(id=storage_id)
-    if storage is None:
-        raise LookupError("스토리지를 찾을 수 없습니다")
-    if storage.owner_type != StorageOwnerType.TEAM:
-        raise PermissionError("시스템 스토리지는 읽기 전용입니다")
-    if storage.owner_team_id != team_id:
-        raise PermissionError("연결된 스토리지는 읽기 전용입니다")
-    return storage
-
-
 async def list_team_storages(team_id: int) -> list[SourceStorage]:
     links = await TeamStorageLink.filter(team_id=team_id).select_related(
         "storage", "storage__owner_team"

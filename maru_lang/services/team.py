@@ -166,7 +166,7 @@ async def invite_member(
     team = await Team.get(id=team_id)
     target_user = await User.get_or_none(email=email)
 
-    if target_user is None or not target_user.is_active:
+    if target_user is None:
         raise ValueError("가입한 사용자만 팀에 초대할 수 있습니다")
 
     member_role = TeamRole.MEMBER
@@ -218,12 +218,4 @@ async def _check_admin(team_id: int, user: User) -> TeamMember:
     membership = await TeamMember.get_or_none(team_id=team_id, user=user)
     if not membership or membership.role != TeamRole.ADMIN:
         raise PermissionError("admin 권한이 필요합니다")
-    return membership
-
-
-async def require_team_member(team_id: int, user: User) -> TeamMember:
-    """Verify membership before a team-scoped operation."""
-    membership = await TeamMember.get_or_none(team_id=team_id, user=user)
-    if not membership:
-        raise PermissionError("해당 팀의 멤버가 아닙니다")
     return membership

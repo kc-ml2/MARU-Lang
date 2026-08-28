@@ -1,4 +1,4 @@
-import random
+import secrets
 from datetime import datetime, timedelta, timezone
 from maru_lang.settings import Settings
 from maru_lang.utils.security import TokenCodec
@@ -20,7 +20,6 @@ async def create_or_get_user(email: str) -> tuple[User, bool]:
     user = await User.create(
         email=email,
         name=email.split("@", 1)[0],
-        is_active=True,
     )
     return user, True
 
@@ -45,7 +44,7 @@ async def generate_email_verification_code(
 ) -> EmailVerificationCode:
     if not email_service:
         raise ValueError("Email service is not configured")
-    code = str(random.randint(100000, 999999))
+    code = f"{secrets.randbelow(1_000_000):06d}"
 
     await EmailVerificationCode.filter(email=email).delete()
     return await EmailVerificationCode.create(email=email, code=code)
@@ -56,7 +55,10 @@ async def verify_email_code(email: str, code: str, limit: int = 5) -> bool:
     if not record or record.code != code:
         return False
     expiration_time = record.created_at + timedelta(minutes=limit)
-    return expiration_time > datetime.now(timezone.utc)
+    if expiration_time <= datetime.now(timezone.utc):
+        return False
+    await record.delete()
+    return True
 
 
 async def generate_token(
@@ -210,21 +212,6 @@ async def revoke_token(user_id: int, device_id: str) -> None:
     await RefreshToken.filter(
         user_id=user_id,
         device_id=device_id,
-        revoked_at__isnull=True
-    ).update(revoked_at=now)
-
-
-async def revoke_all_user_tokens(user_id: int) -> None:
-    """사용자의 모든 토큰을 폐기 (보안 이슈 발생 시 사용)"""
-    now = datetime.now(timezone.utc)
-
-    await UserToken.filter(
-        user_id=user_id,
-        revoked_at__isnull=True
-    ).update(revoked_at=now)
-
-    await RefreshToken.filter(
-        user_id=user_id,
         revoked_at__isnull=True
     ).update(revoked_at=now)
 

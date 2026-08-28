@@ -1,5 +1,5 @@
 """Time-sortable identifiers."""
-import random
+import secrets
 import time
 import uuid
 
@@ -9,7 +9,7 @@ def new_ulid() -> str:
         return str(uuid.uuid7())
 
     timestamp_ms = int(time.time() * 1000)
-    randomness = random.getrandbits(80)
+    randomness = secrets.randbits(80)
     alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
     timestamp = ""

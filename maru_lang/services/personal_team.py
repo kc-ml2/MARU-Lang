@@ -29,7 +29,7 @@ async def ensure_personal_team(root: Path, user: User) -> Team:
         team = await Team.get_or_none(manager=locked_user, is_personal=True)
         if team is None:
             team = await Team.create(
-                name=f"{locked_user.name or locked_user.email}의 공간",
+                name=f"personal-{locked_user.id}",
                 manager=locked_user,
                 is_personal=True,
             )

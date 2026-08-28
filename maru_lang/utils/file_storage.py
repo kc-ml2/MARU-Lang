@@ -21,27 +21,6 @@ def provision_source_storage(root: Path, storage_id: str) -> Path:
     return storage_dir
 
 
-def resolve_source_storage_path(
-    root: Path,
-    storage_id: str,
-    relative_path: str,
-    *,
-    provision: bool = False,
-) -> Path:
-    storage_dir = (
-        provision_source_storage(root, storage_id)
-        if provision
-        else get_source_storage_dir(root, storage_id)
-    )
-    relative = Path(relative_path)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError("잘못된 스토리지 파일 경로입니다")
-    destination = storage_dir / relative
-    if not destination.resolve().is_relative_to(storage_dir.resolve()):
-        raise ValueError("스토리지 밖의 경로는 사용할 수 없습니다")
-    return destination
-
-
 def remove_source_storage(root: Path, storage_id: str) -> bool:
     storage_dir = get_source_storage_dir(root, storage_id)
     if not storage_dir.exists():

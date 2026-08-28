@@ -10,7 +10,6 @@ class User(Model):
     id = fields.IntField(pk=True)
     name = fields.CharField(max_length=255, index=True, null=True)
     email = fields.CharField(max_length=255, index=True, unique=True)
-    is_active = fields.BooleanField(default=False)
     created_at = fields.DatetimeField(auto_now_add=True)
 
 
