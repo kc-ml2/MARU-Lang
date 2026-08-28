@@ -19,7 +19,6 @@ from maru_lang.services.team import (
     invite_member,
     remove_member,
     delete_team,
-    _check_admin,
 )
 
 router = APIRouter(prefix="/teams", tags=["Teams"])

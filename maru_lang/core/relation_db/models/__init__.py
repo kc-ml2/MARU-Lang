@@ -1,3 +1,18 @@
-from .auth import *
-from .documents import *
-from .chunks import *
+"""Tortoise model registry."""
+
+from .auth import EmailVerificationCode, RefreshToken, Team, TeamMember, User, UserToken
+from .chunks import DocumentChunk
+from .documents import Document, SourceStorage, TeamStorageLink
+
+__all__ = [
+    "User",
+    "Team",
+    "TeamMember",
+    "EmailVerificationCode",
+    "UserToken",
+    "RefreshToken",
+    "SourceStorage",
+    "TeamStorageLink",
+    "Document",
+    "DocumentChunk",
+]

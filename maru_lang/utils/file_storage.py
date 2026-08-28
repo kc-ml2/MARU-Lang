@@ -11,30 +11,11 @@ def get_source_storage_dir(root: Path, storage_id: str) -> Path:
     return get_team_storage_root(root) / storage_id
 
 
-def provision_source_storage(
-    root: Path, storage_id: str, legacy_team_id: int | None = None
-) -> Path:
-    """Create a team-owned source directory.
-
-    ``legacy_team_id`` remains only for one-time migration of old folder names.
-    """
+def provision_source_storage(root: Path, storage_id: str) -> Path:
+    """Create a team-owned source directory."""
     storage_dir = get_source_storage_dir(root, storage_id)
     storage_dir.parent.mkdir(parents=True, exist_ok=True)
-    if not storage_dir.exists():
-        legacy: list[Path] = []
-        if legacy_team_id is not None:
-            exact = root / str(legacy_team_id)
-            legacy = [exact] if exact.exists() else list(
-                root.glob(f"{legacy_team_id}-*")
-            )
-        if len(legacy) == 1 and legacy[0].is_dir() and not legacy[0].is_symlink():
-            legacy[0].rename(storage_dir)
-        elif len(legacy) > 1:
-            raise ValueError(
-                f"팀 {legacy_team_id}의 기존 저장소 폴더가 여러 개입니다"
-            )
-        else:
-            storage_dir.mkdir()
+    storage_dir.mkdir(exist_ok=True)
     if not storage_dir.is_dir() or storage_dir.is_symlink():
         raise ValueError("원본 저장소 경로가 안전한 디렉터리가 아닙니다")
     return storage_dir

@@ -1,5 +1,4 @@
 import random
-import secrets
 from datetime import datetime, timedelta, timezone
 from maru_lang.settings import Settings
 from maru_lang.utils.security import TokenCodec
@@ -38,11 +37,6 @@ async def update_user_name(user: User, name: str) -> User:
     user.name = name
     await user.save(update_fields=["name"])
     return user
-
-
-async def set_user_name(user: User, name: str):
-    user.name = name
-    await user.save()
 
 
 async def generate_email_verification_code(
@@ -233,7 +227,6 @@ async def revoke_all_user_tokens(user_id: int) -> None:
         user_id=user_id,
         revoked_at__isnull=True
     ).update(revoked_at=now)
-
 
 
 async def is_token_valid(

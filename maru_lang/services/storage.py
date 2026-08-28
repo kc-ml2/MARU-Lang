@@ -18,8 +18,6 @@ async def create_source_storage(
     root: Path,
     owner_team: Team,
     name: str | None = None,
-    *,
-    legacy_team_id: int | None = None,
 ) -> SourceStorage:
     """Create storage owned by a team and connect that team to it."""
     storage = await SourceStorage.create(
@@ -29,9 +27,7 @@ async def create_source_storage(
         owner_team=owner_team,
     )
     try:
-        await asyncio.to_thread(
-            provision_source_storage, root, storage.id, legacy_team_id
-        )
+        await asyncio.to_thread(provision_source_storage, root, storage.id)
         await TeamStorageLink.create(team=owner_team, storage=storage)
     except Exception:
         await storage.delete()
@@ -45,9 +41,7 @@ async def ensure_default_source_storage(root: Path, team: Team) -> SourceStorage
         owner_type=StorageOwnerType.TEAM, owner_team_id=team.id
     ).order_by("created_at").first()
     if storage is None:
-        return await create_source_storage(
-            root, team, f"{team.name} storage", legacy_team_id=team.id
-        )
+        return await create_source_storage(root, team, f"{team.name} storage")
     await asyncio.to_thread(provision_source_storage, root, storage.id)
     await TeamStorageLink.get_or_create(team=team, storage=storage)
     return storage

@@ -5,7 +5,6 @@ from maru_lang.core.relation_db.models.auth import Team
 from maru_lang.core.relation_db.models.documents import SourceStorage, TeamStorageLink
 from maru_lang.enums import StorageOwnerType
 from maru_lang.utils.ids import new_ulid
-from maru_lang.utils.file_storage import provision_source_storage
 
 HELP_STORAGE_KEY = "help"
 
