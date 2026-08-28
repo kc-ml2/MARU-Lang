@@ -18,7 +18,7 @@ from maru_lang.core.relation_db.models.documents import (
 )
 from maru_lang.ports.email import EmailService
 from maru_lang.settings import Settings
-from maru_lang.enums.auth import UserRoleCode
+from maru_lang.enums import AccountRole, TeamRole
 
 
 async def _provision_team(root: Path, team: Team) -> None:
@@ -138,7 +138,7 @@ async def create_team(
     )
     try:
         await _provision_team(root, team)
-        await TeamMember.create(user=creator, team=team, role="admin")
+        await TeamMember.create(user=creator, team=team, role=TeamRole.ADMIN)
     except Exception:
         # Filesystem provisioning is part of team creation. Do not leave a DB
         # team that has no usable source space when it fails.
@@ -214,8 +214,8 @@ async def invite_member(
 
     if target_user is None:
         # 익명 유저 생성 (초기 표시명은 이메일 local-part로 seed; 본인이 추후 변경)
-        anonymous_role, _ = await UserRole.get_or_create(
-            name=UserRoleCode.ANONYMOUS.value,
+        anonymous_role, _ = await AccountRole.get_or_create(
+            name=AccountRole.ANONYMOUS.value,
             defaults={"description": "초대로 생성된 미가입 유저"},
         )
         target_user = await User.create(
@@ -227,7 +227,7 @@ async def invite_member(
 
     # 유저 롤이 anonymous면 아직 미가입 상태 → pending
     is_anonymous = await _is_anonymous_user(target_user)
-    member_role = "pending" if is_anonymous else "member"
+    member_role = TeamRole.PENDING if is_anonymous else TeamRole.MEMBER
     try:
         membership = await TeamMember.create(
             user=target_user, team_id=team_id, role=member_role
@@ -265,9 +265,9 @@ async def remove_member(team_id: int, user_id: int, requester: User) -> None:
         raise ValueError("해당 멤버를 찾을 수 없습니다")
 
     # admin 제거 시 최소 1명 유지 체크
-    if membership.role == "admin":
+    if membership.role == TeamRole.ADMIN:
         admin_count = await TeamMember.filter(
-            team_id=team_id, role="admin"
+            team_id=team_id, role=TeamRole.ADMIN
         ).count()
         if admin_count <= 1:
             raise PermissionError("팀에 최소 1명의 admin이 필요합니다")
@@ -279,14 +279,14 @@ async def _is_anonymous_user(user: User) -> bool:
     """유저가 anonymous 롤인지 확인"""
     if not user.role_id:
         return False
-    role = await UserRole.get_or_none(id=user.role_id)
-    return role is not None and role.name == UserRoleCode.ANONYMOUS.value
+    role = await AccountRole.get_or_none(id=user.role_id)
+    return role is not None and role.name == AccountRole.ANONYMOUS.value
 
 
 async def _check_admin(team_id: int, user: User) -> TeamMember:
     """admin 권한 확인 헬퍼"""
     membership = await TeamMember.get_or_none(team_id=team_id, user=user)
-    if not membership or membership.role != "admin":
+    if not membership or membership.role != TeamRole.ADMIN:
         raise PermissionError("admin 권한이 필요합니다")
     return membership
 
@@ -365,7 +365,7 @@ async def get_or_create_domain_team(
         # 기존 prefix 팀의 실제 멤버 도메인과 비교(시스템 admin은 role로 제외).
         members = (
             await TeamMember.filter(team=team)
-            .exclude(role="admin")
+            .exclude(role=TeamRole.ADMIN)
             .prefetch_related("user")
         )
         member_domains = {
@@ -382,7 +382,7 @@ async def get_or_create_domain_team(
 async def add_member_to_team(
     team: Team,
     user: User,
-    role: str = "member",
+    role: TeamRole = TeamRole.MEMBER,
 ) -> tuple[TeamMember, bool]:
     """
     User를 Team에 가입시킴

@@ -26,6 +26,7 @@ from maru_lang.context import AppContext
 from maru_lang.dependencies.context import get_app_context
 from fastapi import APIRouter, HTTPException, Depends, Response, Request, Query
 from maru_lang.dependencies.auth import get_user
+from maru_lang.enums import TeamRole
 
 
 router = APIRouter(
@@ -154,7 +155,7 @@ async def verify_code(
             await add_member_to_team(
                 team=team,
                 user=admin_user,
-                role="admin")
+                role=TeamRole.ADMIN)
 
         await add_member_to_team(
             team=team,

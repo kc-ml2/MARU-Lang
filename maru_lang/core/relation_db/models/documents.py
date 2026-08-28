@@ -1,7 +1,6 @@
-"""Document, DocumentGroup, and DocumentAuditLog models."""
+"""Filesystem source and document projection models."""
 from tortoise.models import Model
 from tortoise import fields
-from maru_lang.enums.documents import DocumentStatus, AuditAction
 
 
 class SourceStorage(Model):
@@ -65,8 +64,6 @@ class Document(Model):
     source_fingerprint = fields.CharField(max_length=64, unique=True, null=True)
 
     metadata = fields.JSONField(default=dict)
-    status = fields.IntEnumField(DocumentStatus, default=DocumentStatus.UPLOADING)
-    error_message = fields.TextField(null=True)
 
     created_at = fields.DatetimeField(auto_now_add=True)
     updated_at = fields.DatetimeField(auto_now=True)
@@ -74,23 +71,6 @@ class Document(Model):
     class Meta:  # type: ignore
         table = "document"
         indexes = [["name", "file_size", "head_hash"]]
-
-
-class DocumentAuditLog(Model):
-    id = fields.IntField(pk=True)
-    document_id = fields.CharField(max_length=64, null=True, index=True)
-    document_name = fields.CharField(max_length=255)
-    team_id = fields.IntField(index=True)
-    user = fields.ForeignKeyField(
-        "models.User", null=True, on_delete=fields.SET_NULL, related_name="audit_logs",
-    )
-    action = fields.IntEnumField(AuditAction)
-    detail = fields.JSONField(default=dict)
-    created_at = fields.DatetimeField(auto_now_add=True)
-
-    class Meta:  # type: ignore
-        table = "document_audit_log"
-        ordering = ["-created_at"]
 
 
 class DocumentGroup(Model):

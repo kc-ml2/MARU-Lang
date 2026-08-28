@@ -3,6 +3,7 @@ from pathlib import Path
 from maru_lang.core.relation_db.models.auth import Team, User
 from maru_lang.services.team import add_member_to_team
 from maru_lang.constants import ADMIN_EMAIL, ADMIN_NAME, PUBLIC_TEAM_NAME
+from maru_lang.enums import TeamRole
 
 
 async def get_or_create_admin_user() -> User:
@@ -58,5 +59,5 @@ async def ensure_admin_user(root: Path) -> User:
     """
     admin_user = await get_or_create_admin_user()
     public_team = await get_or_create_public_team(root)
-    await add_member_to_team(public_team, admin_user, role="admin")
+    await add_member_to_team(public_team, admin_user, role=TeamRole.ADMIN)
     return admin_user

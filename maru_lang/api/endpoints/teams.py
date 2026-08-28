@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from maru_lang.dependencies.auth import get_user
 from maru_lang.context import AppContext
 from maru_lang.dependencies.context import get_app_context
+from maru_lang.enums import TeamRole
 from maru_lang.schemas.team import (
     CreateTeamRequest,
     InviteMemberRequest,
@@ -51,7 +52,7 @@ async def create_new_team(
             context.settings.filesystem_root, request.name, user, request.description
         )
         return TeamSummaryResponse(
-            id=team.id, name=team.name, description=team.description, role="admin"
+            id=team.id, name=team.name, description=team.description, role=TeamRole.ADMIN
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))

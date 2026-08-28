@@ -2,6 +2,8 @@ from __future__ import annotations
 from tortoise.models import Model
 from tortoise import fields
 
+from maru_lang.enums import TeamRole
+
 
 class User(Model):
     id = fields.IntField(pk=True)
@@ -43,7 +45,7 @@ class TeamMember(Model):
         related_name="members",
         on_delete=fields.CASCADE
     )
-    role = fields.CharField(max_length=50, default="member")
+    role = fields.CharEnumField(TeamRole, default=TeamRole.MEMBER)
     joined_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:  # type: ignore[override]

@@ -13,7 +13,7 @@ from maru_lang.core.relation_db.models.auth import (
     EmailVerificationCode,
     TeamMember,
 )
-from maru_lang.enums.auth import UserRoleCode
+from maru_lang.enums import AccountRole, TeamRole
 
 
 async def create_or_get_user(email: str) -> User:
@@ -25,8 +25,8 @@ async def create_or_get_user(email: str) -> User:
     except Exception:
         name = None
 
-    editor_role, _ = await UserRole.get_or_create(
-        name=UserRoleCode.EDITOR.value,
+    editor_role, _ = await AccountRole.get_or_create(
+        name=AccountRole.EDITOR.value,
         defaults={"description": "일반 사용자"},
     )
     new_user = await User.create(
@@ -55,28 +55,28 @@ async def _activate_anonymous_user(user: User) -> None:
     """익명 유저가 최초 로그인하면 anonymous → editor 롤 변경 + pending 멤버십을 member로 변경"""
     if not user.role_id:
         # role이 없는 기존 유저에게 editor 롤 부여
-        editor_role, _ = await UserRole.get_or_create(
-            name=UserRoleCode.EDITOR.value,
+        editor_role, _ = await AccountRole.get_or_create(
+            name=AccountRole.EDITOR.value,
             defaults={"description": "일반 사용자"},
         )
         user.role = editor_role
         await user.save()
         return
 
-    role = await UserRole.get_or_none(id=user.role_id)
-    if not role or role.name != UserRoleCode.ANONYMOUS.value:
+    role = await AccountRole.get_or_none(id=user.role_id)
+    if not role or role.name != AccountRole.ANONYMOUS.value:
         return
 
     # anonymous → editor 롤 변경
-    editor_role, _ = await UserRole.get_or_create(
-        name=UserRoleCode.EDITOR.value,
+    editor_role, _ = await AccountRole.get_or_create(
+        name=AccountRole.EDITOR.value,
         defaults={"description": "일반 사용자"},
     )
     user.role = editor_role
     await user.save()
 
     # pending 멤버십을 member로 변경
-    await TeamMember.filter(user=user, role="pending").update(role="member")
+    await TeamMember.filter(user=user, role=TeamRole.PENDING).update(role=TeamRole.MEMBER)
 
 
 async def set_user_name(user: User, name: str):
