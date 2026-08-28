@@ -27,7 +27,7 @@ dependencies = [
     "pgvector>=0.5.0,<1.0",
     # Auth
     "python-jose[cryptography]>=3.5.0,<4.0",
-    # MCP server transport and tools (implemented in the next phase)
+    # MCP server transport and tools
     "mcp>=1.28.0,<2.0",
 ]
 

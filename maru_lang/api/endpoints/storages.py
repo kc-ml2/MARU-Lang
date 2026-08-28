@@ -82,12 +82,9 @@ async def disconnect_team_storage(
     team_id: int,
     storage_id: str,
     user=Depends(get_user),
-    context: AppContext = Depends(get_app_context),
 ):
     try:
-        await disconnect_storage(
-            context.settings.filesystem_root, storage_id, team_id, user
-        )
+        await disconnect_storage(storage_id, team_id, user)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except LookupError as exc:

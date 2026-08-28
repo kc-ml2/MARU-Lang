@@ -1,7 +1,6 @@
 """FastAPI application composition root."""
 from __future__ import annotations
 
-import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -16,9 +15,6 @@ from maru_lang.adapters.smtp_email import create_email_service
 from maru_lang.settings import Settings
 from maru_lang.utils.security import TokenCodec
 
-logger = logging.getLogger(__name__)
-
-
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build MARU with one validated settings object and one DB lifecycle."""
     resolved_settings = settings or Settings.from_env()
@@ -30,7 +26,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Schema creation remains temporary until migrations are introduced.
+        # Schema bootstrap is centralized here until migrations are introduced.
         async with database_context(
             resolved_settings.database_url,
             generate_schemas=True,
@@ -54,6 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.context = context
+
     @app.middleware("http")
     async def add_access_token_header(request: Request, call_next):
         response = await call_next(request)

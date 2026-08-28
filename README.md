@@ -1,10 +1,18 @@
-<p align="center"><strong>MARU-Lang</strong></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://ml2-ai-product.s3.ap-northeast-2.amazonaws.com/MARU/MARU_Black_full.png">
+    <source media="(prefers-color-scheme: dark)" srcset="https://ml2-ai-product.s3.ap-northeast-2.amazonaws.com/MARU/MARU_White_full.png">
+    <img alt="MARU" src="https://ml2-ai-product.s3.ap-northeast-2.amazonaws.com/MARU/MARU_black.png" width="90%">
+  </picture>
+</p>
+<p align="center">
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
-# MARU-Lang
+# 🦊 MARU-Lang
 
-MARU-Lang is being redesigned as a **filesystem retrieval server** exposed
-through both an HTTP API and MCP. LLM generation, LangGraph, the old ingest
-pipeline, generated applications, and the project CLI have been removed.
+MARU-Lang is a filesystem retrieval server exposed through HTTP API and MCP.
+PostgreSQL and pgvector provide metadata and retrieval persistence.
 
 ## Run
 
@@ -35,9 +43,12 @@ Optional variables:
 - `MARU_SMTP_HOST`, `MARU_SMTP_PORT`, `MARU_SMTP_USERNAME`, `MARU_SMTP_PASSWORD`
 - `MARU_EMAIL_TEMPLATE_DIR`
 
-## Storage direction
+## Storage model
 
-PostgreSQL is the sole database and retrieval persistence target. The project is
-prepared for pgvector; the embedding dimension and search repository will be
-added together with the new indexing/retrieval contract. HTTP and MCP will share
-one application-owned service context.
+Each user receives a personal team with an owned filesystem storage. System
+storages such as `help` are read-only and automatically linked to every personal
+team. Documents and chunks belong to storages, while `TeamStorageLink` controls
+access without duplicating retrieval data.
+
+PostgreSQL is the sole database and pgvector is the retrieval persistence layer.
+HTTP and MCP share one application-owned service context.

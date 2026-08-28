@@ -91,9 +91,9 @@ async def connect_storage(
 
 
 async def disconnect_storage(
-    root: Path, storage_id: str, team_id: int, requester: User
+    storage_id: str, team_id: int, requester: User
 ) -> None:
-    """Remove a read-only connection and that team's document projections."""
+    """Remove a team's read-only access without touching shared documents."""
     from maru_lang.services.team import _check_admin
 
     storage = await SourceStorage.get_or_none(id=storage_id)
