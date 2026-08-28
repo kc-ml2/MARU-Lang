@@ -11,8 +11,35 @@
 
 # 🦊 MARU-Lang
 
-MARU-Lang is a filesystem retrieval server exposed through HTTP API and MCP.
-PostgreSQL and pgvector provide metadata and retrieval persistence.
+MARU-Lang is a team-scoped filesystem retrieval server exposed through HTTP
+API and MCP. It indexes files once, searches only the storages accessible to the
+requesting team, and returns relevant document chunks to clients and agents.
+PostgreSQL stores metadata and pgvector powers semantic retrieval.
+
+MARU provides retrieval, not answer generation. A separate application or agent
+can use the retrieved chunks to implement Retrieval-Augmented Generation (RAG).
+In that term, **retrieval-augmented** means that generation is supplemented with
+information retrieved from an external knowledge source.
+
+## Team-scoped access
+
+Every user receives a personal team and its writable filesystem storage. Users
+may also create collaborative teams and add existing MARU users as members.
+
+A team accesses documents through storage links:
+
+```text
+Team
+  └── TeamStorageLink
+        └── SourceStorage
+              └── Document
+                    └── DocumentChunk
+```
+
+A team-owned storage is writable only by its owner team. Linked storages are
+read-only. System storages such as `help` are automatically linked read-only to
+personal teams. Documents and chunks remain attached to their source storage,
+so linking the same storage to multiple teams does not duplicate retrieval data.
 
 ## Run
 
@@ -43,12 +70,8 @@ Optional variables:
 - `MARU_SMTP_HOST`, `MARU_SMTP_PORT`, `MARU_SMTP_USERNAME`, `MARU_SMTP_PASSWORD`
 - `MARU_EMAIL_TEMPLATE_DIR`
 
-## Storage model
-
-Each user receives a personal team with an owned filesystem storage. System
-storages such as `help` are read-only and automatically linked to every personal
-team. Documents and chunks belong to storages, while `TeamStorageLink` controls
-access without duplicating retrieval data.
+## Runtime architecture
 
 PostgreSQL is the sole database and pgvector is the retrieval persistence layer.
-HTTP and MCP share one application-owned service context.
+HTTP and MCP share one application-owned service context and the same
+team-scoped authorization rules.
