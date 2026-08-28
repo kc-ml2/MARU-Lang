@@ -16,7 +16,7 @@ from maru_lang.core.relation_db.models.documents import (
     SourceStorage,
     TeamStorageLink,
 )
-from maru_lang.dependencies.email import EmailService
+from maru_lang.ports.email import EmailService
 from maru_lang.settings import Settings
 from maru_lang.enums.auth import UserRoleCode
 
@@ -239,9 +239,9 @@ async def invite_member(
     if email_service:
         inviter_name = inviter.name or inviter.email
         if is_anonymous:
-            email_service.send_invitation(email, team.name, inviter_name)
+            await email_service.send_invitation(email, team.name, inviter_name)
         else:
-            email_service.send_notification(email, team.name, inviter_name)
+            await email_service.send_notification(email, team.name, inviter_name)
 
     return {
         "id": target_user.id,

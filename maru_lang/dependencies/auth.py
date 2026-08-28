@@ -1,9 +1,9 @@
-from fastapi import Depends, HTTPException, status, Request
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from maru_lang.enums.auth import UserRoleCode
-from maru_lang.core.relation_db.models.auth import User, UserRole, UserToken
+from maru_lang.core.relation_db.models.auth import User, UserToken
 from maru_lang.services.auth import is_token_valid
-from maru_lang.context import AppContext, get_app_context
+from maru_lang.context import AppContext
+from maru_lang.dependencies.context import get_app_context
 
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl="/auth/login",
@@ -12,15 +12,10 @@ oauth2_scheme = OAuth2PasswordBearer(
 
 
 async def get_user(
-    request: Request,
     token: str = Depends(oauth2_scheme),
     context: AppContext = Depends(get_app_context),
 ) -> User:
     """Access token에서 유저 정보를 가져오는 함수. 만료 시 401 반환."""
-    # SSE/EventSource는 커스텀 헤더를 지원하지 않으므로 쿼리 파라미터 지원
-    if not token:
-        token = request.query_params.get("token")
-
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -62,37 +57,3 @@ async def get_user(
         )
 
     return user
-
-
-def get_user_with_role(
-    required_role: UserRoleCode,
-):
-    async def dependency(
-        user: User = Depends(get_user)
-    ):
-        # 역할 우선순위 (낮은 권한부터 높은 권한 순)
-        ROLE_HIERARCHY = [
-            UserRoleCode.ANONYMOUS,
-            UserRoleCode.EDITOR,
-            UserRoleCode.ADMIN,
-        ]
-        # get user role
-        user_role = await UserRole.get_or_none(
-            id=user.role_id
-        )
-
-        if not user_role:
-            raise HTTPException(status_code=401, detail="Unauthorized role")
-
-        try:
-            user_index = ROLE_HIERARCHY.index(UserRoleCode(user_role.name))
-            required_index = ROLE_HIERARCHY.index(required_role)
-        except ValueError:
-            raise HTTPException(status_code=401, detail="Invalid role")
-
-        if user_index < required_index:
-            raise HTTPException(status_code=403, detail="Permission denied")
-
-        return user
-
-    return dependency

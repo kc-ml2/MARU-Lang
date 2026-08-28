@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from maru_lang.settings import Settings
 from maru_lang.utils.security import TokenCodec
-from maru_lang.dependencies.email import EmailService
+from maru_lang.ports.email import EmailService
 
 from maru_lang.core.relation_db.models.auth import (
     User,

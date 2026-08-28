@@ -12,7 +12,7 @@ from maru_lang.api.endpoints.storages import router as storages_router
 from maru_lang.api.endpoints.teams import router as teams_router
 from maru_lang.context import AppContext
 from maru_lang.core.relation_db import database_context
-from maru_lang.dependencies.email import create_email_service
+from maru_lang.adapters.smtp_email import create_email_service
 from maru_lang.settings import Settings
 from maru_lang.utils.security import TokenCodec
 

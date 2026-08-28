@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from maru_lang.context import AppContext, get_app_context
+from maru_lang.context import AppContext
+from maru_lang.dependencies.context import get_app_context
 from maru_lang.dependencies.auth import get_user
 from maru_lang.core.relation_db.models.auth import Team
 from maru_lang.schemas.storage import (

@@ -22,7 +22,8 @@ from maru_lang.schemas.auth import (
     UserResponse,
     UpdateMeRequest,
 )
-from maru_lang.context import AppContext, get_app_context
+from maru_lang.context import AppContext
+from maru_lang.dependencies.context import get_app_context
 from fastapi import APIRouter, HTTPException, Depends, Response, Request, Query
 from maru_lang.dependencies.auth import get_user
 
@@ -47,7 +48,7 @@ async def login(
     try:
         otp = await generate_email_verification_code(request.email, context.email)
         if context.email:
-            success = context.email.send_otp(request.email, otp.code)
+            success = await context.email.send_otp(request.email, otp.code)
             if not success:
                 await otp.delete()
                 raise Exception("Failed to send verification email")
