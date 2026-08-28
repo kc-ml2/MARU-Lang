@@ -21,11 +21,13 @@ router = APIRouter(tags=["Storages"])
 
 
 def _response(storage, team_id: int) -> StorageResponse:
+    owner_team = getattr(storage, "owner_team", None)
     return StorageResponse(
         id=storage.id,
         name=storage.name,
+        owner_type=storage.owner_type,
         owner_team_id=storage.owner_team_id,
-        owner_team_name=storage.owner_team.name,
+        owner_team_name=owner_team.name if owner_team else None,
         access="owner" if storage.owner_team_id == team_id else "read",
     )
 

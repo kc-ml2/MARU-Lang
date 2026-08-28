@@ -2,17 +2,23 @@
 from tortoise.models import Model
 from tortoise import fields
 
+from maru_lang.enums import StorageOwnerType
+
 
 class SourceStorage(Model):
     """A physical source folder that can be connected to multiple teams."""
     id = fields.CharField(pk=True, max_length=64)
     name = fields.CharField(max_length=255)
+    owner_type = fields.CharEnumField(StorageOwnerType, index=True)
     owner_team = fields.ForeignKeyField(
         "models.Team",
         related_name="owned_source_storages",
+        null=True,
         on_delete=fields.RESTRICT,
         index=True,
     )
+    system_key = fields.CharField(max_length=100, null=True, unique=True)
+    auto_attach = fields.BooleanField(default=False, index=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:  # type: ignore

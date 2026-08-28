@@ -11,6 +11,7 @@ from maru_lang.core.relation_db.models.documents import (
     SourceStorage,
     TeamStorageLink,
 )
+from maru_lang.enums import StorageOwnerType
 from maru_lang.utils.document import new_ulid
 from maru_lang.utils.file_storage import provision_source_storage, remove_source_storage
 
@@ -24,7 +25,10 @@ async def create_source_storage(
 ) -> SourceStorage:
     """Create storage owned by a team and connect that team to it."""
     storage = await SourceStorage.create(
-        id=new_ulid(), name=(name or owner_team.name), owner_team=owner_team
+        id=new_ulid(),
+        name=(name or owner_team.name),
+        owner_type=StorageOwnerType.TEAM,
+        owner_team=owner_team,
     )
     try:
         await asyncio.to_thread(
@@ -39,7 +43,9 @@ async def create_source_storage(
 
 async def ensure_default_source_storage(root: Path, team: Team) -> SourceStorage:
     """Return a team's oldest owned storage, bootstrapping one when enabled."""
-    storage = await SourceStorage.filter(owner_team_id=team.id).order_by("created_at").first()
+    storage = await SourceStorage.filter(
+        owner_type=StorageOwnerType.TEAM, owner_team_id=team.id
+    ).order_by("created_at").first()
     if storage is None:
         return await create_source_storage(
             root, team, f"{team.name} storage", legacy_team_id=team.id
@@ -58,6 +64,8 @@ async def get_writable_storage(root: Path, team_id: int, storage_id: str | None 
         storage = await SourceStorage.get_or_none(id=storage_id)
     if storage is None:
         raise LookupError("스토리지를 찾을 수 없습니다")
+    if storage.owner_type != StorageOwnerType.TEAM:
+        raise PermissionError("시스템 스토리지는 읽기 전용입니다")
     if storage.owner_team_id != team_id:
         raise PermissionError("연결된 스토리지는 읽기 전용입니다")
     return storage
@@ -79,6 +87,9 @@ async def connect_storage(
     storage = await SourceStorage.get_or_none(id=storage_id)
     if storage is None:
         raise LookupError("스토리지를 찾을 수 없습니다")
+    if storage.owner_type != StorageOwnerType.TEAM:
+        raise PermissionError("시스템 스토리지는 자동 연결만 허용됩니다")
+    assert storage.owner_team_id is not None
     await _check_admin(storage.owner_team_id, requester)
     await _check_admin(target_team_id, requester)
     link, _ = await TeamStorageLink.get_or_create(
@@ -96,9 +107,12 @@ async def disconnect_storage(
     storage = await SourceStorage.get_or_none(id=storage_id)
     if storage is None:
         raise LookupError("스토리지를 찾을 수 없습니다")
+    if storage.owner_type == StorageOwnerType.SYSTEM:
+        raise PermissionError("시스템 스토리지 연결은 해제할 수 없습니다")
     if storage.owner_team_id == team_id:
         raise ValueError("소유 팀은 스토리지 연결을 해제할 수 없습니다")
     await _check_admin(team_id, requester)
+    assert storage.owner_team_id is not None
     await _check_admin(storage.owner_team_id, requester)
 
     document_ids = await Document.filter(
@@ -118,6 +132,9 @@ async def delete_source_storage(
     storage = await SourceStorage.get_or_none(id=storage_id)
     if storage is None:
         raise LookupError("스토리지를 찾을 수 없습니다")
+    if storage.owner_type != StorageOwnerType.TEAM:
+        raise PermissionError("시스템 스토리지는 삭제할 수 없습니다")
+    assert storage.owner_team_id is not None
     await _check_admin(storage.owner_team_id, requester)
     if await TeamStorageLink.filter(storage_id=storage_id).exclude(
         team_id=storage.owner_team_id

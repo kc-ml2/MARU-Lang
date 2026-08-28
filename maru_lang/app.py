@@ -35,10 +35,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings.database_url,
             generate_schemas=True,
         ):
+            from maru_lang.services.system_storage import (
+                ensure_system_storages,
+                reconcile_system_storage_links,
+            )
             from maru_lang.services.team import reconcile_team_storage
 
             resolved_settings.filesystem_root.mkdir(parents=True, exist_ok=True)
+            await ensure_system_storages(resolved_settings.filesystem_root)
             await reconcile_team_storage(resolved_settings.filesystem_root)
+            await reconcile_system_storage_links()
             yield
 
     app = FastAPI(

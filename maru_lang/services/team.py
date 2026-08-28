@@ -17,7 +17,7 @@ from maru_lang.core.relation_db.models.documents import (
 )
 from maru_lang.ports.email import EmailService
 from maru_lang.settings import Settings
-from maru_lang.enums import TeamRole
+from maru_lang.enums import StorageOwnerType, TeamRole
 
 
 async def _provision_team(root: Path, team: Team) -> None:
@@ -130,7 +130,9 @@ async def delete_team(
 
     # An owned storage must outlive every team connected to it. Check this
     # before deleting any document so a rejected team deletion is non-destructive.
-    owned_storages = await SourceStorage.filter(owner_team_id=team_id).all()
+    owned_storages = await SourceStorage.filter(
+        owner_type=StorageOwnerType.TEAM, owner_team_id=team_id
+    ).all()
     for storage in owned_storages:
         shared = await TeamStorageLink.filter(storage_id=storage.id).exclude(
             team_id=team_id

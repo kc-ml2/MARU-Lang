@@ -6,6 +6,7 @@ from tortoise.transactions import in_transaction
 from maru_lang.core.relation_db.models.auth import Team, TeamMember, User
 from maru_lang.enums import TeamRole
 from maru_lang.services.storage import ensure_default_source_storage
+from maru_lang.services.system_storage import attach_default_system_storages
 
 
 async def ensure_personal_team(root: Path, user: User) -> Team:
@@ -18,6 +19,7 @@ async def ensure_personal_team(root: Path, user: User) -> Team:
             team=team,
             defaults={"role": TeamRole.ADMIN},
         )
+        await attach_default_system_storages(team)
         return team
 
     async with in_transaction():
@@ -36,4 +38,5 @@ async def ensure_personal_team(root: Path, user: User) -> Team:
             )
 
     await ensure_default_source_storage(root, team)
+    await attach_default_system_storages(team)
     return team

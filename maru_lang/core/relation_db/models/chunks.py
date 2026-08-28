@@ -15,7 +15,6 @@ class DocumentChunk(Model):
     document = fields.ForeignKeyField(
         "models.Document", related_name="chunks", on_delete=fields.CASCADE
     )
-    team_id = fields.BigIntField(index=True)
     content = fields.TextField()
     metadata = fields.JSONField(default=dict)
     created_at = fields.DatetimeField(auto_now_add=True)
@@ -23,4 +22,4 @@ class DocumentChunk(Model):
 
     class Meta:  # type: ignore[override]
         table = "document_chunk"
-        indexes = (("team_id", "document_id"),)
+        indexes = (("document_id",),)

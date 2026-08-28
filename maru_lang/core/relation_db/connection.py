@@ -32,5 +32,30 @@ async def database_context(
             await context.generate_schemas()
         if database_url.startswith(("postgres://", "postgresql://", "asyncpg://")):
             connection = context.get_connection("default")
-            await connection.execute_script("CREATE EXTENSION IF NOT EXISTS vector;")
+            await connection.execute_script(
+                """
+                CREATE EXTENSION IF NOT EXISTS vector;
+                ALTER TABLE source_storage
+                    DROP CONSTRAINT IF EXISTS source_storage_owner_check;
+                ALTER TABLE source_storage
+                    ALTER COLUMN owner_type SET NOT NULL;
+                ALTER TABLE source_storage
+                    ADD CONSTRAINT source_storage_owner_check CHECK (
+                        (
+                            owner_type = 'system'
+                            AND owner_team_id IS NULL
+                            AND system_key IS NOT NULL
+                        )
+                        OR
+                        (
+                            owner_type = 'team'
+                            AND owner_team_id IS NOT NULL
+                            AND system_key IS NULL
+                        )
+                    );
+                CREATE UNIQUE INDEX IF NOT EXISTS uidx_team_personal_manager
+                    ON team (manager_id)
+                    WHERE is_personal = TRUE;
+                """
+            )
         yield context
