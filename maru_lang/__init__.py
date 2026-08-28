@@ -1,4 +1,4 @@
-"""MARU filesystem retrieval server."""
+"""MARU team-based filesystem retriever."""
 
 __version__ = "0.0.0"
 

@@ -45,7 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="MaruLang API",
-        description="Filesystem retrieval server with HTTP API and MCP transports",
+        description="Team-based filesystem retriever for AI applications and agents",
         version="1.0.0",
         lifespan=lifespan,
     )

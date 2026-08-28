@@ -1,14 +1,14 @@
 [project]
 name = "maru-lang"
 version = "0.0.0"
-description = "Filesystem retrieval server with HTTP API and MCP transports"
+description = "Team-based filesystem retriever for AI applications and agents"
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
     {name = "KC ML2"},
 ]
-keywords = ["retrieval", "filesystem", "mcp", "api", "fastapi"]
+keywords = ["retriever", "retrieval", "filesystem", "team", "mcp", "fastapi"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

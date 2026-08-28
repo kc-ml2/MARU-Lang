@@ -11,17 +11,19 @@
 
 # 🦊 MARU-Lang
 
-MARU-Lang is a team-scoped filesystem retrieval server exposed through HTTP
-API and MCP. It indexes files once, searches only the storages accessible to the
-requesting team, and returns relevant document chunks to clients and agents.
-PostgreSQL stores metadata and pgvector powers semantic retrieval.
+**MARU-Lang is a team-based filesystem retriever for AI applications and agents.**
+
+It provides the same retrieval capabilities through HTTP API and MCP. Files are
+indexed once and shared through team storage links; every search is restricted
+to the storages accessible to the requesting team. PostgreSQL stores metadata
+and pgvector powers semantic retrieval.
 
 MARU provides retrieval, not answer generation. A separate application or agent
 can use the retrieved chunks to implement Retrieval-Augmented Generation (RAG).
 In that term, **retrieval-augmented** means that generation is supplemented with
 information retrieved from an external knowledge source.
 
-## Team-scoped access
+## Team-based retrieval
 
 Every user receives a personal team and its writable filesystem storage. Users
 may also create collaborative teams and add existing MARU users as members.
@@ -74,4 +76,4 @@ Optional variables:
 
 PostgreSQL is the sole database and pgvector is the retrieval persistence layer.
 HTTP and MCP share one application-owned service context and the same
-team-scoped authorization rules.
+team-based access rules.
