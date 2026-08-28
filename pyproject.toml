@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     # Web framework
     "fastapi>=0.137.0,<1.0",
+    "email-validator>=2.3.0,<3.0",
     "uvicorn>=0.49.0,<1.0",
     # ORM / PostgreSQL + pgvector
     "tortoise-orm[asyncpg]>=1.1.8,<2.0",

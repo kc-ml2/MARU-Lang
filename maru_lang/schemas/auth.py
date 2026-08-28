@@ -1,49 +1,33 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional
+from typing import Annotated
 
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints
 
-def _validate_email(value: str) -> str:
-    """Reject structurally invalid addresses before they reach auth logic.
-
-    `email` is a plain `str` (not `EmailStr`, to avoid the email-validator
-    dependency), so without this an address like "a@evil.com@allowed.com"
-    would slip through domain allow-listing. Require exactly one "@" with
-    non-empty local and domain parts; normalize surrounding whitespace.
-    """
-    value = (value or "").strip()
-    parts = value.split("@")
-    if len(parts) != 2 or not parts[0] or not parts[1] or "." not in parts[1]:
-        raise ValueError("유효하지 않은 이메일 주소입니다")
-    return value
+DisplayName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+DeviceId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+VerificationCode = Annotated[str, StringConstraints(pattern=r"^\d{6}$")]
 
 
 class SignUpRequest(BaseModel):
-    email: str
-
-    _normalize_email = field_validator("email")(_validate_email)
+    email: EmailStr
 
 
 class LogoutRequest(BaseModel):
-    device_id: str
+    device_id: DeviceId
 
 
 class VerifyCodeRequest(BaseModel):
-    device_id: str
-    email: str
-    code: str
-
-    _normalize_email = field_validator("email")(_validate_email)
+    device_id: DeviceId
+    email: EmailStr
+    code: VerificationCode
 
 
 class UserResponse(BaseModel):
-    id: int
-    email: str
-    name: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
 
-    class Config:
-        from_attributes = True
+    id: int
+    email: EmailStr
+    name: str | None = None
 
 
 class UpdateMeRequest(BaseModel):
-    """본인 표시명(닉네임) 변경 요청."""
-    name: str = Field(..., min_length=1, description="전역 표시명(닉네임)")
+    name: DisplayName = Field(description="전역 표시명(닉네임)")
