@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi_pagination import add_pagination
 
 from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.storages import router as storages_router
@@ -51,8 +50,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.context = context
-    add_pagination(app)
-
     @app.middleware("http")
     async def add_access_token_header(request: Request, call_next):
         response = await call_next(request)
