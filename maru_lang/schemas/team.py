@@ -19,12 +19,6 @@ class TeamMemberResponse(BaseModel):
     role: str
 
 
-class FolderResponse(BaseModel):
-    id: int
-    name: str
-    document_count: int
-
-
 class TeamSummaryResponse(BaseModel):
     id: int
     name: str
@@ -37,4 +31,4 @@ class TeamDetailResponse(BaseModel):
     name: str
     description: str | None = None
     members: list[TeamMemberResponse]
-    folders: list[FolderResponse]
+    storage_count: int

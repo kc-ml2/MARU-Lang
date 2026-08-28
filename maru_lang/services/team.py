@@ -8,10 +8,7 @@ from tortoise.exceptions import IntegrityError
 
 from pathlib import Path
 from maru_lang.core.relation_db.models.auth import Team, TeamMember, User
-from maru_lang.core.relation_db.models.chunks import DocumentChunk
 from maru_lang.core.relation_db.models.documents import (
-    Document,
-    DocumentGroup,
     SourceStorage,
     TeamStorageLink,
 )
@@ -57,7 +54,7 @@ async def list_teams_by_user(user: User) -> list[dict]:
 
 async def get_team_detail(team_id: int, user: User) -> dict:
     """
-    Team 상세 조회: 멤버 목록 + 폴더(DocumentGroup) 목록
+    Team 상세 조회: 멤버와 접근 가능한 스토리지 수
     해당 팀의 멤버만 조회 가능
     """
     membership = await TeamMember.get_or_none(team_id=team_id, user=user)
@@ -77,19 +74,14 @@ async def get_team_detail(team_id: int, user: User) -> dict:
         for m in members_qs
     ]
 
-    # 폴더(DocumentGroup) 목록 + 문서 수
-    doc_groups = await DocumentGroup.filter(team_id=team_id).all()
-    folders = []
-    for dg in doc_groups:
-        doc_count = await Document.filter(group_id=dg.id).count()
-        folders.append({"id": dg.id, "name": dg.name, "document_count": doc_count})
+    storage_count = await TeamStorageLink.filter(team_id=team_id).count()
 
     return {
         "id": team.id,
         "name": team.name,
         "description": team.description,
         "members": members,
-        "folders": folders,
+        "storage_count": storage_count,
     }
 
 
@@ -142,16 +134,6 @@ async def delete_team(
                 "다른 팀에 연결된 스토리지를 먼저 연결 해제해주세요"
             )
 
-    from maru_lang.utils.file_storage import remove_document_storage, remove_team_storage
-
-    documents = await Document.filter(group__team_id=team_id).all()
-    document_ids = [document.id for document in documents]
-    await DocumentChunk.filter(document_id__in=document_ids).delete()
-    for document in documents:
-        remove_document_storage(document.storage_path, document.id)
-        await document.delete()
-
-    await asyncio.to_thread(remove_team_storage, root, team_id)
     if delete_files:
         from maru_lang.utils.file_storage import remove_source_storage
         for storage in owned_storages:

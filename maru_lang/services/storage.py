@@ -5,14 +5,12 @@ import asyncio
 
 from pathlib import Path
 from maru_lang.core.relation_db.models.auth import Team, User
-from maru_lang.core.relation_db.models.chunks import DocumentChunk
 from maru_lang.core.relation_db.models.documents import (
-    Document,
     SourceStorage,
     TeamStorageLink,
 )
 from maru_lang.enums import StorageOwnerType
-from maru_lang.utils.document import new_ulid
+from maru_lang.utils.ids import new_ulid
 from maru_lang.utils.file_storage import provision_source_storage, remove_source_storage
 
 
@@ -115,11 +113,8 @@ async def disconnect_storage(
     assert storage.owner_team_id is not None
     await _check_admin(storage.owner_team_id, requester)
 
-    document_ids = await Document.filter(
-        storage_id=storage_id, group__team_id=team_id
-    ).values_list("id", flat=True)
-    await DocumentChunk.filter(document_id__in=document_ids).delete()
-    await Document.filter(id__in=document_ids).delete()
+    # Documents belong to the storage, not to the linked team. Disconnecting a
+    # reader therefore removes only the permission link and never shared data.
     await TeamStorageLink.filter(team_id=team_id, storage_id=storage_id).delete()
 
 
@@ -140,10 +135,5 @@ async def delete_source_storage(
         team_id=storage.owner_team_id
     ).exists():
         raise ValueError("연결된 팀이 있는 스토리지는 삭제할 수 없습니다")
-    document_ids = await Document.filter(storage_id=storage_id).values_list(
-        "id", flat=True
-    )
-    await DocumentChunk.filter(document_id__in=document_ids).delete()
-    await Document.filter(id__in=document_ids).delete()
     await asyncio.to_thread(remove_source_storage, root, storage_id)
     await storage.delete()
