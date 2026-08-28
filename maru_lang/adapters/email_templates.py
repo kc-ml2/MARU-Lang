@@ -7,12 +7,6 @@ DEFAULTS: dict[str, tuple[str, str]] = {
         "{code} - Maru Lang Code",
         "Your verification code is: {code}\n\nThis code expires in 5 minutes.",
     ),
-    "invitation": (
-        "Maru Lang - {team_name} 팀 초대",
-        "{inviter_name}님이 {team_name} 팀에 초대했습니다.\n\n"
-        "Maru Lang에 가입하여 팀에 참여하세요.\n"
-        "가입 후 자동으로 팀에 소속됩니다.",
-    ),
     "notification": (
         "Maru Lang - {team_name} 팀에 추가되었습니다",
         "{inviter_name}님이 {team_name} 팀에 추가했습니다.\n\n"

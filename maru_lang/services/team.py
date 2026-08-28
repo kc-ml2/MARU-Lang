@@ -7,8 +7,7 @@ from typing import Optional
 from tortoise.exceptions import IntegrityError
 
 from pathlib import Path
-from maru_lang.constants import ADMIN_EMAIL
-from maru_lang.core.relation_db.models.auth import Team, TeamMember, User, UserRole
+from maru_lang.core.relation_db.models.auth import Team, TeamMember, User
 from maru_lang.core.relation_db.models.chunks import DocumentChunk
 from maru_lang.core.relation_db.models.documents import (
     Document,
@@ -18,7 +17,7 @@ from maru_lang.core.relation_db.models.documents import (
 )
 from maru_lang.ports.email import EmailService
 from maru_lang.settings import Settings
-from maru_lang.enums import AccountRole, TeamRole
+from maru_lang.enums import TeamRole
 
 
 async def _provision_team(root: Path, team: Team) -> None:
@@ -37,7 +36,7 @@ async def reconcile_team_storage(root: Path) -> int:
 
 
 class TeamDeletionPendingError(Exception):
-    """The team has ingest jobs that must finish cancellation before deletion."""
+    """The team still owns a storage connected to another team."""
 
 
 async def list_teams_by_user(user: User) -> list[dict]:
@@ -56,33 +55,6 @@ async def list_teams_by_user(user: User) -> list[dict]:
     ]
 
 
-def scope_team_ids(
-    requested_team_ids,
-    all_user_teams: list[dict],
-) -> tuple[list[int], list[str]] | None:
-    """Resolve a client's requested team_ids against the user's own teams.
-
-    Used to scope chat document search per message. The request is never trusted:
-    only teams the user actually belongs to survive.
-
-    - unset/empty request -> all the user's teams
-    - otherwise -> the intersection with the user's teams (order preserved)
-    - returns None if the request names only teams the user can't access
-      (the caller should reject the message)
-    """
-    if isinstance(requested_team_ids, int):
-        requested_team_ids = [requested_team_ids]
-
-    if requested_team_ids:
-        requested = set(requested_team_ids)
-        scoped = [t for t in all_user_teams if t["id"] in requested]
-        if not scoped:
-            return None
-        return [t["id"] for t in scoped], [t["name"] for t in scoped]
-
-    return [t["id"] for t in all_user_teams], [t["name"] for t in all_user_teams]
-
-
 async def get_team_detail(team_id: int, user: User) -> dict:
     """
     Team 상세 조회: 멤버 목록 + 폴더(DocumentGroup) 목록
@@ -94,7 +66,6 @@ async def get_team_detail(team_id: int, user: User) -> dict:
 
     team = await Team.get(id=team_id)
 
-    # 멤버 목록에서 사람이 아닌 시스템 admin 계정은 제외한다.
     members_qs = await TeamMember.filter(team_id=team_id).select_related("user")
     members = [
         {
@@ -104,7 +75,6 @@ async def get_team_detail(team_id: int, user: User) -> dict:
             "role": m.role,
         }
         for m in members_qs
-        if m.user.email != ADMIN_EMAIL
     ]
 
     # 폴더(DocumentGroup) 목록 + 문서 수
@@ -134,7 +104,7 @@ async def create_team(
         raise ValueError(f"'{name}' 팀이 이미 존재합니다")
 
     team = await Team.create(
-        name=name, description=description, manager=creator, is_private=True
+        name=name, description=description, manager=creator, is_personal=False
     )
     try:
         await _provision_team(root, team)
@@ -155,6 +125,8 @@ async def delete_team(
     if team is None:
         raise LookupError("팀을 찾을 수 없습니다")
     await _check_admin(team_id, requester)
+    if team.is_personal:
+        raise PermissionError("개인 공간은 삭제할 수 없습니다")
 
     # An owned storage must outlive every team connected to it. Check this
     # before deleting any document so a rejected team deletion is non-destructive.
@@ -196,9 +168,7 @@ async def invite_member(
     email_service: Optional[EmailService] = None,
 ) -> dict:
     """
-    이메일로 사용자를 팀에 초대. admin만 가능.
-    - 미가입 유저: 익명 유저 생성 + invitation 이메일
-    - 기존 유저: 팀 추가 + notification 이메일
+    가입된 사용자를 이메일로 팀에 추가한다. admin만 가능하다.
 
     초대는 이메일만 받는다. 표시명(User.name)은 각 사용자가 본인 닉네임으로
     직접 설정하는 전역 값이므로, 초대가 기존 사용자의 이름을 덮어쓰지 않는다
@@ -212,22 +182,10 @@ async def invite_member(
     team = await Team.get(id=team_id)
     target_user = await User.get_or_none(email=email)
 
-    if target_user is None:
-        # 익명 유저 생성 (초기 표시명은 이메일 local-part로 seed; 본인이 추후 변경)
-        anonymous_role, _ = await AccountRole.get_or_create(
-            name=AccountRole.ANONYMOUS.value,
-            defaults={"description": "초대로 생성된 미가입 유저"},
-        )
-        target_user = await User.create(
-            email=email,
-            name=email.split("@")[0],
-            role=anonymous_role,
-        )
-    # 기존 유저는 멤버십만 추가한다 (이름은 절대 건드리지 않음).
+    if target_user is None or not target_user.is_active:
+        raise ValueError("가입한 사용자만 팀에 초대할 수 있습니다")
 
-    # 유저 롤이 anonymous면 아직 미가입 상태 → pending
-    is_anonymous = await _is_anonymous_user(target_user)
-    member_role = TeamRole.PENDING if is_anonymous else TeamRole.MEMBER
+    member_role = TeamRole.MEMBER
     try:
         membership = await TeamMember.create(
             user=target_user, team_id=team_id, role=member_role
@@ -235,13 +193,9 @@ async def invite_member(
     except IntegrityError:
         raise ValueError("이미 팀에 속한 멤버입니다")
 
-    # 이메일 전송: 미가입(anonymous) 유저면 invitation, 기존 유저면 notification
     if email_service:
         inviter_name = inviter.name or inviter.email
-        if is_anonymous:
-            await email_service.send_invitation(email, team.name, inviter_name)
-        else:
-            await email_service.send_notification(email, team.name, inviter_name)
+        await email_service.send_notification(email, team.name, inviter_name)
 
     return {
         "id": target_user.id,
@@ -275,14 +229,6 @@ async def remove_member(team_id: int, user_id: int, requester: User) -> None:
     await membership.delete()
 
 
-async def _is_anonymous_user(user: User) -> bool:
-    """유저가 anonymous 롤인지 확인"""
-    if not user.role_id:
-        return False
-    role = await AccountRole.get_or_none(id=user.role_id)
-    return role is not None and role.name == AccountRole.ANONYMOUS.value
-
-
 async def _check_admin(team_id: int, user: User) -> TeamMember:
     """admin 권한 확인 헬퍼"""
     membership = await TeamMember.get_or_none(team_id=team_id, user=user)
@@ -292,112 +238,8 @@ async def _check_admin(team_id: int, user: User) -> TeamMember:
 
 
 async def require_team_member(team_id: int, user: User) -> TeamMember:
-    """현재 유저가 해당 팀의 멤버인지 확인. team-scoped 작업의 서버측 검증.
-
-    클라이언트가 보낸 team_id를 그대로 신뢰하지 않기 위한 가드. delete처럼
-    admin 권한까진 필요 없고 멤버 여부만 보면 되는 upload/status/check/retry에 쓴다.
-    """
+    """Verify membership before a team-scoped operation."""
     membership = await TeamMember.get_or_none(team_id=team_id, user=user)
     if not membership:
         raise PermissionError("해당 팀의 멤버가 아닙니다")
     return membership
-
-
-async def get_or_create_team(
-    root: Path,
-    name: str,
-    manager: User,
-    is_private: bool = False,
-) -> tuple[Team, bool]:
-    """
-    Team을 조회하거나 생성
-
-    Args:
-        name: Team 이름
-        manager: Team 관리자 User
-        is_private: 비공개 여부
-
-    Returns:
-        tuple[Team, bool]: (Team 인스턴스, 신규 생성 여부)
-    """
-    team = await Team.get_or_none(name=name)
-    if team:
-        await _provision_team(root, team)
-        return team, False
-
-    team = await Team.create(
-        name=name,
-        manager=manager,
-        is_private=is_private,
-    )
-    try:
-        await _provision_team(root, team)
-    except Exception:
-        await team.delete()
-        raise
-    return team, True
-
-
-async def get_or_create_domain_team(
-    root: Path,
-    email: str,
-    manager: User,
-) -> tuple[Team, bool]:
-    """이메일 도메인으로 조직(자동) 팀을 조회/생성한다.
-
-    팀 이름은 도메인 첫 라벨(prefix)을 쓴다(예: alice@acme.com -> "acme").
-    단, 같은 prefix 팀이 이미 있는데 그 팀의 실제 멤버(시스템 admin 제외)가
-    "다른 전체 도메인"이면(예: 기존 acme.com 팀에 acme.co.kr 유입) 병합하지 않고
-    전체 도메인 이름의 별도 팀으로 격리한다. 첫 라벨만 우연히 겹치는 무관한
-    도메인이 한 조직 팀으로 섞이는 크로스 테넌트 멤버십을 막기 위함.
-
-    manager: 자동 생성 팀의 소유자. 호출부에서 시스템 admin을 넘긴다(먼저 로그인한
-    일반 유저가 조직 팀의 소유자가 되지 않도록).
-
-    Returns:
-        tuple[Team, bool]: (Team 인스턴스, 신규 생성 여부)
-    """
-    email_domain = email.split("@")[-1].lower()
-    domain_prefix = email_domain.split(".")[0]
-
-    team, created = await get_or_create_team(root, name=domain_prefix, manager=manager)
-    if not created:
-        # 기존 prefix 팀의 실제 멤버 도메인과 비교(시스템 admin은 role로 제외).
-        members = (
-            await TeamMember.filter(team=team)
-            .exclude(role=TeamRole.ADMIN)
-            .prefetch_related("user")
-        )
-        member_domains = {
-            m.user.email.split("@")[-1].lower() for m in members
-        }
-        if member_domains and email_domain not in member_domains:
-            # 첫 라벨만 겹치는 다른 도메인 -> 전체 도메인 이름으로 격리(prefix 팀과 안 겹침).
-            team, created = await get_or_create_team(
-                root, name=email_domain, manager=manager
-            )
-    return team, created
-
-
-async def add_member_to_team(
-    team: Team,
-    user: User,
-    role: TeamRole = TeamRole.MEMBER,
-) -> tuple[TeamMember, bool]:
-    """
-    User를 Team에 가입시킴
-
-    Args:
-        team: Team 인스턴스
-        user: 가입시킬 User 인스턴스
-        role: 역할 (기본값: "member")
-
-    Returns:
-        tuple[TeamMember, bool]: (TeamMember 인스턴스, 신규 생성 여부)
-    """
-    membership, created = await TeamMember.get_or_create(
-        user=user,
-        team=team,
-        defaults={"role": role},
-    )
-    return membership, created

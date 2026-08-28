@@ -54,13 +54,6 @@ class SMTPEmailService:
             body.format(code=code),
         )
 
-    async def send_invitation(
-        self, recipient: str, team_name: str, inviter_name: str
-    ) -> bool:
-        return await self._send_team_message(
-            "invitation", recipient, team_name, inviter_name
-        )
-
     async def send_notification(
         self, recipient: str, team_name: str, inviter_name: str
     ) -> bool:

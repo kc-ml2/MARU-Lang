@@ -35,10 +35,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings.database_url,
             generate_schemas=True,
         ):
-            from maru_lang.services.admin import ensure_admin_user
             from maru_lang.services.team import reconcile_team_storage
 
-            await ensure_admin_user(resolved_settings.filesystem_root)
             resolved_settings.filesystem_root.mkdir(parents=True, exist_ok=True)
             await reconcile_team_storage(resolved_settings.filesystem_root)
             yield

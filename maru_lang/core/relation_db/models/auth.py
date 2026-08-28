@@ -1,6 +1,7 @@
 from __future__ import annotations
 from tortoise.models import Model
 from tortoise import fields
+from tortoise.indexes import PartialIndex
 
 from maru_lang.enums import TeamRole
 
@@ -9,15 +10,8 @@ class User(Model):
     id = fields.IntField(pk=True)
     name = fields.CharField(max_length=255, index=True, null=True)
     email = fields.CharField(max_length=255, index=True, unique=True)
-    role = fields.ForeignKeyField(
-        "models.UserRole", related_name="users", null=True)
+    is_active = fields.BooleanField(default=False)
     created_at = fields.DatetimeField(auto_now_add=True)
-
-
-class UserRole(Model):
-    id = fields.IntField(pk=True)
-    name = fields.CharField(max_length=255, index=True, unique=True)
-    description = fields.TextField(null=True)
 
 
 class Team(Model):
@@ -29,8 +23,17 @@ class Team(Model):
         related_name="managed_teams",
         on_delete=fields.RESTRICT  # Prevents User deletion if managing Teams
     )
-    is_private = fields.BooleanField(default=False)
+    is_personal = fields.BooleanField(default=False, index=True)
     created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:  # type: ignore[override]
+        indexes = (
+            PartialIndex(
+                fields=("manager_id",),
+                name="uidx_team_personal_manager",
+                condition={"is_personal": True},
+            ),
+        )
 
 
 class TeamMember(Model):
