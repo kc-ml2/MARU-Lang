@@ -13,13 +13,15 @@
 
 **MARU-Lang is a team-based filesystem retriever for AI applications and agents.**
 
-It provides the same retrieval capabilities through HTTP API and MCP. Files are
-indexed once and shared through team storage links; every search is restricted
-to the storages accessible to the requesting team. PostgreSQL stores metadata
-and pgvector powers semantic retrieval.
+It is designed to provide the same retrieval capabilities through HTTP API and
+MCP. Files are shared through team storage links, and every search is restricted
+to storages accessible to the requesting team. PostgreSQL stores MARU metadata;
+a local pgvector implementation or an external indexing system can provide the
+retrieval backend.
 
-MARU provides retrieval, not answer generation. A separate application or agent
-can use the retrieved chunks to implement Retrieval-Augmented Generation (RAG).
+MARU provides retrieval orchestration, not answer generation. A separate
+application or agent can use retrieved chunks to implement Retrieval-Augmented
+Generation (RAG).
 In that term, **retrieval-augmented** means that generation is supplemented with
 information retrieved from an external knowledge source.
 
@@ -42,6 +44,30 @@ A team-owned storage is writable only by its owner team. Linked storages are
 read-only. System storages such as `help` are automatically linked read-only to
 personal teams. Documents and chunks remain attached to their source storage,
 so linking the same storage to multiple teams does not duplicate retrieval data.
+
+## Indexing and retrieval pipelines
+
+The two core pipelines have separate, replaceable contracts:
+
+```text
+Indexing
+DocumentSource → DocumentChunker → IndexSink
+
+Retrieval
+team authorization → RetrievalBackend → ranked chunks
+```
+
+`IndexingService` composes extraction, chunking, and index synchronization.
+`RetrievalService` resolves the storages available to a team before delegating
+search, then validates that every returned chunk remains inside that authorized
+scope. Backends may use MARU's `Document`/`DocumentChunk` tables and pgvector or
+connect to an independently operated indexing and retrieval system.
+
+The contracts are available in `maru_lang.ports.indexing` and
+`maru_lang.ports.retrieval`. No concrete parser, chunker, embedding model, or
+retrieval backend is selected yet; those optional capabilities are represented
+as `None` in `AppContext` until configured. This keeps authentication, teams,
+and storage management operational independently of an indexing backend.
 
 ## Run
 
@@ -74,6 +100,6 @@ Optional variables:
 
 ## Runtime architecture
 
-PostgreSQL is the sole database and pgvector is the retrieval persistence layer.
-HTTP and MCP share one application-owned service context and the same
-team-based access rules.
+PostgreSQL is MARU's sole metadata database. HTTP and MCP share one
+application-owned service context, the same optional indexing/retrieval
+capabilities, and the same team-based access rules.

@@ -1,15 +1,10 @@
-"""PostgreSQL pgvector-backed retrieval chunks."""
+"""Backend-neutral retrieval chunk metadata."""
 from tortoise import fields
 from tortoise.models import Model
 
 
 class DocumentChunk(Model):
-    """Text chunk metadata.
-
-    The embedding column is managed by the pgvector repository/migration once
-    the embedding dimension is chosen. Keeping it out of the ORM avoids baking
-    a model-specific dimension into the application settings.
-    """
+    """Optional local chunk metadata, independent of embedding technology."""
 
     id = fields.CharField(pk=True, max_length=128)
     document = fields.ForeignKeyField(

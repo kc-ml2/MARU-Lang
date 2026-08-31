@@ -34,7 +34,6 @@ async def database_context(
             connection = context.get_connection("default")
             await connection.execute_script(
                 """
-                CREATE EXTENSION IF NOT EXISTS vector;
                 ALTER TABLE source_storage
                     DROP CONSTRAINT IF EXISTS source_storage_owner_check;
                 ALTER TABLE source_storage
