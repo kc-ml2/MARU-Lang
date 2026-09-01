@@ -5,6 +5,9 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from maru_lang.enums import PipelineStage
+from maru_lang.pipeline import PipelineConfig
+
 
 @dataclass(frozen=True, slots=True)
 class SourceDocument:
@@ -41,6 +44,17 @@ class IndexingReport:
     documents_seen: int
     chunks_written: int
     documents_deleted: int = 0
+
+
+class PipelineExecutor(Protocol):
+    """Execute MARU's fixed pipeline while honoring its stage and config."""
+
+    async def execute(
+        self,
+        storage_id: str,
+        config: PipelineConfig,
+        from_stage: PipelineStage,
+    ) -> IndexingReport: ...
 
 
 class DocumentSource(Protocol):

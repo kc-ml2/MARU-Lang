@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.storages import router as storages_router
+from maru_lang.api.endpoints.pipeline import router as pipeline_router
 from maru_lang.api.endpoints.teams import router as teams_router
 from maru_lang.context import AppContext
 from maru_lang.core.relation_db import database_context
@@ -74,4 +75,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_router)
     app.include_router(teams_router)
     app.include_router(storages_router)
+    app.include_router(pipeline_router)
     return app

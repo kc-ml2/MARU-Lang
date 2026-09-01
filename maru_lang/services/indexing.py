@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+from maru_lang.enums import PipelineStage
+from maru_lang.pipeline import PipelineConfig
 from maru_lang.ports.indexing import (
     ChunkedDocument,
     DocumentChunker,
@@ -25,7 +27,19 @@ class IndexingService:
         self._chunker = chunker
         self._sink = sink
 
-    async def synchronize(self, storage_id: str) -> IndexingReport:
+    async def execute(
+        self,
+        storage_id: str,
+        config: PipelineConfig,
+        from_stage: PipelineStage,
+    ) -> IndexingReport:
+        """Execute the configured pipeline.
+
+        This compositional executor currently supports full runs only. Concrete
+        stage-aware executors must replace it before selective reruns are enabled.
+        """
+        if from_stage != PipelineStage.SCAN:
+            raise NotImplementedError("Selective pipeline reruns are not configured")
         if not storage_id:
             raise ValueError("Storage ID must not be empty")
 

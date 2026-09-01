@@ -15,9 +15,8 @@
 
 It is designed to provide the same retrieval capabilities through HTTP API and
 MCP. Files are shared through team storage links, and every search is restricted
-to storages accessible to the requesting team. PostgreSQL stores MARU metadata;
-a local pgvector implementation or an external indexing system can provide the
-retrieval backend.
+to storages accessible to the requesting team. PostgreSQL is the canonical
+metadata and retrieval backend, with pgvector providing semantic search.
 
 MARU provides retrieval orchestration, not answer generation. A separate
 application or agent can use retrieved chunks to implement Retrieval-Augmented
@@ -45,29 +44,26 @@ read-only. System storages such as `help` are automatically linked read-only to
 personal teams. Documents and chunks remain attached to their source storage,
 so linking the same storage to multiple teams does not duplicate retrieval data.
 
-## Indexing and retrieval pipelines
+## Stable, inspectable pipelines
 
-The two core pipelines have separate, replaceable contracts:
+MARU owns a stable pipeline order rather than exposing a general workflow
+engine:
 
 ```text
-Indexing
-DocumentSource → DocumentChunker → IndexSink
-
-Retrieval
-team authorization → RetrievalBackend → ranked chunks
+Indexing:  scan → parse → chunk → embed → index
+Retrieval: authorize → lexical → vector → fuse → results
 ```
 
-`IndexingService` composes extraction, chunking, and index synchronization.
-`RetrievalService` resolves the storages available to a team before delegating
-search, then validates that every returned chunk remains inside that authorized
-scope. Backends may use MARU's `Document`/`DocumentChunk` tables and pgvector or
-connect to an independently operated indexing and retrieval system.
+AI agents can inspect the active configuration, change validated options, and
+request a rerun from a specific indexing stage. They cannot reorder stages or
+execute arbitrary code. Configuration changes and runs require owner-team admin
+access; linked and system storages remain read-only.
 
-The contracts are available in `maru_lang.ports.indexing` and
-`maru_lang.ports.retrieval`. No concrete parser, chunker, embedding model, or
-retrieval backend is selected yet; those optional capabilities are represented
-as `None` in `AppContext` until configured. This keeps authentication, teams,
-and storage management operational independently of an indexing backend.
+The pipeline configuration and each run's immutable configuration snapshot are
+stored in PostgreSQL. Authentication, teams, and storage management continue to
+work when no indexing executor is configured. Concrete parsing, chunking,
+embedding, PostgreSQL indexing, base search, and MCP tools are the next
+implementation layer over these contracts.
 
 ## Run
 

@@ -10,3 +10,19 @@ class StorageOwnerType(StrEnum):
 class TeamRole(StrEnum):
     MEMBER = "member"
     ADMIN = "admin"
+
+
+class PipelineStage(StrEnum):
+    SCAN = "scan"
+    PARSE = "parse"
+    CHUNK = "chunk"
+    EMBED = "embed"
+    INDEX = "index"
+
+
+class PipelineRunStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
