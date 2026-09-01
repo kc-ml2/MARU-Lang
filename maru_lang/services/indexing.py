@@ -15,7 +15,7 @@ from maru_lang.ports.indexing import (
 
 
 class IndexingService:
-    """Compose replaceable indexing stages without selecting their technology."""
+    """Compose MARU's fixed indexing stages from registered implementations."""
 
     def __init__(
         self,

@@ -1,8 +1,10 @@
+import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 from maru_lang.settings import Settings
 from maru_lang.utils.security import TokenCodec
-from maru_lang.ports.email import EmailService
+from tortoise.exceptions import IntegrityError
+from tortoise.transactions import in_transaction
 
 from maru_lang.core.relation_db.models.auth import (
     User,
@@ -17,11 +19,16 @@ async def create_or_get_user(email: str) -> tuple[User, bool]:
     if user is not None:
         return user, False
 
-    user = await User.create(
-        email=email,
-        name=email.split("@", 1)[0],
-    )
-    return user, True
+    try:
+        user = await User.create(
+            email=email,
+            name=email.split("@", 1)[0],
+        )
+        return user, True
+    except IntegrityError:
+        # Concurrent successful verifications for the same address converge on
+        # the unique User row instead of surfacing a signup race.
+        return await User.get(email=email), False
 
 
 async def update_user_name(user: User, name: str) -> User:
@@ -38,12 +45,7 @@ async def update_user_name(user: User, name: str) -> User:
     return user
 
 
-async def generate_email_verification_code(
-    email: str,
-    email_service: EmailService | None = None
-) -> EmailVerificationCode:
-    if not email_service:
-        raise ValueError("Email service is not configured")
+async def generate_email_verification_code(email: str) -> EmailVerificationCode:
     code = f"{secrets.randbelow(1_000_000):06d}"
 
     await EmailVerificationCode.filter(email=email).delete()
@@ -52,13 +54,15 @@ async def generate_email_verification_code(
 
 async def verify_email_code(email: str, code: str, limit: int = 5) -> bool:
     record = await EmailVerificationCode.get_or_none(email=email)
-    if not record or record.code != code:
+    if not record or not hmac.compare_digest(record.code, code):
         return False
     expiration_time = record.created_at + timedelta(minutes=limit)
     if expiration_time <= datetime.now(timezone.utc):
+        await record.delete()
         return False
-    await record.delete()
-    return True
+    # A conditional delete makes the code single-use even when two verification
+    # requests race after reading the same valid row.
+    return await EmailVerificationCode.filter(id=record.id).delete() == 1
 
 
 async def generate_token(
@@ -106,7 +110,7 @@ async def generate_token(
     return access_token, refresh_token
 
 
-async def refresh_token_flow(
+async def _refresh_token_flow_locked(
     refresh_token: str,
     device_id: str,
     *,
@@ -134,7 +138,7 @@ async def refresh_token_flow(
         device_id=device_id,
         revoked_at__isnull=True,
         rotated_at__isnull=True
-    ).all()
+    ).select_for_update().all()
 
     # 중복 토큰이 있으면 모두 폐기하고 실패 반환 (비정상 상태)
     if len(active_tokens) > 1:
@@ -197,6 +201,23 @@ async def refresh_token_flow(
     await db_refresh.save()
 
     return access_token, new_refresh_token
+
+
+async def refresh_token_flow(
+    refresh_token: str,
+    device_id: str,
+    *,
+    config: Settings,
+    tokens: TokenCodec,
+) -> tuple[str, str] | None:
+    """Atomically rotate one device's refresh token."""
+    async with in_transaction():
+        return await _refresh_token_flow_locked(
+            refresh_token,
+            device_id,
+            config=config,
+            tokens=tokens,
+        )
 
 
 async def revoke_token(user_id: int, device_id: str) -> None:

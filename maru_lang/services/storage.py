@@ -10,6 +10,7 @@ from maru_lang.core.relation_db.models.documents import (
     TeamStorageLink,
 )
 from maru_lang.enums import StorageOwnerType
+from maru_lang.services.authorization import require_team_admin
 from maru_lang.utils.ids import new_ulid
 from maru_lang.utils.file_storage import provision_source_storage, remove_source_storage
 
@@ -31,6 +32,7 @@ async def create_source_storage(
         await TeamStorageLink.create(team=owner_team, storage=storage)
     except Exception:
         await storage.delete()
+        await asyncio.to_thread(remove_source_storage, root, storage.id)
         raise
     return storage
 
@@ -58,16 +60,14 @@ async def connect_storage(
     storage_id: str, target_team_id: int, requester: User
 ) -> TeamStorageLink:
     """Connect storage read-only; requester must admin both owner and target."""
-    from maru_lang.services.team import _check_admin
-
     storage = await SourceStorage.get_or_none(id=storage_id)
     if storage is None:
         raise LookupError("스토리지를 찾을 수 없습니다")
     if storage.owner_type != StorageOwnerType.TEAM:
         raise PermissionError("시스템 스토리지는 자동 연결만 허용됩니다")
     assert storage.owner_team_id is not None
-    await _check_admin(storage.owner_team_id, requester)
-    await _check_admin(target_team_id, requester)
+    await require_team_admin(storage.owner_team_id, requester)
+    await require_team_admin(target_team_id, requester)
     link, _ = await TeamStorageLink.get_or_create(
         team_id=target_team_id, storage_id=storage_id
     )
@@ -78,8 +78,6 @@ async def disconnect_storage(
     storage_id: str, team_id: int, requester: User
 ) -> None:
     """Remove a team's read-only access without touching shared documents."""
-    from maru_lang.services.team import _check_admin
-
     storage = await SourceStorage.get_or_none(id=storage_id)
     if storage is None:
         raise LookupError("스토리지를 찾을 수 없습니다")
@@ -87,9 +85,9 @@ async def disconnect_storage(
         raise PermissionError("시스템 스토리지 연결은 해제할 수 없습니다")
     if storage.owner_team_id == team_id:
         raise ValueError("소유 팀은 스토리지 연결을 해제할 수 없습니다")
-    await _check_admin(team_id, requester)
+    await require_team_admin(team_id, requester)
     assert storage.owner_team_id is not None
-    await _check_admin(storage.owner_team_id, requester)
+    await require_team_admin(storage.owner_team_id, requester)
 
     # Documents belong to the storage, not to the linked team. Disconnecting a
     # reader therefore removes only the permission link and never shared data.
@@ -100,15 +98,13 @@ async def delete_source_storage(
     root: Path, storage_id: str, requester: User
 ) -> None:
     """Delete an unshared storage owned by requester's admin team."""
-    from maru_lang.services.team import _check_admin
-
     storage = await SourceStorage.get_or_none(id=storage_id)
     if storage is None:
         raise LookupError("스토리지를 찾을 수 없습니다")
     if storage.owner_type != StorageOwnerType.TEAM:
         raise PermissionError("시스템 스토리지는 삭제할 수 없습니다")
     assert storage.owner_team_id is not None
-    await _check_admin(storage.owner_team_id, requester)
+    await require_team_admin(storage.owner_team_id, requester)
     if await TeamStorageLink.filter(storage_id=storage_id).exclude(
         team_id=storage.owner_team_id
     ).exists():

@@ -38,13 +38,14 @@ async def login(
             status_code=403,
             detail="허용되지 않은 이메일 도메인입니다",
         )
+    if context.email is None:
+        raise HTTPException(status_code=503, detail="Email service is not configured")
     try:
-        otp = await generate_email_verification_code(request.email, context.email)
-        if context.email:
-            success = await context.email.send_otp(request.email, otp.code)
-            if not success:
-                await otp.delete()
-                raise Exception("Failed to send verification email")
+        otp = await generate_email_verification_code(request.email)
+        success = await context.email.send_otp(request.email, otp.code)
+        if not success:
+            await otp.delete()
+            raise RuntimeError("Failed to send verification email")
         return otp.email
     except Exception as e:
         raise HTTPException(

@@ -15,7 +15,7 @@ from maru_lang.services.storage import (
     disconnect_storage,
     list_team_storages,
 )
-from maru_lang.services.team import _check_admin
+from maru_lang.services.authorization import require_team_admin, require_team_member
 
 router = APIRouter(tags=["Storages"])
 
@@ -35,7 +35,7 @@ def _response(storage, team_id: int) -> StorageResponse:
 @router.get("/teams/{team_id}/storages", response_model=list[StorageResponse])
 async def get_team_storages(team_id: int, user=Depends(get_user)):
     try:
-        await _check_admin(team_id, user)
+        await require_team_member(team_id, user)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     return [_response(storage, team_id) for storage in await list_team_storages(team_id)]
@@ -49,7 +49,7 @@ async def create_storage(
     context: AppContext = Depends(get_app_context),
 ):
     try:
-        await _check_admin(team_id, user)
+        await require_team_admin(team_id, user)
         team = await Team.get(id=team_id)
         storage = await create_source_storage(
             context.settings.filesystem_root, team, body.name

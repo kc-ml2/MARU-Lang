@@ -1,9 +1,10 @@
 """Team-scoped retrieval orchestration shared by every transport."""
 from __future__ import annotations
 
-from maru_lang.core.relation_db.models.auth import TeamMember, User
+from maru_lang.core.relation_db.models.auth import User
 from maru_lang.core.relation_db.models.documents import TeamStorageLink
 from maru_lang.ports.retrieval import RetrievalBackend, RetrievalQuery, RetrievedChunk
+from maru_lang.services.authorization import require_team_member
 
 
 class RetrievalService:
@@ -21,8 +22,7 @@ class RetrievalService:
         limit: int = 10,
         filters: dict[str, object] | None = None,
     ) -> list[RetrievedChunk]:
-        if not await TeamMember.exists(team_id=team_id, user_id=user.id):
-            raise PermissionError("해당 팀의 멤버가 아닙니다")
+        await require_team_member(team_id, user)
 
         storage_ids = tuple(
             await TeamStorageLink.filter(team_id=team_id).values_list(
@@ -39,8 +39,8 @@ class RetrievalService:
             return []
         results = list(await self._backend.search(query))
 
-        # A backend may be remote or independently operated. Enforce the
-        # authorized storage boundary again before returning its results.
+        # Keep authorization independent from ranking implementation details.
+        # Reject any result outside the storage scope computed by MARU.
         allowed = set(storage_ids)
         if any(result.storage_id not in allowed for result in results):
             raise RuntimeError("Retrieval backend returned an unauthorized storage")

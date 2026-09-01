@@ -56,7 +56,7 @@ class TeamMember(Model):
 
 class EmailVerificationCode(Model):
     id = fields.IntField(pk=True)
-    email = fields.CharField(max_length=255, index=True)
+    email = fields.CharField(max_length=255, unique=True)
     code = fields.CharField(max_length=6)
     created_at = fields.DatetimeField(auto_now_add=True)
 

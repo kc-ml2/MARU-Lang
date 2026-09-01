@@ -8,12 +8,14 @@ from maru_lang.core.relation_db.models import (
     PipelineRun,
     SourceStorage,
     StoragePipelineConfig,
+    TeamMember,
+    TeamStorageLink,
     User,
 )
 from maru_lang.enums import PipelineRunStatus, PipelineStage, StorageOwnerType
 from maru_lang.pipeline import PIPELINE_STAGES, PipelineConfig
 from maru_lang.ports.indexing import PipelineExecutor
-from maru_lang.services.team import _check_admin
+from maru_lang.services.authorization import require_team_admin
 from maru_lang.utils.ids import new_ulid
 
 
@@ -39,12 +41,10 @@ async def get_pipeline_config(storage_id: str) -> PipelineConfig:
 async def inspect_pipeline(
     storage_id: str, team_id: int, requester: User
 ) -> PipelineInspection:
-    if not await storage_is_accessible(storage_id, team_id):
-        raise PermissionError("해당 팀에서 접근할 수 없는 스토리지입니다")
-    from maru_lang.core.relation_db.models import TeamMember
-
     if not await TeamMember.exists(team_id=team_id, user_id=requester.id):
         raise PermissionError("해당 팀의 멤버가 아닙니다")
+    if not await TeamStorageLink.exists(storage_id=storage_id, team_id=team_id):
+        raise PermissionError("해당 팀에서 접근할 수 없는 스토리지입니다")
     saved = await StoragePipelineConfig.get_or_none(storage_id=storage_id)
     config = PipelineConfig.from_dict(saved.config if saved else None)
     latest = await PipelineRun.filter(storage_id=storage_id).order_by(
@@ -72,7 +72,7 @@ async def configure_pipeline(
     if storage.owner_type != StorageOwnerType.TEAM:
         raise PermissionError("시스템 스토리지 설정은 변경할 수 없습니다")
     assert storage.owner_team_id is not None
-    await _check_admin(storage.owner_team_id, requester)
+    await require_team_admin(storage.owner_team_id, requester)
     await StoragePipelineConfig.update_or_create(
         storage_id=storage_id,
         defaults={"config": config.to_dict(), "config_hash": config.fingerprint},
@@ -92,7 +92,7 @@ async def request_pipeline_run(
     if storage.owner_type != StorageOwnerType.TEAM:
         raise PermissionError("시스템 스토리지는 재실행할 수 없습니다")
     assert storage.owner_team_id is not None
-    await _check_admin(storage.owner_team_id, requester)
+    await require_team_admin(storage.owner_team_id, requester)
     if indexing is None:
         raise RuntimeError("Indexing pipeline is not configured")
     if from_stage != PipelineStage.SCAN:
@@ -133,9 +133,3 @@ async def request_pipeline_run(
     run.completed_at = datetime.now(timezone.utc)
     await run.save(update_fields=["status", "report", "completed_at"])
     return run
-
-
-async def storage_is_accessible(storage_id: str, team_id: int) -> bool:
-    from maru_lang.core.relation_db.models import TeamStorageLink
-
-    return await TeamStorageLink.exists(storage_id=storage_id, team_id=team_id)

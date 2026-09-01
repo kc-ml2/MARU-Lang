@@ -15,20 +15,15 @@ from maru_lang.core.relation_db.models.documents import (
 from maru_lang.ports.email import EmailService
 from maru_lang.settings import Settings
 from maru_lang.enums import StorageOwnerType, TeamRole
-
-
-async def _provision_team(root: Path, team: Team) -> None:
-    """Ensure the team's independently owned default source storage exists."""
-    from maru_lang.services.storage import ensure_default_source_storage
-
-    await ensure_default_source_storage(root, team)
+from maru_lang.services.authorization import require_team_admin
+from maru_lang.services.storage import ensure_default_source_storage
 
 
 async def reconcile_team_storage(root: Path) -> int:
     """Idempotently bootstrap default storages for pre-existing teams."""
     teams = await Team.all()
     for team in teams:
-        await _provision_team(root, team)
+        await ensure_default_source_storage(root, team)
     return len(teams)
 
 
@@ -99,7 +94,7 @@ async def create_team(
         name=name, description=description, manager=creator, is_personal=False
     )
     try:
-        await _provision_team(root, team)
+        await ensure_default_source_storage(root, team)
         await TeamMember.create(user=creator, team=team, role=TeamRole.ADMIN)
     except Exception:
         # Filesystem provisioning is part of team creation. Do not leave a DB
@@ -112,11 +107,11 @@ async def create_team(
 async def delete_team(
     root: Path, team_id: int, requester: User, *, delete_files: bool = False
 ) -> None:
-    """Hard-delete a team, its document projections, and optional source files."""
+    """Delete an unshared collaboration team and optionally its source files."""
     team = await Team.get_or_none(id=team_id)
     if team is None:
         raise LookupError("팀을 찾을 수 없습니다")
-    await _check_admin(team_id, requester)
+    await require_team_admin(team_id, requester)
     if team.is_personal:
         raise PermissionError("개인 공간은 삭제할 수 없습니다")
 
@@ -158,7 +153,7 @@ async def invite_member(
     직접 설정하는 전역 값이므로, 초대가 기존 사용자의 이름을 덮어쓰지 않는다
     (덮어쓰면 그 사용자가 속한 다른 팀에서도 이름이 바뀌는 버그가 됨).
     """
-    await _check_admin(team_id, inviter)
+    await require_team_admin(team_id, inviter)
 
     if not settings.is_domain_allowed(email):
         raise ValueError("허용되지 않은 이메일 도메인입니다")
@@ -193,7 +188,7 @@ async def remove_member(team_id: int, user_id: int, requester: User) -> None:
     """
     팀에서 멤버 제거. admin만 가능. 최소 1명의 admin 유지.
     """
-    await _check_admin(team_id, requester)
+    await require_team_admin(team_id, requester)
 
     if requester.id == user_id:
         raise PermissionError("본인을 제거할 수 없습니다")
@@ -211,11 +206,3 @@ async def remove_member(team_id: int, user_id: int, requester: User) -> None:
             raise PermissionError("팀에 최소 1명의 admin이 필요합니다")
 
     await membership.delete()
-
-
-async def _check_admin(team_id: int, user: User) -> TeamMember:
-    """admin 권한 확인 헬퍼"""
-    membership = await TeamMember.get_or_none(team_id=team_id, user=user)
-    if not membership or membership.role != TeamRole.ADMIN:
-        raise PermissionError("admin 권한이 필요합니다")
-    return membership
