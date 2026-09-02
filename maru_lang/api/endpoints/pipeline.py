@@ -28,11 +28,9 @@ def _run_response(run: PipelineRun) -> PipelineRunResponse:
         from_stage=run.from_stage.value,
         status=run.status.value,
         config_snapshot=PipelineConfigPayload(**run.config_snapshot),
-        config_hash=run.config_hash,
         report=run.report,
         error=run.error,
         created_at=run.created_at,
-        started_at=run.started_at,
         completed_at=run.completed_at,
     )
 
@@ -52,10 +50,8 @@ async def get_pipeline(
             storage_id=inspection.storage_id,
             stages=list(inspection.stages),
             config=PipelineConfigPayload(**inspection.config.to_dict()),
-            config_hash=inspection.config_hash,
             latest_run_id=inspection.latest_run_id,
             latest_run_status=inspection.latest_run_status,
-            configured=inspection.configured,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

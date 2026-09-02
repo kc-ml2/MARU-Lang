@@ -1,4 +1,4 @@
-"""Inspect, configure, and selectively rerun MARU's stable pipeline."""
+"""Inspect, configure, and rerun MARU's fixed indexing pipeline."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from maru_lang.core.relation_db.models import (
     PipelineRun,
     SourceStorage,
-    StoragePipelineConfig,
     TeamMember,
     TeamStorageLink,
     User,
@@ -24,18 +23,15 @@ class PipelineInspection:
     storage_id: str
     stages: tuple[str, ...]
     config: PipelineConfig
-    config_hash: str
-    configured: bool
     latest_run_id: str | None
     latest_run_status: str | None
 
 
-async def get_pipeline_config(storage_id: str) -> PipelineConfig:
+async def _get_storage(storage_id: str) -> SourceStorage:
     storage = await SourceStorage.get_or_none(id=storage_id)
     if storage is None:
         raise LookupError("스토리지를 찾을 수 없습니다")
-    saved = await StoragePipelineConfig.get_or_none(storage_id=storage_id)
-    return PipelineConfig.from_dict(saved.config if saved else None)
+    return storage
 
 
 async def inspect_pipeline(
@@ -45,8 +41,9 @@ async def inspect_pipeline(
         raise PermissionError("해당 팀의 멤버가 아닙니다")
     if not await TeamStorageLink.exists(storage_id=storage_id, team_id=team_id):
         raise PermissionError("해당 팀에서 접근할 수 없는 스토리지입니다")
-    saved = await StoragePipelineConfig.get_or_none(storage_id=storage_id)
-    config = PipelineConfig.from_dict(saved.config if saved else None)
+
+    storage = await _get_storage(storage_id)
+    config = PipelineConfig.from_dict(storage.pipeline_config)
     latest = await PipelineRun.filter(storage_id=storage_id).order_by(
         "-created_at"
     ).first()
@@ -54,8 +51,6 @@ async def inspect_pipeline(
         storage_id=storage_id,
         stages=tuple(stage.value for stage in PIPELINE_STAGES),
         config=config,
-        config_hash=config.fingerprint,
-        configured=saved is not None,
         latest_run_id=latest.id if latest else None,
         latest_run_status=latest.status.value if latest else None,
     )
@@ -66,17 +61,13 @@ async def configure_pipeline(
     requester: User,
     config: PipelineConfig,
 ) -> PipelineConfig:
-    storage = await SourceStorage.get_or_none(id=storage_id)
-    if storage is None:
-        raise LookupError("스토리지를 찾을 수 없습니다")
+    storage = await _get_storage(storage_id)
     if storage.owner_type != StorageOwnerType.TEAM:
         raise PermissionError("시스템 스토리지 설정은 변경할 수 없습니다")
     assert storage.owner_team_id is not None
     await require_team_admin(storage.owner_team_id, requester)
-    await StoragePipelineConfig.update_or_create(
-        storage_id=storage_id,
-        defaults={"config": config.to_dict(), "config_hash": config.fingerprint},
-    )
+    storage.pipeline_config = config.to_dict()
+    await storage.save(update_fields=["pipeline_config"])
     return config
 
 
@@ -86,9 +77,7 @@ async def request_pipeline_run(
     from_stage: PipelineStage,
     indexing: PipelineExecutor | None,
 ) -> PipelineRun:
-    storage = await SourceStorage.get_or_none(id=storage_id)
-    if storage is None:
-        raise LookupError("스토리지를 찾을 수 없습니다")
+    storage = await _get_storage(storage_id)
     if storage.owner_type != StorageOwnerType.TEAM:
         raise PermissionError("시스템 스토리지는 재실행할 수 없습니다")
     assert storage.owner_team_id is not None
@@ -98,23 +87,19 @@ async def request_pipeline_run(
     if from_stage != PipelineStage.SCAN:
         raise RuntimeError("Selective pipeline reruns are not configured")
     if await PipelineRun.exists(
-        storage_id=storage_id,
-        status__in=[PipelineRunStatus.PENDING, PipelineRunStatus.RUNNING],
+        storage_id=storage_id, status=PipelineRunStatus.RUNNING
     ):
         raise RuntimeError("이미 실행 중인 indexing run이 있습니다")
 
-    config = await get_pipeline_config(storage_id)
+    config = PipelineConfig.from_dict(storage.pipeline_config)
     run = await PipelineRun.create(
         id=new_ulid(),
         storage_id=storage_id,
         requested_by=requester,
         from_stage=from_stage,
+        status=PipelineRunStatus.RUNNING,
         config_snapshot=config.to_dict(),
-        config_hash=config.fingerprint,
     )
-    run.status = PipelineRunStatus.RUNNING
-    run.started_at = datetime.now(timezone.utc)
-    await run.save(update_fields=["status", "started_at"])
     try:
         report = await indexing.execute(storage_id, config, from_stage)
     except Exception as exc:
@@ -123,6 +108,7 @@ async def request_pipeline_run(
         run.completed_at = datetime.now(timezone.utc)
         await run.save(update_fields=["status", "error", "completed_at"])
         raise
+
     run.status = PipelineRunStatus.COMPLETED
     run.report = {
         "storage_id": report.storage_id,

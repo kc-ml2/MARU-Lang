@@ -59,11 +59,11 @@ request a rerun from a specific indexing stage. They cannot reorder stages or
 execute arbitrary code. Configuration changes and runs require owner-team admin
 access; linked and system storages remain read-only.
 
-The pipeline configuration and each run's immutable configuration snapshot are
-stored in PostgreSQL. Authentication, teams, and storage management continue to
-work when no indexing executor is configured. Concrete parsing, chunking,
-embedding, PostgreSQL indexing, base search, and MCP tools are the next
-implementation layer over these contracts.
+Each storage keeps two tunable options—target chunk size and overlap—and every
+run stores a snapshot of those values in PostgreSQL. Authentication, teams, and
+storage management continue to work when no indexing executor is configured.
+Concrete parsing, chunking, embedding, PostgreSQL indexing, base search, and MCP
+tools are the next PoC layer.
 
 ## Run
 

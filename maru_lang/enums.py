@@ -21,8 +21,6 @@ class PipelineStage(StrEnum):
 
 
 class PipelineRunStatus(StrEnum):
-    PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
-    CANCELLED = "cancelled"

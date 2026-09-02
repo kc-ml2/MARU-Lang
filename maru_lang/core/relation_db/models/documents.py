@@ -20,6 +20,7 @@ class SourceStorage(Model):
     )
     system_key = fields.CharField(max_length=100, null=True, unique=True)
     auto_attach = fields.BooleanField(default=False, index=True)
+    pipeline_config = fields.JSONField(default=dict)
     created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:  # type: ignore[override]

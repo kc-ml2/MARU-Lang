@@ -3,7 +3,7 @@
 from .auth import EmailVerificationCode, RefreshToken, Team, TeamMember, User, UserToken
 from .chunks import DocumentChunk
 from .documents import Document, SourceStorage, TeamStorageLink
-from .pipeline import PipelineRun, StoragePipelineConfig
+from .pipeline import PipelineRun
 
 __all__ = [
     "User",
@@ -16,6 +16,5 @@ __all__ = [
     "TeamStorageLink",
     "Document",
     "DocumentChunk",
-    "StoragePipelineConfig",
     "PipelineRun",
 ]
