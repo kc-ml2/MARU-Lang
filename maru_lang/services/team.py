@@ -116,7 +116,7 @@ async def delete_team(
         raise PermissionError("개인 공간은 삭제할 수 없습니다")
 
     # An owned storage must outlive every team connected to it. Check this
-    # before deleting any document so a rejected team deletion is non-destructive.
+    # before deleting files so a rejected team deletion is non-destructive.
     owned_storages = await SourceStorage.filter(
         owner_type=StorageOwnerType.TEAM, owner_team_id=team_id
     ).all()

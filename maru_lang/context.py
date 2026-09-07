@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from maru_lang.ports.email import EmailService
-from maru_lang.ports.indexing import PipelineExecutor
+from maru_lang.services.search import SearchBackend
 from maru_lang.settings import Settings
 from maru_lang.utils.security import TokenCodec
 
@@ -14,4 +14,4 @@ class AppContext:
     settings: Settings
     tokens: TokenCodec
     email: EmailService | None
-    indexing: PipelineExecutor | None = None
+    search: SearchBackend

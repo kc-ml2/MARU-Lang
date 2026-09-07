@@ -1,4 +1,4 @@
-"""MARU team-based filesystem retriever."""
+"""A deterministic, team-scoped filesystem access layer for AI agents."""
 
 __version__ = "0.0.0"
 

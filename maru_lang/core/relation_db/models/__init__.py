@@ -1,9 +1,7 @@
 """Tortoise model registry."""
 
 from .auth import EmailVerificationCode, RefreshToken, Team, TeamMember, User, UserToken
-from .chunks import DocumentChunk
-from .documents import Document, SourceStorage, TeamStorageLink
-from .pipeline import PipelineRun
+from .documents import SourceStorage, TeamStorageLink
 
 __all__ = [
     "User",
@@ -14,7 +12,4 @@ __all__ = [
     "RefreshToken",
     "SourceStorage",
     "TeamStorageLink",
-    "Document",
-    "DocumentChunk",
-    "PipelineRun",
 ]

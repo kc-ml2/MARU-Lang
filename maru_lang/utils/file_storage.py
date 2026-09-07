@@ -2,6 +2,8 @@
 import shutil
 from pathlib import Path
 
+from maru_lang.enums import StorageOwnerType
+
 
 def get_team_storage_root(root: Path) -> Path:
     return root / "storages"
@@ -9,6 +11,15 @@ def get_team_storage_root(root: Path) -> Path:
 
 def get_source_storage_dir(root: Path, storage_id: str) -> Path:
     return get_team_storage_root(root) / storage_id
+
+
+def get_storage_dir(root: Path, storage) -> Path:
+    """Return the physical root for a validated source-storage model."""
+    if storage.owner_type == StorageOwnerType.TEAM:
+        return get_source_storage_dir(root, storage.id)
+    if storage.owner_type == StorageOwnerType.SYSTEM and storage.system_key:
+        return root / "system" / storage.system_key
+    raise ValueError("유효하지 않은 스토리지입니다")
 
 
 def provision_source_storage(root: Path, storage_id: str) -> Path:

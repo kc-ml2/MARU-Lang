@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 
@@ -45,6 +46,10 @@ class Settings:
     secret_key: str
     salt: str
     filesystem_root: Path
+    public_url: str = "http://localhost:8000"
+    download_url_expire_seconds: int = 300
+    search_backend: Literal["auto", "python", "ripgrep"] = "auto"
+    ripgrep_path: str | None = None
     access_token_expire_minutes: int = 120
     refresh_token_expire_minutes: int = 43_200
     allowed_domains: tuple[str, ...] = ()
@@ -79,12 +84,27 @@ class Settings:
             if domain.strip()
         )
         template_dir = os.getenv("MARU_EMAIL_TEMPLATE_DIR", "").strip()
+        public_url = os.getenv("MARU_PUBLIC_URL", "http://localhost:8000").rstrip("/")
+        public_url_parts = urlparse(public_url)
+        if public_url_parts.scheme not in {"http", "https"} or not public_url_parts.netloc:
+            raise RuntimeError("MARU_PUBLIC_URL must be an absolute HTTP(S) URL")
+        search_backend = os.getenv("MARU_SEARCH_BACKEND", "auto").strip().lower()
+        if search_backend not in {"auto", "python", "ripgrep"}:
+            raise RuntimeError(
+                "MARU_SEARCH_BACKEND must be auto, python, or ripgrep"
+            )
 
         return cls(
             database_url=database_url,
             secret_key=secret_key,
             salt=salt,
             filesystem_root=root,
+            public_url=public_url,
+            download_url_expire_seconds=_integer(
+                "MARU_DOWNLOAD_URL_EXPIRE_SECONDS", 300
+            ),
+            search_backend=search_backend,  # type: ignore[arg-type]
+            ripgrep_path=os.getenv("MARU_RIPGREP_PATH") or None,
             access_token_expire_minutes=_integer(
                 "MARU_ACCESS_TOKEN_EXPIRE_MINUTES", 120
             ),

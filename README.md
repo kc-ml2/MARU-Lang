@@ -11,59 +11,55 @@
 
 # 🦊 MARU-Lang
 
-**MARU-Lang is a team-based filesystem retriever for AI applications and agents.**
+**A deterministic, team-scoped filesystem access layer for AI agents.**
 
-It is designed to provide the same retrieval capabilities through HTTP API and
-MCP. Files are shared through team storage links, and every search is restricted
-to storages accessible to the requesting team. PostgreSQL is the canonical
-metadata and retrieval backend, with pgvector providing semantic search.
+MARU gives agents fast, precise, and authorized filesystem discovery. It exposes
+small, composable operations for listing directory trees, finding files, searching
+text, inspecting metadata, and reading bounded file ranges. The agent decides how
+to combine those operations; MARU executes explicit search parameters and returns
+evidence rather than guessing what is relevant.
 
-MARU provides retrieval orchestration, not answer generation. A separate
-application or agent can use retrieved chunks to implement Retrieval-Augmented
-Generation (RAG).
-In that term, **retrieval-augmented** means that generation is supplemented with
-information retrieved from an external knowledge source.
+MARU is not a semantic retriever or RAG framework. It does not chunk documents,
+generate embeddings, perform vector similarity search, or generate answers.
 
-## Team-based retrieval
+## Team-scoped storage
 
 Every user receives a personal team and its writable filesystem storage. Users
 may also create collaborative teams and add existing MARU users as members.
-
-A team accesses documents through storage links:
 
 ```text
 Team
   └── TeamStorageLink
         └── SourceStorage
-              └── Document
-                    └── DocumentChunk
+              └── files and directories
 ```
 
 A team-owned storage is writable only by its owner team. Linked storages are
 read-only. System storages such as `help` are automatically linked read-only to
-personal teams. Documents and chunks remain attached to their source storage,
-so linking the same storage to multiple teams does not duplicate retrieval data.
+personal teams. Every filesystem operation must first verify that the requesting
+team has a storage link.
 
-## Stable, inspectable pipelines
+## Deterministic filesystem operations
 
-MARU owns a stable pipeline order rather than exposing a general workflow
-engine:
+The filesystem service currently provides the core operations that MCP and HTTP
+transports can share:
 
-```text
-Indexing:  scan → parse → chunk → embed → index
-Retrieval: authorize → lexical → vector → fuse → results
-```
+- `list_tree`: stable path ordering, bounded depth, and a result limit
+- `find_files`: exact file discovery with explicit glob filters
+- `search_text`: literal or regular-expression content search with line and
+  byte-column evidence
+- safe path resolution that rejects absolute paths, `..`, and symlink escapes
 
-AI agents can inspect the active configuration, change validated options, and
-request a rerun from a specific indexing stage. They cannot reorder stages or
-execute arbitrary code. Configuration changes and runs require owner-team admin
-access; linked and system storages remain read-only.
+File and content search always have a portable Python backend. If
+[ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) is available, the default
+`auto` mode selects it once at startup as a faster backend. MARU invokes `rg`
+directly without a shell, disables ambient configuration and ignore files, uses
+explicit case and glob options, and sorts output by path.
 
-Each storage keeps two tunable options—target chunk size and overlap—and every
-run stores a snapshot of those values in PostgreSQL. Authentication, teams, and
-storage management continue to work when no indexing executor is configured.
-Concrete parsing, chunking, embedding, PostgreSQL indexing, base search, and MCP
-tools are the next PoC layer.
+The active backend is returned by search tools and `/health`, so fallback never
+silently changes the execution engine. Literal searches share the same result
+shape. Regex syntax follows the selected engine: Python `re` for `python`, and
+Rust regex syntax for `ripgrep`.
 
 ## Run
 
@@ -80,13 +76,20 @@ uvicorn --factory maru_lang:create_app --host 0.0.0.0 --port 8000
 
 Required variables:
 
-- `MARU_DATABASE_URL`: PostgreSQL connection URL; PostgreSQL is the only DB
+- `MARU_DATABASE_URL`: PostgreSQL connection URL; PostgreSQL stores identity,
+  team, and storage authorization metadata
 - `MARU_SECRET_KEY`: at least 32 characters
 - `MARU_SALT`: at least 16 characters
 - `MARU_FILESYSTEM_ROOT`: absolute source-storage path
 
 Optional variables:
 
+- `MARU_PUBLIC_URL` (default `http://localhost:8000`): externally visible base
+  URL used in MCP metadata and generated download URLs
+- `MARU_DOWNLOAD_URL_EXPIRE_SECONDS` (default `300`): how long a generated URL
+  may be used to start a download; it does not limit or interrupt transfer time
+- `MARU_SEARCH_BACKEND` (`auto`, `python`, or `ripgrep`; default `auto`)
+- `MARU_RIPGREP_PATH`: optional explicit path to the `rg` executable
 - `MARU_ACCESS_TOKEN_EXPIRE_MINUTES` (default `120`)
 - `MARU_REFRESH_TOKEN_EXPIRE_MINUTES` (default `43200`)
 - `MARU_ALLOWED_DOMAINS` (comma-separated)
@@ -96,6 +99,30 @@ Optional variables:
 
 ## Runtime architecture
 
-PostgreSQL is MARU's sole metadata database. HTTP and MCP share one
-application-owned service context, the same optional indexing/retrieval
-capabilities, and the same team-based access rules.
+The filesystem is the source of truth for file contents. PostgreSQL stores users,
+teams, storage ownership, and team-to-storage access links. HTTP and MCP share one
+application-owned context and the same authorization and filesystem services.
+
+## MCP authentication
+
+The Streamable HTTP endpoint is available at `/mcp`. Send the same short-lived
+MARU access token used by the HTTP API:
+
+```http
+Authorization: Bearer <access-token>
+```
+
+The MCP server validates the JWT and its non-revoked `UserToken` database record
+on every request. Every filesystem tool then checks both team membership and the
+team-to-storage link. Access tokens are never accepted in tool arguments or URLs.
+
+`get_file_download_url` returns a separate signed capability URL for a particular
+file version. Its expiration controls the latest time a download request may
+start. Once the server has accepted the request and begun sending the file, URL
+expiration does not stop that active transfer. The default URL validity is five
+minutes, and the allowed range is 30–900 seconds.
+
+MARU currently acts as an OAuth-compatible protected resource and publishes its
+protected-resource metadata, but login remains MARU's existing email OTP flow.
+A full OAuth 2.1 authorization-server flow can be added later for clients that
+require automatic browser-based discovery and authorization.

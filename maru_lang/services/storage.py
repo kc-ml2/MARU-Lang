@@ -89,7 +89,7 @@ async def disconnect_storage(
     assert storage.owner_team_id is not None
     await require_team_admin(storage.owner_team_id, requester)
 
-    # Documents belong to the storage, not to the linked team. Disconnecting a
+    # Files belong to the storage, not to the linked team. Disconnecting a
     # reader therefore removes only the permission link and never shared data.
     await TeamStorageLink.filter(team_id=team_id, storage_id=storage_id).delete()
 
