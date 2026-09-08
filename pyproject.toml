@@ -30,6 +30,9 @@ dependencies = [
     "mcp>=1.28.0,<2.0",
 ]
 
+[project.scripts]
+maru = "maru_lang.cli:main"
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"

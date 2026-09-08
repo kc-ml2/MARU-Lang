@@ -29,6 +29,7 @@ async def provision_system_storage(root: Path, storage: SourceStorage) -> Path:
     """Materialize a system storage under ``<root>/system/<system_key>``."""
     if (
         storage.owner_type != StorageOwnerType.SYSTEM
+        or storage.storage_type != "managed"
         or storage.owner_team_id is not None
         or not storage.system_key
     ):
@@ -44,6 +45,7 @@ async def attach_default_system_storages(team: Team) -> None:
     """Attach every auto-attach system storage to a personal workspace."""
     storage_ids = await SourceStorage.filter(
         owner_type=StorageOwnerType.SYSTEM,
+        storage_type="managed",
         auto_attach=True,
     ).values_list("id", flat=True)
     for storage_id in storage_ids:

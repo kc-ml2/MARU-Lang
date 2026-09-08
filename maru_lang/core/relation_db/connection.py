@@ -52,6 +52,12 @@ async def database_context(
                             AND system_key IS NULL
                         )
                     );
+                ALTER TABLE source_storage DROP CONSTRAINT IF EXISTS source_storage_type_check;
+                ALTER TABLE source_storage ADD CONSTRAINT source_storage_type_check CHECK (
+                    (storage_type = 'managed' AND external_path IS NULL)
+                    OR (storage_type = 'external' AND external_path IS NOT NULL
+                        AND owner_type = 'system' AND owner_team_id IS NULL AND auto_attach = FALSE)
+                );
                 CREATE UNIQUE INDEX IF NOT EXISTS uidx_team_personal_manager
                     ON team (manager_id)
                     WHERE is_personal = TRUE;

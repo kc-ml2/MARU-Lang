@@ -20,6 +20,8 @@ class TeamMemberResponse(BaseModel):
 
 
 class TeamSummaryResponse(BaseModel):
+    is_personal: bool
+    manager_id: int
     id: int
     name: str
     description: str | None = None
@@ -27,6 +29,8 @@ class TeamSummaryResponse(BaseModel):
 
 
 class TeamDetailResponse(BaseModel):
+    is_personal: bool
+    manager_id: int
     id: int
     name: str
     description: str | None = None

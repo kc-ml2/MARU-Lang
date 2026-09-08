@@ -1,5 +1,5 @@
 """Shared team authorization rules for application services and transports."""
-from maru_lang.core.relation_db.models.auth import TeamMember, User
+from maru_lang.core.relation_db.models.auth import Team, TeamMember, User
 from maru_lang.enums import TeamRole
 
 
@@ -8,6 +8,9 @@ async def require_team_member(team_id: int, user: User) -> TeamMember:
     membership = await TeamMember.get_or_none(team_id=team_id, user_id=user.id)
     if membership is None:
         raise PermissionError("해당 팀의 멤버가 아닙니다")
+    team = await Team.get(id=team_id)
+    if team.is_personal and team.manager_id != user.id:
+        raise PermissionError("개인 공간은 소유자만 접근할 수 있습니다")
     return membership
 
 

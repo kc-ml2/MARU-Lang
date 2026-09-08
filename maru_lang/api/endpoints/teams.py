@@ -51,7 +51,8 @@ async def create_new_team(
             context.settings.filesystem_root, request.name, user, request.description
         )
         return TeamSummaryResponse(
-            id=team.id, name=team.name, description=team.description, role=TeamRole.ADMIN
+            id=team.id, name=team.name, description=team.description, role=TeamRole.ADMIN,
+            is_personal=team.is_personal, manager_id=team.manager_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))

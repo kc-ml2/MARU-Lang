@@ -2,6 +2,7 @@
 Team management service
 """
 import asyncio
+import logging
 from typing import Optional
 
 from tortoise.exceptions import IntegrityError
@@ -15,8 +16,11 @@ from maru_lang.core.relation_db.models.documents import (
 from maru_lang.ports.email import EmailService
 from maru_lang.settings import Settings
 from maru_lang.enums import StorageOwnerType, TeamRole
-from maru_lang.services.authorization import require_team_admin
+from maru_lang.services.authorization import require_team_admin, require_team_member
 from maru_lang.services.storage import ensure_default_source_storage
+
+
+audit_logger = logging.getLogger("maru.audit")
 
 
 async def reconcile_team_storage(root: Path) -> int:
@@ -35,15 +39,18 @@ async def list_teams_by_user(user: User) -> list[dict]:
     """
     User가 속한 Team 목록을 역할 정보와 함께 조회
     """
-    memberships = await TeamMember.filter(user=user).select_related("team")
+    memberships = await TeamMember.filter(user=user).select_related("team").order_by("team_id")
     return [
         {
             "id": m.team.id,
             "name": m.team.name,
             "description": m.team.description,
             "role": m.role,
+            "is_personal": m.team.is_personal,
+            "manager_id": m.team.manager_id,
         }
         for m in memberships
+        if not m.team.is_personal or m.team.manager_id == user.id
     ]
 
 
@@ -52,9 +59,7 @@ async def get_team_detail(team_id: int, user: User) -> dict:
     Team 상세 조회: 멤버와 접근 가능한 스토리지 수
     해당 팀의 멤버만 조회 가능
     """
-    membership = await TeamMember.get_or_none(team_id=team_id, user=user)
-    if not membership:
-        raise PermissionError("해당 팀의 멤버가 아닙니다")
+    await require_team_member(team_id, user)
 
     team = await Team.get(id=team_id)
 
@@ -77,6 +82,41 @@ async def get_team_detail(team_id: int, user: User) -> dict:
         "description": team.description,
         "members": members,
         "storage_count": storage_count,
+        "is_personal": team.is_personal,
+        "manager_id": team.manager_id,
+    }
+
+
+async def get_team_permissions(team_id: int, user: User) -> dict:
+    """Describe current team permissions, not a grant or cached authorization.
+
+    Mutation services must still authorize each subsequent request. No global
+    administrator privilege is inferred from a role in another team.
+    """
+    membership = await require_team_member(team_id, user)
+    team = await Team.get(id=team_id)
+    is_admin = membership.role == TeamRole.ADMIN
+    return {
+        "team_id": team.id,
+        "role": membership.role,
+        "is_personal": team.is_personal,
+        "is_owner": team.manager_id == user.id,
+        "permissions": {
+            "read_team": True,
+            "read_linked_storages": True,
+            "create_storage": is_admin,
+            "add_members": is_admin and not team.is_personal,
+            "remove_other_non_owner_members": is_admin and not team.is_personal,
+            "request_team_deletion": is_admin and not team.is_personal,
+        },
+        "constraints": [
+            "Storage access requires a current team-storage link.",
+            "Storage sharing changes require admin membership in both teams.",
+            "Team deletion requires no owned storage shared with another team.",
+            "Team owners cannot be removed; at least one admin must remain.",
+            "Permissions are rechecked when an operation executes.",
+            "MCP currently supports member addition only; other management mutations use HTTP.",
+        ],
     }
 
 
@@ -159,6 +199,8 @@ async def invite_member(
         raise ValueError("허용되지 않은 이메일 도메인입니다")
 
     team = await Team.get(id=team_id)
+    if team.is_personal:
+        raise PermissionError("개인 공간에는 멤버를 추가할 수 없습니다")
     target_user = await User.get_or_none(email=email)
 
     if target_user is None:
@@ -172,9 +214,22 @@ async def invite_member(
     except IntegrityError:
         raise ValueError("이미 팀에 속한 멤버입니다")
 
+    audit_logger.info(
+        "team.member.added",
+        extra={"operation": "team.member.added", "actor_user_id": inviter.id,
+               "team_id": team_id, "target_user_id": target_user.id, "outcome": "success"},
+    )
     if email_service:
         inviter_name = inviter.name or inviter.email
-        await email_service.send_notification(email, team.name, inviter_name)
+        try:
+            await email_service.send_notification(email, team.name, inviter_name)
+        except Exception:
+            # Membership is already committed. Do not report the addition as
+            # failed and encourage retries when only the notification failed.
+            audit_logger.warning(
+                "team.member.notification_failed",
+                extra={"team_id": team_id, "target_user_id": target_user.id},
+            )
 
     return {
         "id": target_user.id,
@@ -190,6 +245,9 @@ async def remove_member(team_id: int, user_id: int, requester: User) -> None:
     """
     await require_team_admin(team_id, requester)
 
+    team = await Team.get(id=team_id)
+    if team.manager_id == user_id:
+        raise PermissionError("팀 소유자는 제거할 수 없습니다")
     if requester.id == user_id:
         raise PermissionError("본인을 제거할 수 없습니다")
 

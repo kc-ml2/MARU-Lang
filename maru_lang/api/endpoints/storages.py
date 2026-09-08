@@ -26,6 +26,7 @@ def _response(storage, team_id: int) -> StorageResponse:
         id=storage.id,
         name=storage.name,
         owner_type=storage.owner_type,
+        storage_type=storage.storage_type,
         owner_team_id=storage.owner_team_id,
         owner_team_name=owner_team.name if owner_team else None,
         access="owner" if storage.owner_team_id == team_id else "read",

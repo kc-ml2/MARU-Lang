@@ -11,6 +11,8 @@ class SourceStorage(Model):
     id = fields.CharField(pk=True, max_length=64)
     name = fields.CharField(max_length=255)
     owner_type = fields.CharEnumField(StorageOwnerType, index=True)
+    storage_type = fields.CharField(max_length=16, default="managed")
+    external_path = fields.TextField(null=True)
     owner_team = fields.ForeignKeyField(
         "models.Team",
         related_name="owned_source_storages",

@@ -9,6 +9,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from maru_lang.context import AppContext
 from maru_lang.core.relation_db.models.auth import User, UserToken
@@ -79,8 +80,8 @@ def create_mcp_server(context: AppContext) -> FastMCP:
         "MARU Filesystem",
         instructions=(
             "Use explicit team-scoped tools to inspect files. Results are bounded and "
-            "path-sorted. Start with list_storages, then list_tree or find_files, and "
-            "use search_text for exact content evidence."
+            "path-sorted. Start with list_my_teams, then list_storages, "
+            "list_storage_tree or find_storage_files. Use search_storage_text for evidence."
         ),
         token_verifier=MaruTokenVerifier(context),
         auth=AuthSettings(
@@ -92,6 +93,54 @@ def create_mcp_server(context: AppContext) -> FastMCP:
         stateless_http=True,
         json_response=True,
     )
+
+    @server.tool(description="List the authenticated user's teams and roles, ordered by team ID.")
+    async def list_my_teams() -> dict[str, object]:
+        from maru_lang.services.team import list_teams_by_user
+
+        return {"results": await list_teams_by_user(await _request_user())}
+
+    @server.tool(
+        description="Inspect a team and its members. Requires membership in that team.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
+    )
+    async def get_team(team_id: int) -> dict[str, object]:
+        from maru_lang.services.team import get_team_detail
+
+        return await get_team_detail(team_id, await _request_user())
+
+    @server.tool(
+        description=(
+            "Inspect your current permissions in one team. This is informational, "
+            "not authorization for a later operation. Only member addition is exposed as an MCP management write."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
+    )
+    async def get_my_team_permissions(team_id: int) -> dict[str, object]:
+        from maru_lang.services.team import get_team_permissions
+
+        return await get_team_permissions(team_id, await _request_user())
+
+    @server.tool(
+        description=(
+            "Immediately add an existing registered user to a collaboration team as a member. "
+            "Requires admin membership in that team; personal teams are forbidden. "
+            "There is no invitation acceptance step. Obtain the user's approval before calling."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False, destructiveHint=False, idempotentHint=False,
+        ),
+    )
+    async def add_team_member(team_id: int, email: str) -> dict[str, object]:
+        from maru_lang.schemas.team import InviteMemberRequest
+        from maru_lang.services.team import invite_member
+
+        # Match HTTP email validation; identity always comes from authentication.
+        request = InviteMemberRequest(email=email)
+        return await invite_member(
+            team_id, str(request.email), await _request_user(),
+            settings=context.settings, email_service=context.email,
+        )
 
     @server.tool(description="List storages accessible to one of the user's teams.")
     async def list_storages(team_id: int) -> dict[str, object]:
@@ -107,6 +156,7 @@ def create_mcp_server(context: AppContext) -> FastMCP:
                     "storage_id": storage.id,
                     "name": storage.name,
                     "owner_type": storage.owner_type.value,
+                    "storage_type": storage.storage_type,
                     "access": "owner" if storage.owner_team_id == team_id else "read",
                 }
                 for storage in storages

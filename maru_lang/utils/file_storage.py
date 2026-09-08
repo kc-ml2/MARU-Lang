@@ -15,6 +15,17 @@ def get_source_storage_dir(root: Path, storage_id: str) -> Path:
 
 def get_storage_dir(root: Path, storage) -> Path:
     """Return the physical root for a validated source-storage model."""
+    if storage.storage_type == "external":
+        if storage.owner_type != StorageOwnerType.SYSTEM or not storage.external_path:
+            raise ValueError("External storage must be system-managed")
+        path = Path(storage.external_path)
+        if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+            raise ValueError("External storage path is unavailable or unsafe")
+        if path.resolve(strict=True) != path:
+            raise ValueError("External storage path must not contain symlinks")
+        return path
+    if storage.storage_type != "managed":
+        raise ValueError("Unknown storage type")
     if storage.owner_type == StorageOwnerType.TEAM:
         return get_source_storage_dir(root, storage.id)
     if storage.owner_type == StorageOwnerType.SYSTEM and storage.system_key:

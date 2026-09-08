@@ -9,6 +9,7 @@ class StorageResponse(BaseModel):
     id: str
     name: str
     owner_type: str
+    storage_type: str
     owner_team_id: int | None
     owner_team_name: str | None
     access: str
