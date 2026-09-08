@@ -13,372 +13,67 @@
 
 **A deterministic, team-scoped filesystem access layer for AI agents.**
 
-MARU is a shared backend for applications and AI agents, not an end-user client.
-HTTP provides identity, team, and storage management; MCP provides agent-facing
-file discovery. Both use the same application services and authorization rules.
-The current release uses MARU's own identities; external identity-provider
-integration and delegated service accounts are not yet implemented.
+Give your AI agent access to the files your team already works with—without
+copying entire documents into a conversation or building an embedding pipeline.
 
-MARU lets an AI agent find files in team storage using explicit filesystem
-operations instead of semantic guesses. The agent can inspect a directory tree,
-filter filenames, search exact text or regular expressions, and give the user a
-short-lived URL to download the original file.
+MARU helps agents browse folders, find filenames, search text, and return download
+links to original files. Your agent decides what to look for; MARU returns actual
+paths and matching text, within your team's permissions.
 
-```text
-Your request
-    ↓
-AI agent
-    ↓ MCP tools
-MARU: authorize → list/find/search → return evidence or download URL
-    ↓
-Team filesystem
-```
+## What can I do with it?
 
-MARU is useful when an agent needs fast, verifiable answers to questions such as:
+- **Find files:** locate a document by name, folder, or filename pattern.
+- **Check the evidence:** see which file and line contain the text you need.
+- **Get the original:** download a file instead of receiving its contents in chat.
+- **Share with a team:** make a storage available only to the teams you choose.
+- **Manage through your agent:** team admins can inspect their team and add
+  already registered colleagues through MCP.
 
-- Which files match this exact name or glob?
-- Where does this literal string occur?
-- Which file contains a matching configuration key or code pattern?
-- What is the path, size, and modification time of this file?
-- Can I download the original file rather than receiving its contents in chat?
+MARU is a backend for your applications and MCP-compatible agents, not a chat app
+or an answer-generating assistant. It searches explicit filenames and text rather
+than ranking documents by semantic similarity.
 
-MARU is **not** a semantic retriever or RAG framework. It does not chunk files,
-generate embeddings, rank by vector similarity, or generate answers.
+## Use new storage or keep your existing files
 
-## What using MARU looks like
-
-A typical agent workflow is:
-
-1. Call `list_my_teams` to discover your team IDs, then `list_storages` to see
-   what the selected team can access.
-2. Call `list_storage_tree` to understand the relevant directory structure.
-3. Call `find_storage_files` to narrow candidates by path or filename glob.
-4. Call `search_storage_text` to collect exact path, line, column, and text evidence.
-5. Call `get_file_download_url` when the user needs the complete original file.
-
-The agent chooses which tools to call. MARU performs only the explicit operation
-requested and returns bounded, path-sorted results.
-
-> Concrete end-user scenarios and example conversations will be added as the
-> intended workflows are finalized.
-
-## MCP tools
-
-| Tool | Purpose |
+| | How it works |
 | --- | --- |
-| `list_my_teams` | Discover your teams, roles, and personal workspace |
-| `get_team` | Inspect a team's details and members |
-| `get_my_team_permissions` | Inspect your current permissions in a particular team |
-| `add_team_member` | Immediately add an existing user to a collaboration team (team admin) |
-| `list_storages` | List storages available to a team |
-| `list_storage_tree` | Inspect a stable, depth-limited directory tree |
-| `find_storage_files` | Find files using filename and include/exclude globs |
-| `search_storage_text` | Search literal text or a regular expression |
-| `stat_storage_path` | Inspect file, directory, or symlink metadata |
-| `get_file_download_url` | Create a short-lived URL for the original file |
+| **MARU-managed storage** | MARU creates a storage directory for your team. An operator currently places files there; uploads are not yet supported. |
+| **Existing storage** | A server operator registers an existing folder and shares it with selected teams. MARU reads the files in place, without copying them. |
 
-Except for `list_my_teams`, every tool is scoped by `team_id`; filesystem tools
-also require `storage_id`.
-MARU verifies both team membership and the team's link to that storage before
-accessing the filesystem.
+External storage is read-only through MARU. Removing its registration does not
+delete the original files. “Shared” means accessible to selected teams—not public
+to everyone.
 
-Search responses identify the engine that produced them:
+## What does using it look like?
 
-```json
-{
-  "backend": "ripgrep",
-  "results": [
-    {
-      "path": "src/settings.py",
-      "line": 42,
-      "byte_column": 5,
-      "text": "DATABASE_URL = ..."
-    }
-  ],
-  "truncated": false
-}
-```
+Once connected, you might ask your agent:
 
-## Quick start
+> Find `report.pdf` in my team's storage and give me a download link.
 
-### Requirements
+The agent discovers your teams and storages, finds matching paths, and requests a
+link for the file you choose. For text files, it can also search the contents and
+show the matching lines.
 
-- Python 3.10 or newer
-- PostgreSQL
-- A filesystem directory MARU may manage
-- SMTP configuration if users will log in through email OTP
-- Optional: [ripgrep](https://github.com/BurntSushi/ripgrep) for faster search
+Download links expire after a short period. Expiration prevents new downloads;
+it does not interrupt a download already in progress.
 
-### Install
+## Getting started
 
-```bash
-git clone https://github.com/kc-ml2/MARU-Lang.git
-cd MARU-Lang
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
+**Using a server someone else runs?** Ask your operator for the MARU server URL,
+sign in, and connect your MCP client with your access token. Use your own account;
+your team membership determines which storages you can access.
 
-### Configure and run
+**Running MARU for your team?** Follow the [setup and integration guide](docs/guide.md).
+It covers installation, login, MCP tools, registering existing folders, and team
+sharing. Python search is included; ripgrep is an optional faster backend.
 
-MARU reads configuration from environment variables:
+## Current scope
 
-```bash
-export MARU_DATABASE_URL='postgresql://maru:password@localhost:5432/maru'
-export MARU_SECRET_KEY='replace-with-at-least-32-characters'
-export MARU_SALT='replace-with-at-least-16-characters'
-export MARU_FILESYSTEM_ROOT='/srv/maru/files'
-export MARU_PUBLIC_URL='http://localhost:8000'
+MARU is under development. File discovery, original-file downloads, external
+storage registration, and basic team management are implemented. File uploads,
+file editing tools, and automatic browser-based MCP authorization are not yet
+available. PDF and other binary files can be found by filename and downloaded;
+MARU does not extract their contents for text search.
 
-uvicorn --factory maru_lang:create_app --host 0.0.0.0 --port 8000
-```
-
-Verify the server and selected search backend:
-
-```bash
-curl http://localhost:8000/health
-```
-
-```json
-{
-  "status": "ok",
-  "filesystem_search": {
-    "backend": "ripgrep",
-    "version": "ripgrep 15.x.x",
-    "regex_supported": true
-  }
-}
-```
-
-### Authenticate
-
-MARU currently uses email OTP login. Request a code:
-
-```bash
-curl -X POST http://localhost:8000/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"user@example.com"}'
-```
-
-Exchange the code for an access token:
-
-```bash
-curl -X POST http://localhost:8000/auth/verify/code \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "email":"user@example.com",
-    "code":"123456",
-    "device_id":"my-mcp-client"
-  }'
-```
-
-Configure the MCP client to use:
-
-```text
-Endpoint:      http://localhost:8000/mcp
-Authorization: Bearer <access-token>
-Transport:     Streamable HTTP
-```
-
-The exact MCP client configuration format depends on the client. The endpoint
-expects the access token in the HTTP `Authorization` header, never in a tool
-argument or URL.
-
-## Team storage model
-
-Each user receives a personal team and its writable storage. Users can also
-create collaborative teams and invite existing MARU users.
-
-Personal teams accept no additional members. Authorization also denies access
-through any pre-existing non-owner personal-team membership (records are not
-automatically deleted). Team discovery hides those memberships.
-
-`manager_id` identifies the accountable team owner, not a separate permission
-role. Access is checked through `TeamMember.role` (`admin` or `member`); ownership
-does not bypass membership checks. Creators become admins, and owners cannot be
-removed through the member-removal API. Ownership transfer and role editing are
-not yet exposed. Team listing and detail responses include `manager_id` and
-`is_personal`.
-
-```text
-Team
-  └── TeamStorageLink
-        └── SourceStorage
-              └── files and directories
-```
-
-A storage owned by a team is writable only by that team. A storage linked from
-another team is read-only. System storages, such as `help`, may be attached
-read-only to personal teams.
-
-The filesystem remains the source of truth for file contents. PostgreSQL stores
-users, teams, storage ownership, access links, and authentication state.
-
-> **Current scope:** MARU provisions server-local storage directories but does
-> not yet expose a file upload API or MCP write tools. Files must currently be
-> placed or mounted into the provisioned storage by the operator or another
-> application.
-
-## Management through MCP
-
-Management support is being introduced incrementally. For now, an agent can use
-`list_my_teams`, `get_team`, and `get_my_team_permissions` to inspect the user's
-teams and management permissions. `add_team_member(team_id, email)` is the first
-management mutation exposed through MCP. It immediately adds an already registered
-user as a member; there is no acceptance step. Personal teams reject additions.
-Other team and storage mutations remain HTTP-only.
-
-The tool uses the same service and live admin checks as HTTP. Existing MARU user
-access tokens authenticate the caller; no separate management-token scope exists
-yet. Tool annotations and approval instructions guide clients, but are not a
-server-enforced human-approval mechanism.
-
-Successful additions emit `maru.audit` INFO logs containing actor, team, and target
-user IDs. Operators must configure logging to retain these records and serialize
-extra fields. This is not a durable transactional audit ledger; rejected attempts
-are not yet recorded. Email notification failure does not undo a successful
-membership addition.
-
-MARU admins are **team-scoped**, not server-wide superusers. Being an admin in one
-team grants no privileges in another. Permission discovery is informational;
-subsequent operations must check current membership and resource constraints
-again. Personal teams do not allow additional members or team deletion.
-
-## Managed and external storage
-
-- **Managed**: MARU creates the directory for a team (or for system content such
-  as `help`). File upload is not yet implemented.
-- **External**: a local system operator registers an existing absolute directory.
-  MARU reads it in place, without copying, provisioning, or deleting its contents.
-  External storage is system-managed and read-only through MARU. Only explicitly
-  shared teams can access it; "shared" does not mean publicly accessible.
-
-Storage responses expose `storage_type` independently of `owner_type`. External
-physical paths are only shown in the local administration CLI, not team responses.
-
-### Local system administration
-
-Start the server once to initialize a fresh database. With the same environment
-and server filesystem access, install/update the CLI with `pip install -e .`:
-
-```bash
-maru admin list-teams
-maru admin register-external --name "Company documents" --path /mnt/company-docs
-maru admin list-storages
-maru admin share --storage-id <returned-id> --team-id 12
-maru admin unshare --storage-id <returned-id> --team-id 12
-maru admin unregister-external --storage-id <returned-id>
-```
-
-Alternatively use `python -m maru_lang.cli admin ...`. This is a trusted local
-operator entry point, not an MCP client or a team-admin privilege. Restrict access
-to server credentials and the CLI environment. JSON output identifies the local
-OS user for operational logging; it is not a tamper-proof audit record.
-
-The registered directory must exist, must not use symlink path components, and
-must not overlap MARU's managed root or another external storage. Use a read-only
-OS mount and filesystem permissions when appropriate. There is no external-path
-allowlist yet: registering paths is restricted operationally to trusted server
-operators. Registration and sharing operations should be serialized by operators.
-Unregistering requires removing all team shares first and deletes only metadata.
-External storage cannot be registered or removed through team HTTP/MCP tools.
-
-## Search backends
-
-MARU always includes a portable Python search backend. The default `auto` mode
-uses ripgrep when `rg` is available at startup and otherwise selects Python.
-Backend selection happens once; MARU does not switch engines between requests.
-
-```bash
-# Automatically prefer ripgrep
-MARU_SEARCH_BACKEND=auto
-
-# Never require an external executable
-MARU_SEARCH_BACKEND=python
-
-# Require ripgrep and fail startup if it is unavailable
-MARU_SEARCH_BACKEND=ripgrep
-
-# Optionally use a specific binary
-MARU_RIPGREP_PATH=/usr/local/bin/rg
-```
-
-Both engines return the same result shape and stable path ordering. Literal
-searches have equivalent intent. Regex syntax depends on the active engine:
-Python `re` for `python`, and Rust regex syntax for `ripgrep`. The active backend
-is always shown in `/health` and search responses.
-
-When using ripgrep, MARU invokes it without a shell and supplies explicit options:
-
-- ignore ambient ripgrep configuration
-- do not apply repository ignore files implicitly
-- include hidden files
-- sort results by path
-- do not follow symlinks
-
-## Download URLs
-
-`get_file_download_url` produces a signed URL for one authorized file version:
-
-```json
-{
-  "url": "https://maru.example/files/download?token=...",
-  "path": "documents/report.pdf",
-  "size": 1839201,
-  "modified_at_ns": 1740000000000000000,
-  "url_expires_at": "2025-09-02T12:05:00+00:00",
-  "url_valid_for_seconds": 300
-}
-```
-
-Expiration controls when a download may **start**. It is not a transfer timeout:
-if an accepted download is still transferring when the URL expires, MARU does
-not interrupt it. URLs are valid for five minutes by default, and a tool call may
-request between 30 and 900 seconds.
-
-MARU checks authorization again when the URL is used. If access was removed or
-the file changed after URL creation, the original URL will no longer download a
-different file version.
-
-## Configuration reference
-
-### Required
-
-| Variable | Description |
-| --- | --- |
-| `MARU_DATABASE_URL` | PostgreSQL connection URL |
-| `MARU_SECRET_KEY` | Token signing secret, at least 32 characters |
-| `MARU_SALT` | Token hashing salt, at least 16 characters |
-| `MARU_FILESYSTEM_ROOT` | Absolute path containing MARU storage |
-
-### Optional
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `MARU_PUBLIC_URL` | `http://localhost:8000` | Public base URL used in MCP metadata and download URLs |
-| `MARU_DOWNLOAD_URL_EXPIRE_SECONDS` | `300` | Default validity of a generated download URL |
-| `MARU_SEARCH_BACKEND` | `auto` | `auto`, `python`, or `ripgrep` |
-| `MARU_RIPGREP_PATH` | PATH lookup | Explicit path to `rg` |
-| `MARU_ACCESS_TOKEN_EXPIRE_MINUTES` | `120` | Access-token lifetime |
-| `MARU_REFRESH_TOKEN_EXPIRE_MINUTES` | `43200` | Refresh-token lifetime |
-| `MARU_ALLOWED_DOMAINS` | unrestricted | Comma-separated login email domains |
-| `MARU_DELETE_FILES_ON_TEAM_DELETE` | `false` | Remove owned files when a team is deleted |
-| `MARU_SMTP_HOST` | unset | SMTP host for OTP email |
-| `MARU_SMTP_PORT` | `587` | SMTP port |
-| `MARU_SMTP_USERNAME` | unset | SMTP username |
-| `MARU_SMTP_PASSWORD` | unset | SMTP password |
-| `MARU_EMAIL_TEMPLATE_DIR` | built in | Custom email-template directory |
-
-## Security notes
-
-- MCP requests require a short-lived MARU Bearer access token.
-- JWT validity and server-side token revocation are checked on every request.
-- Filesystem access requires current team membership and a current storage link.
-- Absolute paths, `..` traversal, and symlink escapes are rejected.
-- Download capability URLs are separate from access tokens and expire quickly.
-- Use HTTPS for every non-local deployment because download URLs are bearer
-  capabilities and may appear in client or proxy logs.
-
-MARU publishes OAuth protected-resource metadata for the MCP endpoint. Login is
-currently handled by MARU's OTP flow; a complete OAuth 2.1 authorization-server
-flow for automatic browser authorization is not yet included.
+For developers, operators, and agents integrating MARU, see the
+[technical guide](docs/guide.md).
