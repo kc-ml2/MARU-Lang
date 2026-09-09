@@ -7,14 +7,14 @@ from maru_lang.enums import TeamRole
 
 
 class User(Model):
-    id = fields.IntField(pk=True)
-    name = fields.CharField(max_length=255, index=True, null=True)
-    email = fields.CharField(max_length=255, index=True, unique=True)
+    id = fields.IntField(primary_key=True)
+    name = fields.CharField(max_length=255, db_index=True, null=True)
+    email = fields.CharField(max_length=255, db_index=True, unique=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 
 
 class Team(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     name = fields.CharField(max_length=255, unique=True)
     description = fields.TextField(null=True)
     manager = fields.ForeignKeyField(
@@ -22,7 +22,7 @@ class Team(Model):
         related_name="managed_teams",
         on_delete=fields.RESTRICT  # Prevents User deletion if managing Teams
     )
-    is_personal = fields.BooleanField(default=False, index=True)
+    is_personal = fields.BooleanField(default=False, db_index=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:  # type: ignore[override]
@@ -36,7 +36,7 @@ class Team(Model):
 
 
 class TeamMember(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     user = fields.ForeignKeyField(
         "models.User",
         related_name="team_memberships",
@@ -57,7 +57,7 @@ class TeamMember(Model):
 class ApiToken(Model):
     """Operator-issued opaque credential; plaintext is never persisted."""
 
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     user = fields.ForeignKeyField(
         "models.User", related_name="api_tokens", on_delete=fields.CASCADE
     )
