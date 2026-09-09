@@ -1,0 +1,26 @@
+# PostgreSQL only; run MARU on the host with config.yaml.
+# Replace CHANGE_ME before starting; do not commit real credentials.
+# Optional: use ${POSTGRES_PASSWORD} and a private .env instead.
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: maru
+      POSTGRES_DB: maru
+      POSTGRES_PASSWORD: "CHANGE_ME"
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - maru-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maru -d maru"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    stop_grace_period: 30s
+
+volumes:
+  maru-postgres-data:
+    name: maru-postgres-data

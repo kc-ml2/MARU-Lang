@@ -130,6 +130,48 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+### PostgreSQL with Docker Compose
+
+The repository's `docker-compose.yaml` runs PostgreSQL 17 only; MARU runs on the
+host. Replace `POSTGRES_PASSWORD: "CHANGE_ME"` with a strong password before use
+(`openssl rand -hex 32` produces a URL-safe value). Set the same password in
+MARU's YAML configuration:
+
+```yaml
+database:
+  url: postgresql://maru:YOUR_PASSWORD@127.0.0.1:5432/maru
+```
+
+```bash
+chmod 600 docker-compose.yaml
+docker compose up -d postgres
+docker compose ps
+docker compose logs --tail=50 postgres
+```
+
+The DB port binds only to `127.0.0.1`, not external interfaces. If host port 5432
+is occupied, change the host port in Compose and the MARU database URL together.
+The healthcheck reports readiness, and `restart: unless-stopped` restarts the
+container after host reboots when the Docker service starts.
+
+Data persists in the explicitly named Docker volume **`maru-postgres-data`**.
+This is PostgreSQL data, separate from `filesystem.root` containing team files.
+The volume survives `docker compose down`; **`docker compose down -v` deletes it**.
+Back up the database independently; a persistent volume is not a backup. The
+fixed volume name assumes one MARU deployment per Docker host. Separate deployments
+must use separate volume names and host ports.
+
+Do not commit actual passwords. For deployments maintained through Git, consider
+a private copy outside the repository, invoked with `docker compose -f /path/to/docker-compose.yaml`.
+Alternatively replace the password with `${POSTGRES_PASSWORD}` and supply it via
+a protected `.env` file or the shell environment; this is optional, not required.
+Docker administrators can inspect container environment variables.
+
+PostgreSQL initialization settings apply only to an empty volume. Changing the
+YAML password does not change an existing database role's password. Do not point
+PostgreSQL 17 at a PostgreSQL 16 data directory; use a supported upgrade or
+backup/restore procedure. This Compose file does not migrate existing databases.
+
 ### Configure and run
 
 Copy `config.example.yaml` to `/etc/maru/config.yaml`, replace credentials,
