@@ -21,6 +21,9 @@ def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(prog='maru')
     cli.add_argument('--config', type=Path, help='YAML config path (or MARU_CONFIG)')
     entries = cli.add_subparsers(dest='entry', required=True)
+    serve = entries.add_parser('serve', help='Run the HTTP/MCP server')
+    serve.add_argument('--host', default='127.0.0.1')
+    serve.add_argument('--port', type=int, default=8000)
     add = entries.add_parser('add', help='Register a user and add them to a team')
     add.add_argument('email')
     add.add_argument('-t', '--team', required=True)
@@ -130,6 +133,13 @@ async def deliver_token(settings: Settings, user: User, duration) -> dict:
 def main() -> None:
     args = parser().parse_args()
     try:
+        if args.entry == 'serve':
+            import uvicorn
+            from maru_lang.app import create_app
+
+            settings = Settings.from_env(args.config)
+            uvicorn.run(create_app(settings), host=args.host, port=args.port)
+            return
         result = asyncio.run(run(args))
     except (ValueError, OSError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc

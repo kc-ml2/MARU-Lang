@@ -149,6 +149,9 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Local MARU configuration (contains credentials)
+/config.yaml
+
 # Environments
 .env
 .envrc

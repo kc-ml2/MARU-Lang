@@ -31,7 +31,7 @@ async def database_context(
         if generate_schemas:
             await context.generate_schemas()
         if database_url.startswith(("postgres://", "postgresql://", "asyncpg://")):
-            connection = context.get_connection("default")
+            connection = context.db("default")
             await connection.execute_script(
                 """
                 ALTER TABLE source_storage

@@ -31,7 +31,10 @@ class Settings:
     def from_env(cls, config_path: str | Path | None = None) -> "Settings":
         from maru_lang.config_file import load_config
 
-        values = load_config(config_path or os.getenv("MARU_CONFIG"))
+        selected_path = config_path if config_path is not None else os.getenv("MARU_CONFIG")
+        if selected_path is None and Path("config.yaml").is_file():
+            selected_path = Path("config.yaml")
+        values = load_config(selected_path)
         values.update(os.environ)
 
         def _required(name):

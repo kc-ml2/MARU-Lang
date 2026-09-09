@@ -174,13 +174,25 @@ backup/restore procedure. This Compose file does not migrate existing databases.
 
 ### Configure and run
 
-Copy `config.example.yaml` to `/etc/maru/config.yaml`, replace credentials,
-and restrict it with `chmod 600`. Python 3.11+ is required.
+Copy `config.example.yaml` to `config.yaml` in the project root, replace
+credentials, and restrict it with `chmod 600 config.yaml`. This local file is
+Git-ignored. Python 3.11+ is required.
 
 ```bash
-export MARU_CONFIG=/etc/maru/config.yaml
-uvicorn --factory maru_lang:create_app --host 127.0.0.1 --port 8000
+maru serve --port 8000
 ```
+
+Both server and administrative commands automatically read `./config.yaml` from
+**the current working directory**. Config path precedence is explicit
+`maru --config /path/config.yaml ...`, then `MARU_CONFIG`, then `./config.yaml`.
+An explicitly selected missing or invalid file is an error, not a fallback.
+Without any file, environment-only configuration still works. Run only from a
+trusted directory; do not implicitly load another project's configuration.
+
+`maru serve` runs Uvicorn internally, binding to `127.0.0.1` by default. You can
+still run `uvicorn --factory maru_lang:create_app --port 8000` directly. For a
+config outside the project use `maru --config /etc/maru/config.yaml serve`.
+For systemd, set `WorkingDirectory` or an explicit config path.
 
 Put an HTTPS reverse proxy in front for remote clients. `server.public_url` must
 be the externally reachable HTTPS base URL. The managed filesystem root must be

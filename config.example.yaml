@@ -1,5 +1,6 @@
-# Copy outside the repository, chmod 600, and replace credentials.
-# MARU_CONFIG=/etc/maru/config.yaml uvicorn --factory maru_lang:create_app
+# Copy to ./config.yaml (Git-ignored), chmod 600, and replace credentials.
+# Run: maru serve (automatically reads config.yaml in the working directory)
+# Other location: maru --config /etc/maru/config.yaml serve
 # Environment variables override YAML values.
 database:
   url: postgresql://maru:CHANGE_ME@127.0.0.1:5432/maru
