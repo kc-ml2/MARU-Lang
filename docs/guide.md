@@ -117,7 +117,7 @@ Search responses identify the engine that produced them:
 - Python 3.11 or newer (the current implementation uses `enum.StrEnum`)
 - PostgreSQL
 - A filesystem directory MARU may manage
-- SMTP configuration if users will log in through email OTP
+- SMTP configuration to deliver operator-issued API tokens by email
 - Optional: [ripgrep](https://github.com/BurntSushi/ripgrep) for faster search
 
 ### Install
@@ -132,17 +132,18 @@ pip install -e .
 
 ### Configure and run
 
-MARU reads configuration from environment variables:
+Copy `config.example.yaml` to `/etc/maru/config.yaml`, replace credentials,
+and restrict it with `chmod 600`. Python 3.11+ is required.
 
 ```bash
-export MARU_DATABASE_URL='postgresql://maru:password@localhost:5432/maru'
-export MARU_SECRET_KEY='replace-with-at-least-32-characters'
-export MARU_SALT='replace-with-at-least-16-characters'
-export MARU_FILESYSTEM_ROOT='/srv/maru/files'
-export MARU_PUBLIC_URL='http://localhost:8000'
-
-uvicorn --factory maru_lang:create_app --host 0.0.0.0 --port 8000
+export MARU_CONFIG=/etc/maru/config.yaml
+uvicorn --factory maru_lang:create_app --host 127.0.0.1 --port 8000
 ```
+
+Put an HTTPS reverse proxy in front for remote clients. `server.public_url` must
+be the externally reachable HTTPS base URL. The managed filesystem root must be
+writable by the server user. Environment variables override YAML values; there
+is no automatic `.env` loading. Unknown YAML keys are rejected.
 
 Verify the server and selected search backend:
 
@@ -161,42 +162,67 @@ curl http://localhost:8000/health
 }
 ```
 
-### Authenticate
+### Provision users and connect MCP
 
-MARU currently uses email OTP login. Operators must configure SMTP first;
-without it, `/auth/login` returns 503. The access-token response is a JSON string:
-use its value without the surrounding quotes in your client configuration.
-Request a code:
+Start the server once to initialize tables, then run the trusted local CLI with
+the same configuration and filesystem permissions:
 
 ```bash
-curl -X POST http://localhost:8000/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"user@example.com"}'
+maru --config /etc/maru/config.yaml add ji@kc-ml2.com -t ml2 -r admin
+# Or export MARU_CONFIG once and omit --config:
+maru add colleague@kc-ml2.com -t ml2 -r member
 ```
 
-Exchange the code for an access token:
+`add` registers the user if absent, provisions their personal workspace, and adds
+them to the named collaborative team. New teams require the first user to be
+`admin`; that user becomes owner. Personal teams cannot receive additional members.
+Existing roles are not changed implicitly. Repeat calls for the same membership
+are idempotent and do not issue another token unless `--issue-token` is supplied.
+Operators must serialize provisioning operations.
 
-```bash
-curl -X POST http://localhost:8000/auth/verify/code \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "email":"user@example.com",
-    "code":"123456",
-    "device_id":"my-mcp-client"
-  }'
-```
-
-Configure the MCP client to use:
+A newly added membership receives a random API token. Its plaintext is flushed to
+console **before** email delivery. Only its SHA-256 hash is stored in the database.
+Tokens are user-scoped (all currently authorized teams), not bound to the `-t` team.
+The operator can authenticate as that user: this is credential provisioning, not
+proof of email ownership. There is no self-service signup, OTP, or refresh flow.
 
 ```text
-Endpoint:      http://localhost:8000/mcp
-Authorization: Bearer <access-token>
+Endpoint:      https://maru.example.com/mcp
+Authorization: Bearer maru_<random-token>
 Transport:     Streamable HTTP
 ```
 
-The exact MCP client configuration format depends on the client. The endpoint
-expects the access token in the HTTP `Authorization` header, never in a tool
-argument or URL.
+Tokens have **no expiry by default** and require no refresh. Optional expiry and
+individual revocation are supported:
+
+```bash
+maru token issue ji@kc-ml2.com --expires-in 90d
+maru token list ji@kc-ml2.com
+maru token revoke <token-id>
+```
+
+Issuing a replacement does not revoke previous tokens; revoke old IDs explicitly.
+Listing never returns plaintext or hashes. Lost tokens cannot be recovered.
+HTTP team/storage APIs accept the same Bearer token. Team permissions are checked
+live on every operation; removing a team membership removes access to that team.
+
+If SMTP is absent or fails, registration and token issuance remain committed and
+the token is still available in console output. The CLI reports `email_status`
+and exits with code **2** (partial delivery failure); do not blindly retry issuance.
+Protect console output, mailboxes, configuration, and server credentials. Never
+capture token output in shared CI logs. A leaked non-expiring token remains usable
+until revoked. SMTP uses STARTTLS (normally port 587).
+
+### Upgrading from OTP authentication
+
+Old JWT access/refresh tokens are no longer accepted. `/auth/login`, OTP verify,
+logout, and refresh routes have been removed. Issue API tokens for existing users
+with `maru token issue`. Restart the updated server first to create the new
+`apitoken` table. Legacy authentication tables are not automatically dropped;
+back up the database and remove them separately if desired. Existing users, teams,
+and storage links are retained. General schema migration support is still absent.
+Remove obsolete salt and access/refresh lifetime keys from YAML. `MARU_SECRET_KEY`
+is retained only for short-lived signed download URLs, not API-token validation.
 
 ## Team storage model
 
@@ -242,8 +268,8 @@ management mutation exposed through MCP. It immediately adds an already register
 user as a member; there is no acceptance step. Personal teams reject additions.
 Other team and storage mutations remain HTTP-only.
 
-The tool uses the same service and live admin checks as HTTP. Existing MARU user
-access tokens authenticate the caller; no separate management-token scope exists
+The tool uses the same service and live admin checks as HTTP. Operator-issued API
+tokens authenticate the caller; no separate management-token scope exists
 yet. Tool annotations and approval instructions guide clients, but are not a
 server-enforced human-approval mechanism.
 
@@ -272,7 +298,7 @@ physical paths are only shown in the local administration CLI, not team response
 
 ### Local system administration
 
-Start the server once to initialize a fresh database. With the same environment
+Start the server once to initialize a fresh database. With the same configuration/environment
 and server filesystem access, install/update the CLI with `pip install -e .`:
 
 ```bash
@@ -361,23 +387,21 @@ different file version.
 | Variable | Description |
 | --- | --- |
 | `MARU_DATABASE_URL` | PostgreSQL connection URL |
-| `MARU_SECRET_KEY` | Token signing secret, at least 32 characters |
-| `MARU_SALT` | Token hashing salt, at least 16 characters |
+| `MARU_SECRET_KEY` | Download URL signing secret, at least 32 characters |
 | `MARU_FILESYSTEM_ROOT` | Absolute path containing MARU storage |
 
 ### Optional
 
 | Variable | Default | Description |
 | --- | --- | --- |
+| `MARU_CONFIG` | unset | YAML configuration file path |
 | `MARU_PUBLIC_URL` | `http://localhost:8000` | Public base URL used in MCP metadata and download URLs |
 | `MARU_DOWNLOAD_URL_EXPIRE_SECONDS` | `300` | Default validity of a generated download URL |
 | `MARU_SEARCH_BACKEND` | `auto` | `auto`, `python`, or `ripgrep` |
 | `MARU_RIPGREP_PATH` | PATH lookup | Explicit path to `rg` |
-| `MARU_ACCESS_TOKEN_EXPIRE_MINUTES` | `120` | Access-token lifetime |
-| `MARU_REFRESH_TOKEN_EXPIRE_MINUTES` | `43200` | Refresh-token lifetime |
-| `MARU_ALLOWED_DOMAINS` | unrestricted | Comma-separated login email domains |
+| `MARU_ALLOWED_DOMAINS` | unrestricted | Comma-separated allowed user email domains |
 | `MARU_DELETE_FILES_ON_TEAM_DELETE` | `false` | Remove owned files when a team is deleted |
-| `MARU_SMTP_HOST` | unset | SMTP host for OTP email |
+| `MARU_SMTP_HOST` | unset | SMTP host for token delivery |
 | `MARU_SMTP_PORT` | `587` | SMTP port |
 | `MARU_SMTP_USERNAME` | unset | SMTP username |
 | `MARU_SMTP_PASSWORD` | unset | SMTP password |
@@ -385,14 +409,14 @@ different file version.
 
 ## Security notes
 
-- MCP requests require a short-lived MARU Bearer access token.
-- JWT validity and server-side token revocation are checked on every request.
+- MCP and HTTP management requests require an operator-issued Bearer API token.
+- Token expiry (when set) and server-side revocation are checked on every request.
 - Filesystem access requires current team membership and a current storage link.
 - Absolute paths, `..` traversal, and symlink escapes are rejected.
-- Download capability URLs are separate from access tokens and expire quickly.
+- Download capability URLs are separate from API tokens and expire quickly.
 - Use HTTPS for every non-local deployment because download URLs are bearer
   capabilities and may appear in client or proxy logs.
 
-MARU publishes OAuth protected-resource metadata for the MCP endpoint. Login is
-currently handled by MARU's OTP flow; a complete OAuth 2.1 authorization-server
-flow for automatic browser authorization is not yet included.
+MARU publishes protected-resource metadata for the MCP endpoint, but is not an
+OAuth authorization server. Clients must support a manually configured Bearer
+header; automatic browser login and refresh are not provided.

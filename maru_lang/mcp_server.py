@@ -12,8 +12,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from maru_lang.context import AppContext
-from maru_lang.core.relation_db.models.auth import User, UserToken
-from maru_lang.services.auth import is_token_valid
+from maru_lang.core.relation_db.models.auth import User
+from maru_lang.services.api_tokens import authenticate_token
 from maru_lang.services.download import create_download_url
 from maru_lang.services.filesystem import (
     authorized_storage_root,
@@ -25,30 +25,21 @@ MCP_SCOPE = "filesystem:read"
 
 
 class MaruTokenVerifier(TokenVerifier):
-    """Validate existing MARU access tokens, including server-side revocation."""
+    """Validate operator-issued API tokens against live database state."""
 
     def __init__(self, context: AppContext):
         self.context = context
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        payload = self.context.tokens.decode(token)
-        if payload is None or payload.get("sub") is None:
+        db_token = await authenticate_token(token)
+        if db_token is None:
             return None
-        try:
-            user_id = int(payload["sub"])
-        except (TypeError, ValueError):
-            return None
-        if not await User.exists(id=user_id):
-            return None
-        if not await is_token_valid(token, UserToken, tokens=self.context.tokens):
-            return None
-        db_token = await UserToken.get(token_hash=self.context.tokens.hash(token))
         return AccessToken(
             token=token,
-            client_id=db_token.device_id,
+            client_id=f"maru-api-token-{db_token.id}",
             scopes=[MCP_SCOPE],
-            expires_at=int(db_token.expires_at.timestamp()),
-            subject=str(user_id),
+            expires_at=(int(db_token.expires_at.timestamp()) if db_token.expires_at else None),
+            subject=str(db_token.user_id),
         )
 
 

@@ -60,11 +60,11 @@ it does not interrupt a download already in progress.
 ## Getting started
 
 **Using a server someone else runs?** Ask your operator for the MARU server URL,
-sign in, and connect your MCP client with your access token. Use your own account;
+and a personal API token, then connect your MCP client with that token. Use your own account;
 your team membership determines which storages you can access.
 
 **Running MARU for your team?** Follow the [setup and integration guide](docs/guide.md).
-It covers installation, login, MCP tools, registering existing folders, and team
+It covers YAML configuration, CLI user/token provisioning, MCP tools, registering existing folders, and team
 sharing. Python search is included; ripgrep is an optional faster backend.
 
 ## Current scope

@@ -36,22 +36,28 @@ class SMTPEmailService:
         message["To"] = recipient
         message["Subject"] = subject
         try:
-            with smtplib.SMTP(self.host, self.port) as server:
+            with smtplib.SMTP(self.host, self.port, timeout=20) as server:
                 server.starttls()
                 server.login(self.username, self.password)
                 server.sendmail(self.username, recipient, message.as_string())
             return True
         except Exception:
-            logger.exception("Failed to send email to %s", recipient)
+            # SMTP exceptions can contain server-provided text; never log secrets.
+            logger.warning("Email delivery failed")
             return False
 
-    async def send_otp(self, recipient: str, code: str) -> bool:
-        subject, body = get_template("otp", self.template_dir)
+    async def send_api_token(
+        self, recipient: str, token: str, endpoint: str, expires_at: str
+    ) -> bool:
+        body = (
+            f"Your MARU API token\n\nMCP URL: {endpoint}\n"
+            f"Transport: Streamable HTTP\nAuthorization: Bearer {token}\n"
+            f"Expires: {expires_at}\n\n"
+            "Keep this token private. Anyone holding it can access MARU as you.\n"
+            "Contact your operator to revoke or replace it."
+        )
         return await asyncio.to_thread(
-            self._send,
-            recipient,
-            subject.format(code=code),
-            body.format(code=code),
+            self._send, recipient, "Your MARU connection token", body
         )
 
     async def send_notification(

@@ -54,49 +54,14 @@ class TeamMember(Model):
         unique_together = (("user", "team"),)
 
 
-class EmailVerificationCode(Model):
-    id = fields.IntField(pk=True)
-    email = fields.CharField(max_length=255, unique=True)
-    code = fields.CharField(max_length=6)
-    created_at = fields.DatetimeField(auto_now_add=True)
+class ApiToken(Model):
+    """Operator-issued opaque credential; plaintext is never persisted."""
 
-
-class UserToken(Model):
     id = fields.IntField(pk=True)
     user = fields.ForeignKeyField(
-        "models.User",
-        related_name="user_tokens",
-        on_delete=fields.CASCADE,
-        index=True)
-
-    device_id = fields.CharField(max_length=255, index=True)  # a.k.a client_id
-    token_hash = fields.CharField(max_length=64, unique=True, index=True)
-
-    created_at = fields.DatetimeField(auto_now_add=True)
-    expires_at = fields.DatetimeField(index=True)
-    revoked_at = fields.DatetimeField(null=True, index=True)
-
-
-class RefreshToken(Model):
-    id = fields.IntField(pk=True)
-    user = fields.ForeignKeyField(
-        "models.User",
-        related_name="refresh_tokens",
-        on_delete=fields.CASCADE,
-        index=True)
-
-    device_id = fields.CharField(max_length=255, index=True)  # a.k.a client_id
-    token_hash = fields.CharField(max_length=64, unique=True, index=True)
-
-    created_at = fields.DatetimeField(auto_now_add=True)
-    expires_at = fields.DatetimeField(index=True)
-
-    revoked_at = fields.DatetimeField(null=True, index=True)
-    rotated_at = fields.DatetimeField(null=True, index=True)
-
-    replaced_by = fields.ForeignKeyField(
-        "models.RefreshToken",
-        related_name="replaces",
-        null=True,
-        on_delete=fields.SET_NULL
+        "models.User", related_name="api_tokens", on_delete=fields.CASCADE
     )
+    token_hash = fields.CharField(max_length=64, unique=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    expires_at = fields.DatetimeField(null=True)
+    revoked_at = fields.DatetimeField(null=True)

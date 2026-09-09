@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from maru_lang.api.endpoints.auth import router as auth_router
 from maru_lang.api.endpoints.files import router as files_router
 from maru_lang.api.endpoints.storages import router as storages_router
 from maru_lang.api.endpoints.teams import router as teams_router
@@ -23,7 +22,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
     context = AppContext(
         settings=resolved_settings,
-        tokens=TokenCodec(resolved_settings.secret_key, resolved_settings.salt),
+        tokens=TokenCodec(resolved_settings.secret_key),
         email=create_email_service(resolved_settings),
         search=create_search_backend(
             resolved_settings.search_backend,
@@ -61,20 +60,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.context = context
 
-    @app.middleware("http")
-    async def add_access_token_header(request: Request, call_next):
-        response = await call_next(request)
-        if hasattr(request.state, "new_access_token"):
-            response.headers["X-Access-Token"] = request.state.new_access_token
-        return response
-
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-Access-Token"],
     )
 
     @app.get("/health")
@@ -88,7 +79,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         }
 
-    app.include_router(auth_router)
     app.include_router(teams_router)
     app.include_router(storages_router)
     app.include_router(files_router)

@@ -2,7 +2,7 @@
 name = "maru-lang"
 version = "0.0.0"
 description = "A deterministic, team-scoped filesystem access layer for AI agents"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -18,6 +18,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "PyYAML>=6.0,<7.0",
     # Web framework
     "fastapi>=0.137.0,<1.0",
     "email-validator>=2.3.0,<3.0",

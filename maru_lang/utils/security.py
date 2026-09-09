@@ -1,8 +1,6 @@
-"""JWT and token hashing primitives with explicit configuration."""
+"""Short-lived download capability signing; not user authentication."""
 from __future__ import annotations
 
-import hashlib
-import hmac
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,13 +11,7 @@ from jose import jwt
 @dataclass(frozen=True, slots=True)
 class TokenCodec:
     secret_key: str
-    salt: str
     algorithm: str = "HS256"
-
-    def hash(self, token: str) -> str:
-        return hmac.new(
-            self.salt.encode(), token.encode(), hashlib.sha256
-        ).hexdigest()
 
     def create(
         self, data: dict, expires_delta: timedelta

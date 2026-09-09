@@ -3,14 +3,10 @@ from functools import lru_cache
 from pathlib import Path
 
 DEFAULTS: dict[str, tuple[str, str]] = {
-    "otp": (
-        "{code} - Maru Lang Code",
-        "Your verification code is: {code}\n\nThis code expires in 5 minutes.",
-    ),
     "notification": (
         "Maru Lang - {team_name} 팀에 추가되었습니다",
         "{inviter_name}님이 {team_name} 팀에 추가했습니다.\n\n"
-        "로그인하여 팀을 확인하세요.",
+        "연결된 MCP 클라이언트에서 팀을 확인하세요.",
     ),
 }
 

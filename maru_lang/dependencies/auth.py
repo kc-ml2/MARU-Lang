@@ -1,59 +1,22 @@
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from maru_lang.core.relation_db.models.auth import User, UserToken
-from maru_lang.services.auth import is_token_valid
-from maru_lang.context import AppContext
-from maru_lang.dependencies.context import get_app_context
+"""Shared API-token authentication for HTTP management routes."""
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-oauth2_scheme = OAuth2PasswordBearer(
-    tokenUrl="/auth/login",
-    auto_error=False
-)
+from maru_lang.core.relation_db.models.auth import User
+from maru_lang.services.api_tokens import authenticate_token
+
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_user(
-    token: str = Depends(oauth2_scheme),
-    context: AppContext = Depends(get_app_context),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> User:
-    """Access token에서 유저 정보를 가져오는 함수. 만료 시 401 반환."""
-    if not token:
+    record = await authenticate_token(credentials.credentials) if credentials else None
+    user = await User.get_or_none(id=record.user_id) if record else None
+    if user is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"message": "Token not provided", "code": "TOKEN_MISSING"},
+            status_code=401,
+            detail="Missing, invalid, expired or revoked API token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-    payload = context.tokens.decode(token)
-
-    if payload is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"message": "Token expired", "code": "TOKEN_EXPIRED"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    user_id = payload.get("sub")
-    if user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"message": "Invalid token", "code": "TOKEN_INVALID"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    user = await User.get_or_none(id=user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"message": "User not found", "code": "USER_NOT_FOUND"},
-        )
-
-    # JWT 서명/만료만으로는 logout을 반영할 수 없다. logout은 UserToken.revoked_at을
-    # 설정하므로, DB에 저장된 access token이 폐기/만료되지 않았는지 함께 확인한다.
-    if not await is_token_valid(token, UserToken, tokens=context.tokens):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"message": "Token revoked", "code": "TOKEN_REVOKED"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
     return user

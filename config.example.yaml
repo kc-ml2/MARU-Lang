@@ -1,0 +1,26 @@
+# Copy outside the repository, chmod 600, and replace credentials.
+# MARU_CONFIG=/etc/maru/config.yaml uvicorn --factory maru_lang:create_app
+# Environment variables override YAML values.
+database:
+  url: postgresql://maru:CHANGE_ME@127.0.0.1:5432/maru
+
+auth:
+  # Used only to sign short-lived file download URLs. Generate: openssl rand -hex 32
+  secret_key: REPLACE_WITH_A_RANDOM_SECRET_AT_LEAST_32_CHARACTERS
+  allowed_domains: [kc-ml2.com]
+
+filesystem:
+  root: /srv/maru/files
+  search_backend: auto
+  delete_files_on_team_delete: false
+
+server:
+  public_url: https://maru.example.com
+  download_url_expire_seconds: 300
+
+# Optional: CLI prints tokens even when SMTP is absent or delivery fails.
+# smtp:
+#   host: smtp.example.com
+#   port: 587
+#   username: maru@example.com
+#   password: CHANGE_ME
