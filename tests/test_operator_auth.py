@@ -32,8 +32,8 @@ class ConfigTests(unittest.TestCase):
             with patch.dict(os.environ, {}, clear=True):
                 settings = Settings.from_env(path)
                 self.assertEqual(settings.allowed_domains, ('kc-ml2.com',))
-                with patch.dict(os.environ, {'MARU_SEARCH_BACKEND': 'python'}):
-                    self.assertEqual(Settings.from_env(path).search_backend, 'python')
+                with patch.dict(os.environ, {'MARU_RIPGREP_PATH': '/opt/bin/rg'}):
+                    self.assertEqual(Settings.from_env(path).ripgrep_path, '/opt/bin/rg')
                 path.write_text('filesystem:\n  typo: true\n')
                 with self.assertRaisesRegex(RuntimeError, 'Unknown configuration key'):
                     Settings.from_env(path)

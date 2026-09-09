@@ -9,8 +9,7 @@ SECTIONS = {
         "secret_key", "allowed_domains",
     )},
     "filesystem": {
-        "root": "FILESYSTEM_ROOT", "search_backend": "SEARCH_BACKEND",
-        "ripgrep_path": "RIPGREP_PATH",
+        "root": "FILESYSTEM_ROOT", "ripgrep_path": "RIPGREP_PATH",
         "delete_files_on_team_delete": "DELETE_FILES_ON_TEAM_DELETE",
     },
     "server": {

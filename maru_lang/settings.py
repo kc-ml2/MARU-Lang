@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 from urllib.parse import urlparse
 
 
@@ -17,7 +16,6 @@ class Settings:
     filesystem_root: Path
     public_url: str = "http://localhost:8000"
     download_url_expire_seconds: int = 300
-    search_backend: Literal["auto", "python", "ripgrep"] = "auto"
     ripgrep_path: str | None = None
     allowed_domains: tuple[str, ...] = ()
     delete_files_on_team_delete: bool = False
@@ -85,12 +83,6 @@ class Settings:
         public_url_parts = urlparse(public_url)
         if public_url_parts.scheme not in {"http", "https"} or not public_url_parts.netloc:
             raise RuntimeError("MARU_PUBLIC_URL must be an absolute HTTP(S) URL")
-        search_backend = values.get("MARU_SEARCH_BACKEND", "auto").strip().lower()
-        if search_backend not in {"auto", "python", "ripgrep"}:
-            raise RuntimeError(
-                "MARU_SEARCH_BACKEND must be auto, python, or ripgrep"
-            )
-
         return cls(
             database_url=database_url,
             secret_key=secret_key,
@@ -99,7 +91,6 @@ class Settings:
             download_url_expire_seconds=_integer(
                 "MARU_DOWNLOAD_URL_EXPIRE_SECONDS", 300
             ),
-            search_backend=search_backend,  # type: ignore[arg-type]
             ripgrep_path=values.get("MARU_RIPGREP_PATH") or None,
             allowed_domains=allowed_domains,
             delete_files_on_team_delete=_boolean(

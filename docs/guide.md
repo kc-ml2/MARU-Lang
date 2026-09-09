@@ -118,7 +118,8 @@ Search responses identify the engine that produced them:
 - PostgreSQL
 - A filesystem directory MARU may manage
 - SMTP configuration to deliver operator-issued API tokens by email
-- Optional: [ripgrep](https://github.com/BurntSushi/ripgrep) for faster search
+- [ripgrep](https://github.com/BurntSushi/ripgrep) available as `rg` on `PATH`
+  (or configured with an explicit executable path)
 
 ### Install
 
@@ -377,32 +378,21 @@ operators. Registration and sharing operations should be serialized by operators
 Unregistering requires removing all team shares first and deletes only metadata.
 External storage cannot be registered or removed through team HTTP/MCP tools.
 
-## Search backends
+## Filesystem search
 
-MARU always includes a portable Python search backend. The default `auto` mode
-uses ripgrep when `rg` is available at startup and otherwise selects Python.
-Backend selection happens once; MARU does not switch engines between requests.
+MARU requires [ripgrep](https://github.com/BurntSushi/ripgrep) and validates the
+executable at startup. It uses `rg` from `PATH` by default. An operator may pin a
+specific executable:
 
 ```bash
-# Automatically prefer ripgrep
-MARU_SEARCH_BACKEND=auto
-
-# Never require an external executable
-MARU_SEARCH_BACKEND=python
-
-# Require ripgrep and fail startup if it is unavailable
-MARU_SEARCH_BACKEND=ripgrep
-
-# Optionally use a specific binary
 MARU_RIPGREP_PATH=/usr/local/bin/rg
 ```
 
-Both engines return the same result shape and stable path ordering. Literal
-searches have equivalent intent. Regex syntax depends on the active engine:
-Python `re` for `python`, and Rust regex syntax for `ripgrep`. The active backend
-is always shown in `/health` and search responses.
+There is no fallback engine or per-request backend selection. Regex searches use
+ripgrep's Rust regex syntax. `/health` and search responses report the active
+ripgrep version.
 
-When using ripgrep, MARU invokes it without a shell and supplies explicit options:
+MARU invokes ripgrep without a shell and supplies explicit options:
 
 - ignore ambient ripgrep configuration
 - do not apply repository ignore files implicitly
@@ -451,8 +441,7 @@ different file version.
 | `MARU_CONFIG` | unset | YAML configuration file path |
 | `MARU_PUBLIC_URL` | `http://localhost:8000` | Public base URL used in MCP metadata and download URLs |
 | `MARU_DOWNLOAD_URL_EXPIRE_SECONDS` | `300` | Default validity of a generated download URL |
-| `MARU_SEARCH_BACKEND` | `auto` | `auto`, `python`, or `ripgrep` |
-| `MARU_RIPGREP_PATH` | PATH lookup | Explicit path to `rg` |
+| `MARU_RIPGREP_PATH` | `rg` from `PATH` | Explicit path to the required ripgrep executable |
 | `MARU_ALLOWED_DOMAINS` | unrestricted | Comma-separated allowed user email domains |
 | `MARU_DELETE_FILES_ON_TEAM_DELETE` | `false` | Remove owned files when a team is deleted |
 | `MARU_SMTP_HOST` | unset | SMTP host for token delivery |

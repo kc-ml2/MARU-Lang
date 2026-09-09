@@ -13,7 +13,7 @@ from maru_lang.context import AppContext
 from maru_lang.core.relation_db import database_context
 from maru_lang.adapters.smtp_email import create_email_service
 from maru_lang.mcp_server import create_mcp_server
-from maru_lang.services.search import create_search_backend
+from maru_lang.services.search import RipgrepSearch
 from maru_lang.settings import Settings
 from maru_lang.utils.security import TokenCodec
 
@@ -24,10 +24,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings=resolved_settings,
         tokens=TokenCodec(resolved_settings.secret_key),
         email=create_email_service(resolved_settings),
-        search=create_search_backend(
-            resolved_settings.search_backend,
-            resolved_settings.ripgrep_path,
-        ),
+        search=RipgrepSearch(resolved_settings.ripgrep_path),
     )
     mcp_server = create_mcp_server(context)
     mcp_app = mcp_server.streamable_http_app()

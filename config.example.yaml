@@ -12,7 +12,8 @@ auth:
 
 filesystem:
   root: /srv/maru/files
-  search_backend: auto
+  # Optional when rg is available on PATH:
+  # ripgrep_path: /usr/local/bin/rg
   delete_files_on_team_delete: false
 
 server:

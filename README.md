@@ -64,8 +64,8 @@ and a personal API token, then connect your MCP client with that token. Use your
 your team membership determines which storages you can access.
 
 **Running MARU for your team?** Follow the [setup and integration guide](docs/guide.md).
-It covers YAML configuration, CLI user/token provisioning, MCP tools, registering existing folders, and team
-sharing. Python search is included; ripgrep is an optional faster backend.
+It covers YAML configuration, CLI user/token provisioning, MCP tools,
+registering existing folders, team sharing, and the required ripgrep runtime.
 
 ## Current scope
 
