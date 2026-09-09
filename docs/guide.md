@@ -200,7 +200,7 @@ be the externally reachable HTTPS base URL. The managed filesystem root must be
 writable by the server user. Environment variables override YAML values; there
 is no automatic `.env` loading. Unknown YAML keys are rejected.
 
-Verify the server and selected search backend:
+Verify the server and required ripgrep engine:
 
 ```bash
 curl http://localhost:8000/health

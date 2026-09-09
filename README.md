@@ -63,9 +63,17 @@ it does not interrupt a download already in progress.
 and a personal API token, then connect your MCP client with that token. Use your own account;
 your team membership determines which storages you can access.
 
-**Running MARU for your team?** Follow the [setup and integration guide](docs/guide.md).
-It covers YAML configuration, CLI user/token provisioning, MCP tools,
-registering existing folders, team sharing, and the required ripgrep runtime.
+**Running MARU for your team?** Install PostgreSQL and ripgrep, copy
+`config.example.yaml` to `config.yaml`, replace its credentials, and start MARU:
+
+```bash
+maru serve
+```
+
+The command serves both HTTP and MCP on `127.0.0.1:8000` by default. Use
+`maru serve --host 0.0.0.0 --port 8000` when an external bind is required. See
+the [setup and integration guide](docs/guide.md) for user/token provisioning,
+external folders, team sharing, and deployment details.
 
 ## Current scope
 

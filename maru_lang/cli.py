@@ -1,4 +1,4 @@
-"""Local system administration, authorized by access to server configuration."""
+"""MARU server launcher and trusted local administration CLI."""
 import argparse
 import asyncio
 import getpass
@@ -21,7 +21,7 @@ def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(prog='maru')
     cli.add_argument('--config', type=Path, help='YAML config path (or MARU_CONFIG)')
     entries = cli.add_subparsers(dest='entry', required=True)
-    serve = entries.add_parser('serve', help='Run the HTTP/MCP server')
+    serve = entries.add_parser('serve', help='Run the HTTP and MCP server')
     serve.add_argument('--host', default='127.0.0.1')
     serve.add_argument('--port', type=int, default=8000)
     add = entries.add_parser('add', help='Register a user and add them to a team')
