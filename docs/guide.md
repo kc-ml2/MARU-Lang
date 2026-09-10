@@ -1,465 +1,270 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: light)" srcset="https://ml2-ai-product.s3.ap-northeast-2.amazonaws.com/MARU/MARU_Black_full.png">
-    <source media="(prefers-color-scheme: dark)" srcset="https://ml2-ai-product.s3.ap-northeast-2.amazonaws.com/MARU/MARU_White_full.png">
-    <img alt="MARU" src="https://ml2-ai-product.s3.ap-northeast-2.amazonaws.com/MARU/MARU_black.png" width="90%">
-  </picture>
-</p>
-<p align="center">
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-</p>
+# MARU setup and operations
 
-# MARU setup and integration guide
+[← README](../README.md)
 
-[← Product overview](../README.md)
+MARU runs on the host; PostgreSQL stores users, teams, storage links, and token
+hashes. Files remain on the filesystem. Commands below assume a Linux server.
 
-This document is for operators, developers, and agents integrating MARU.
+## 1. Install
 
-- [Quick start](#quick-start)
-- [MCP tools](#mcp-tools)
-- [Team management](#management-through-mcp)
-- [External storage administration](#local-system-administration)
-- [Configuration](#configuration-reference)
-- [Security](#security-notes)
-
-**A deterministic, team-scoped filesystem access layer for AI agents.**
-
-MARU is a shared backend for applications and AI agents, not an end-user client.
-HTTP provides identity, team, and storage management; MCP provides agent-facing
-file discovery. Both use the same application services and authorization rules.
-The current release uses MARU's own identities; external identity-provider
-integration and delegated service accounts are not yet implemented.
-
-MARU lets an AI agent find files in team storage using explicit filesystem
-operations instead of semantic guesses. The agent can inspect a directory tree,
-filter filenames, search exact text or regular expressions, and give the user a
-short-lived URL to download the original file.
-
-```text
-Your request
-    ↓
-AI agent
-    ↓ MCP tools
-MARU: authorize → list/find/search → return evidence or download URL
-    ↓
-Team filesystem
-```
-
-MARU is useful when an agent needs fast, verifiable answers to questions such as:
-
-- Which files match this exact name or glob?
-- Where does this literal string occur?
-- Which file contains a matching configuration key or code pattern?
-- What is the path, size, and modification time of this file?
-- Can I download the original file rather than receiving its contents in chat?
-
-MARU is **not** a semantic retriever or RAG framework. It does not chunk files,
-generate embeddings, rank by vector similarity, or generate answers.
-
-## What using MARU looks like
-
-A typical agent workflow is:
-
-1. Call `list_my_teams` to discover your team IDs, then `list_storages` to see
-   what the selected team can access.
-2. Call `list_storage_tree` to understand the relevant directory structure.
-3. Call `find_storage_files` to narrow candidates by path or filename glob.
-4. Call `search_storage_text` to collect exact path, line, column, and text evidence.
-5. Call `get_file_download_url` when the user needs the complete original file.
-
-The agent chooses which tools to call. MARU performs only the explicit operation
-requested and returns bounded, path-sorted results.
-
-> Concrete end-user scenarios and example conversations will be added as the
-> intended workflows are finalized.
-
-## MCP tools
-
-| Tool | Purpose |
-| --- | --- |
-| `list_my_teams` | Discover your teams, roles, and personal workspace |
-| `get_team` | Inspect a team's details and members |
-| `get_my_team_permissions` | Inspect your current permissions in a particular team |
-| `add_team_member` | Immediately add an existing user to a collaboration team (team admin) |
-| `list_storages` | List storages available to a team |
-| `list_storage_tree` | Inspect a stable, depth-limited directory tree |
-| `find_storage_files` | Find files using filename and include/exclude globs |
-| `search_storage_text` | Search literal text or a regular expression |
-| `stat_storage_path` | Inspect file, directory, or symlink metadata |
-| `get_file_download_url` | Create a short-lived URL for the original file |
-
-Except for `list_my_teams`, every tool is scoped by `team_id`; filesystem tools
-also require `storage_id`.
-MARU verifies both team membership and the team's link to that storage before
-accessing the filesystem.
-
-Search responses identify the engine that produced them:
-
-```json
-{
-  "backend": "ripgrep",
-  "results": [
-    {
-      "path": "src/settings.py",
-      "line": 42,
-      "byte_column": 5,
-      "text": "DATABASE_URL = ..."
-    }
-  ],
-  "truncated": false
-}
-```
-
-## Quick start
-
-### Requirements
-
-- Python 3.11 or newer (the current implementation uses `enum.StrEnum`)
-- PostgreSQL
-- A filesystem directory MARU may manage
-- SMTP configuration to deliver operator-issued API tokens by email
-- [ripgrep](https://github.com/BurntSushi/ripgrep) available as `rg` on `PATH`
-  (or configured with an explicit executable path)
-
-### Install
+Requirements: **Python 3.11+, ripgrep, PostgreSQL**, and a writable managed-files
+directory. Docker Compose is optional if you already have PostgreSQL.
 
 ```bash
-git clone https://github.com/kc-ml2/MARU-Lang.git
+git clone --branch feat/filesystem-retrieval-server https://github.com/kc-ml2/MARU-Lang.git
 cd MARU-Lang
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+
+# Ubuntu / Debian
+sudo apt-get update
+sudo apt-get install -y ripgrep
 ```
 
-### PostgreSQL with Docker Compose
+## 2. Start PostgreSQL
 
-The repository's `docker-compose.yaml` runs PostgreSQL 17 only; MARU runs on the
-host. Replace `POSTGRES_PASSWORD: "CHANGE_ME"` with a strong password before use
-(`openssl rand -hex 32` produces a URL-safe value). Set the same password in
-MARU's YAML configuration:
-
-```yaml
-database:
-  url: postgresql://maru:YOUR_PASSWORD@127.0.0.1:5432/maru
-```
+In `docker-compose.yaml`, replace `POSTGRES_PASSWORD: "CHANGE_ME"` with a strong
+password. `openssl rand -hex 32` generates a URL-safe value.
 
 ```bash
 chmod 600 docker-compose.yaml
 docker compose up -d postgres
 docker compose ps
-docker compose logs --tail=50 postgres
 ```
 
-The DB port binds only to `127.0.0.1`, not external interfaces. If host port 5432
-is occupied, change the host port in Compose and the MARU database URL together.
-The healthcheck reports readiness, and `restart: unless-stopped` restarts the
-container after host reboots when the Docker service starts.
+Wait for `healthy`. For diagnostics: `docker compose logs --tail=50 postgres`.
 
-Data persists in the explicitly named Docker volume **`maru-postgres-data`**.
-This is PostgreSQL data, separate from `filesystem.root` containing team files.
-The volume survives `docker compose down`; **`docker compose down -v` deletes it**.
-Back up the database independently; a persistent volume is not a backup. The
-fixed volume name assumes one MARU deployment per Docker host. Separate deployments
-must use separate volume names and host ports.
+- PostgreSQL 17 binds to **127.0.0.1:5432**, not external interfaces.
+- Data persists in **`maru-postgres-data`**, separate from team files.
+- `docker compose down` preserves data; **`docker compose down -v` deletes it**.
+- Changing the Compose password does not update an already initialized DB.
+- Separate deployments need different volume names and host ports.
 
-Do not commit actual passwords. For deployments maintained through Git, consider
-a private copy outside the repository, invoked with `docker compose -f /path/to/docker-compose.yaml`.
-Alternatively replace the password with `${POSTGRES_PASSWORD}` and supply it via
-a protected `.env` file or the shell environment; this is optional, not required.
-Docker administrators can inspect container environment variables.
+Do not commit real passwords. You may keep a private Compose file outside Git
+and use `docker compose -f /path/docker-compose.yaml ...`, or optionally use
+`${POSTGRES_PASSWORD}` with a protected `.env`. Docker administrators can inspect
+container environment values. Back up the DB; a volume is not a backup.
 
-PostgreSQL initialization settings apply only to an empty volume. Changing the
-YAML password does not change an existing database role's password. Do not point
-PostgreSQL 17 at a PostgreSQL 16 data directory; use a supported upgrade or
-backup/restore procedure. This Compose file does not migrate existing databases.
-
-### Configure and run
-
-Copy `config.example.yaml` to `config.yaml` in the project root, replace
-credentials, and restrict it with `chmod 600 config.yaml`. This local file is
-Git-ignored. Python 3.11+ is required.
+## 3. Configure and run
 
 ```bash
-maru serve --port 8000
+cp config.example.yaml config.yaml
+chmod 600 config.yaml
+
+sudo mkdir -p /srv/maru/files
+sudo chown "$(id -un):$(id -gn)" /srv/maru/files
 ```
 
-Both server and administrative commands automatically read `./config.yaml` from
-**the current working directory**. Config path precedence is explicit
-`maru --config /path/config.yaml ...`, then `MARU_CONFIG`, then `./config.yaml`.
-An explicitly selected missing or invalid file is an error, not a fallback.
-Without any file, environment-only configuration still works. Run only from a
-trusted directory; do not implicitly load another project's configuration.
+Edit `config.yaml` (Git-ignored):
 
-`maru serve` runs Uvicorn internally, binding to `127.0.0.1` by default. You can
-still run `uvicorn --factory maru_lang:create_app --port 8000` directly. For a
-config outside the project use `maru --config /etc/maru/config.yaml serve`.
-For systemd, set `WorkingDirectory` or an explicit config path.
+```yaml
+database:
+  url: postgresql://maru:YOUR_DB_PASSWORD@127.0.0.1:5432/maru
 
-Put an HTTPS reverse proxy in front for remote clients. `server.public_url` must
-be the externally reachable HTTPS base URL. The managed filesystem root must be
-writable by the server user. Environment variables override YAML values; there
-is no automatic `.env` loading. Unknown YAML keys are rejected.
+auth:
+  # Generate separately with: openssl rand -hex 32
+  secret_key: "YOUR_RANDOM_SECRET_AT_LEAST_32_CHARACTERS"
+  allowed_domains: [kc-ml2.com]
 
-Verify the server and required ripgrep engine:
+filesystem:
+  root: /srv/maru/files
+
+server:
+  public_url: http://localhost:8000
+
+# Optional token delivery via STARTTLS
+# smtp:
+#   host: smtp.example.com
+#   port: 587
+#   username: maru@example.com
+#   password: YOUR_SMTP_PASSWORD
+```
+
+Use the same DB password as Compose. Start MARU:
 
 ```bash
-curl http://localhost:8000/health
+maru serve
 ```
 
-```json
-{
-  "status": "ok",
-  "filesystem_search": {
-    "backend": "ripgrep",
-    "version": "ripgrep 15.x.x",
-    "regex_supported": true
-  }
-}
-```
-
-### Provision users and connect MCP
-
-Start the server once to initialize tables, then run the trusted local CLI with
-the same configuration and filesystem permissions:
+In another terminal:
 
 ```bash
-maru --config /etc/maru/config.yaml add ji@kc-ml2.com -t ml2 -r admin
-# Or export MARU_CONFIG once and omit --config:
+curl http://127.0.0.1:8000/health
+```
+
+Expect `status: ok` and `filesystem_search.backend: ripgrep`. The first startup
+creates DB tables. Keep this process running while using the CLI in another
+terminal with the same virtual environment and working directory.
+
+**Configuration rules**
+
+- File selection: `maru --config /path/config.yaml ...` → `MARU_CONFIG` →
+  `./config.yaml` in the **current working directory**.
+- Explicitly selected missing/invalid files fail; they do not fall back.
+- Environment variables override YAML. Environment-only setup still works;
+  `.env` is not automatically loaded by MARU.
+- Run from a trusted directory. Unknown YAML keys are rejected.
+
+`maru serve` uses Uvicorn internally. Default bind: `127.0.0.1:8000`; optional
+flags: `--host` and `--port`. Direct Uvicorn factory execution remains supported.
+
+## 4. Register users and connect MCP
+
+```bash
+maru add ji@kc-ml2.com -t ml2 -r admin
 maru add colleague@kc-ml2.com -t ml2 -r member
 ```
 
-`add` registers the user if absent, provisions their personal workspace, and adds
-them to the named collaborative team. New teams require the first user to be
-`admin`; that user becomes owner. Personal teams cannot receive additional members.
-Existing roles are not changed implicitly. Repeat calls for the same membership
-are idempotent and do not issue another token unless `--issue-token` is supplied.
-Operators must serialize provisioning operations.
+`add` creates missing users and their personal workspaces, then adds them to the
+named team. A new team requires `admin`; that user becomes its owner. Existing
+roles are not changed implicitly. Repeating the same membership does not issue
+another token unless `--issue-token` is supplied.
 
-A newly added membership receives a random API token. Its plaintext is flushed to
-console **before** email delivery. Only its SHA-256 hash is stored in the database.
-Tokens are user-scoped (all currently authorized teams), not bound to the `-t` team.
-The operator can authenticate as that user: this is credential provisioning, not
-proof of email ownership. There is no self-service signup, OTP, or refresh flow.
+New memberships receive an API token, **printed before email delivery**. If SMTP
+is absent or fails, registration and token issuance still succeed; the CLI reports
+`email_status` and exits **2**. Save the printed token rather than blindly retrying.
+
+Configure your MCP client:
 
 ```text
-Endpoint:      https://maru.example.com/mcp
-Authorization: Bearer maru_<random-token>
+URL:           https://maru.example.com/mcp
 Transport:     Streamable HTTP
+Authorization: Bearer maru_<token>
 ```
 
-Tokens have **no expiry by default** and require no refresh. Optional expiry and
-individual revocation are supported:
+The client must support a manually configured Bearer header. There is no OTP,
+self-service signup, OAuth browser login, or refresh flow. HTTP management APIs
+accept the same token. An API token covers **all teams currently accessible to
+its user**, not just the team passed to `-t`.
+
+### Token management
 
 ```bash
-maru token issue ji@kc-ml2.com --expires-in 90d
-maru token list ji@kc-ml2.com
+maru token issue ji@kc-ml2.com                   # No expiry
+maru token issue ji@kc-ml2.com --expires-in 90d   # Optional expiry
+maru token list ji@kc-ml2.com                    # IDs and status only
 maru token revoke <token-id>
 ```
 
-Issuing a replacement does not revoke previous tokens; revoke old IDs explicitly.
-Listing never returns plaintext or hashes. Lost tokens cannot be recovered.
-HTTP team/storage APIs accept the same Bearer token. Team permissions are checked
-live on every operation; removing a team membership removes access to that team.
+Tokens do not expire by default. Only hashes are stored; lost tokens cannot be
+recovered. Issuing another token does **not** revoke old ones. Anyone holding a
+token can act as that user until expiry or revocation—protect mailboxes and
+console output, and never capture tokens in shared CI logs.
 
-If SMTP is absent or fails, registration and token issuance remain committed and
-the token is still available in console output. The CLI reports `email_status`
-and exits with code **2** (partial delivery failure); do not blindly retry issuance.
-Protect console output, mailboxes, configuration, and server credentials. Never
-capture token output in shared CI logs. A leaked non-expiring token remains usable
-until revoked. SMTP uses STARTTLS (normally port 587).
-
-### Upgrading from OTP authentication
-
-Old JWT access/refresh tokens are no longer accepted. `/auth/login`, OTP verify,
-logout, and refresh routes have been removed. Issue API tokens for existing users
-with `maru token issue`. Restart the updated server first to create the new
-`apitoken` table. Legacy authentication tables are not automatically dropped;
-back up the database and remove them separately if desired. Existing users, teams,
-and storage links are retained. General schema migration support is still absent.
-Remove obsolete salt and access/refresh lifetime keys from YAML. `MARU_SECRET_KEY`
-is retained only for short-lived signed download URLs, not API-token validation.
-
-## Team storage model
-
-Each user receives a personal team and its writable storage. Users can also
-create collaborative teams and invite existing MARU users.
-
-Personal teams accept no additional members. Authorization also denies access
-through any pre-existing non-owner personal-team membership (records are not
-automatically deleted). Team discovery hides those memberships.
-
-`manager_id` identifies the accountable team owner, not a separate permission
-role. Access is checked through `TeamMember.role` (`admin` or `member`); ownership
-does not bypass membership checks. Creators become admins, and owners cannot be
-removed through the member-removal API. Ownership transfer and role editing are
-not yet exposed. Team listing and detail responses include `manager_id` and
-`is_personal`.
-
-```text
-Team
-  └── TeamStorageLink
-        └── SourceStorage
-              └── files and directories
-```
-
-A storage owned by a team is writable only by that team. A storage linked from
-another team is read-only. System storages, such as `help`, may be attached
-read-only to personal teams.
-
-The filesystem remains the source of truth for file contents. PostgreSQL stores
-users, teams, storage ownership, access links, and authentication state.
-
-> **Current scope:** MARU provisions server-local storage directories but does
-> not yet expose a file upload API or MCP write tools. Files must currently be
-> placed or mounted into the provisioned storage by the operator or another
-> application.
-
-## Management through MCP
-
-Management support is being introduced incrementally. For now, an agent can use
-`list_my_teams`, `get_team`, and `get_my_team_permissions` to inspect the user's
-teams and management permissions. `add_team_member(team_id, email)` is the first
-management mutation exposed through MCP. It immediately adds an already registered
-user as a member; there is no acceptance step. Personal teams reject additions.
-Other team and storage mutations remain HTTP-only.
-
-The tool uses the same service and live admin checks as HTTP. Operator-issued API
-tokens authenticate the caller; no separate management-token scope exists
-yet. Tool annotations and approval instructions guide clients, but are not a
-server-enforced human-approval mechanism.
-
-Successful additions emit `maru.audit` INFO logs containing actor, team, and target
-user IDs. Operators must configure logging to retain these records and serialize
-extra fields. This is not a durable transactional audit ledger; rejected attempts
-are not yet recorded. Email notification failure does not undo a successful
-membership addition.
-
-MARU admins are **team-scoped**, not server-wide superusers. Being an admin in one
-team grants no privileges in another. Permission discovery is informational;
-subsequent operations must check current membership and resource constraints
-again. Personal teams do not allow additional members or team deletion.
-
-## Managed and external storage
-
-- **Managed**: MARU creates the directory for a team (or for system content such
-  as `help`). File upload is not yet implemented.
-- **External**: a local system operator registers an existing absolute directory.
-  MARU reads it in place, without copying, provisioning, or deleting its contents.
-  External storage is system-managed and read-only through MARU. Only explicitly
-  shared teams can access it; "shared" does not mean publicly accessible.
-
-Storage responses expose `storage_type` independently of `owner_type`. External
-physical paths are only shown in the local administration CLI, not team responses.
-
-### Local system administration
-
-Start the server once to initialize a fresh database. With the same configuration/environment
-and server filesystem access, install/update the CLI with `pip install -e .`:
+## 5. Share an existing folder
 
 ```bash
 maru admin list-teams
 maru admin register-external --name "Company documents" --path /mnt/company-docs
 maru admin list-storages
-maru admin share --storage-id <returned-id> --team-id 12
-maru admin unshare --storage-id <returned-id> --team-id 12
-maru admin unregister-external --storage-id <returned-id>
+maru admin share --storage-id <storage-id> --team-id <team-id>
 ```
 
-Alternatively use `python -m maru_lang.cli admin ...`. This is a trusted local
-operator entry point, not an MCP client or a team-admin privilege. Restrict access
-to server credentials and the CLI environment. JSON output identifies the local
-OS user for operational logging; it is not a tamper-proof audit record.
+The directory must exist and be readable by the MARU process. It must have no
+symlink path components and must not overlap the managed root or another external
+storage. Files are read in place, not copied. Use read-only OS mounts where useful.
 
-The registered directory must exist, must not use symlink path components, and
-must not overlap MARU's managed root or another external storage. Use a read-only
-OS mount and filesystem permissions when appropriate. There is no external-path
-allowlist yet: registering paths is restricted operationally to trusted server
-operators. Registration and sharing operations should be serialized by operators.
-Unregistering requires removing all team shares first and deletes only metadata.
-External storage cannot be registered or removed through team HTTP/MCP tools.
-
-## Filesystem search
-
-MARU requires [ripgrep](https://github.com/BurntSushi/ripgrep) and validates the
-executable at startup. It uses `rg` from `PATH` by default. An operator may pin a
-specific executable:
+To remove access or registration:
 
 ```bash
-MARU_RIPGREP_PATH=/usr/local/bin/rg
+maru admin unshare --storage-id <storage-id> --team-id <team-id>
+maru admin unregister-external --storage-id <storage-id>
 ```
 
-There is no fallback engine or per-request backend selection. Regex searches use
-ripgrep's Rust regex syntax. `/health` and search responses report the active
-ripgrep version.
+Remove all shares before unregistering. Unregistering removes metadata, **not
+original files**. These commands are trusted local operator operations, not MCP
+team-admin privileges. Restrict server credentials and serialize provisioning and
+storage registration/sharing operations; there is no external-path allowlist.
 
-MARU invokes ripgrep without a shell and supplies explicit options:
+## Deployment checklist
 
-- ignore ambient ripgrep configuration
-- do not apply repository ignore files implicitly
-- include hidden files
-- sort results by path
-- do not follow symlinks
+- Put an **HTTPS reverse proxy** in front of MARU for non-local use. Set
+  `server.public_url` to that public HTTPS base URL and restart MARU; generated
+  download links use it. Keep PostgreSQL private.
+- For a local client test, use `ssh -N -L 8000:127.0.0.1:8000 user@server`, set
+  `public_url: http://localhost:8000`, and connect to `http://localhost:8000/mcp`.
+  Cloud-hosted clients cannot reach your local SSH tunnel.
+- Run MARU under systemd or another process supervisor. Set its working directory
+  or use `maru --config /absolute/path/config.yaml serve`. Do not use reload mode.
+- Back up PostgreSQL and managed files separately. Shared folders may include
+  hidden credentials such as `.env`; do not expose sensitive directories.
 
-## Download URLs
+## MCP tools and permissions
 
-`get_file_download_url` produces a signed URL for one authorized file version:
+| Tool | Purpose |
+| --- | --- |
+| `list_my_teams` | Discover teams and roles |
+| `get_team` | Inspect team details and members |
+| `get_my_team_permissions` | Inspect current permissions |
+| `add_team_member` | Add an existing user immediately (team admin) |
+| `list_storages` | List team-accessible storages |
+| `list_storage_tree` | Browse directories |
+| `find_storage_files` | Find filenames/globs |
+| `search_storage_text` | Search literal text or regex |
+| `stat_storage_path` | Inspect path metadata |
+| `get_file_download_url` | Generate a short-lived file link |
 
-```json
-{
-  "url": "https://maru.example/files/download?token=...",
-  "path": "documents/report.pdf",
-  "size": 1839201,
-  "modified_at_ns": 1740000000000000000,
-  "url_expires_at": "2025-09-02T12:05:00+00:00",
-  "url_valid_for_seconds": 300
-}
-```
+Start with `list_my_teams`, then `list_storages`. Other tools require `team_id`;
+filesystem tools also require `storage_id`. Every operation checks current
+membership and storage access. Team admins have no server-wide privileges.
 
-Expiration controls when a download may **start**. It is not a transfer timeout:
-if an accepted download is still transferring when the URL expires, MARU does
-not interrupt it. URLs are valid for five minutes by default, and a tool call may
-request between 30 and 900 seconds.
+Personal teams cannot receive other members. Ownership does not bypass role
+checks, and owners cannot be removed through the member-removal API. Role changes
+and ownership transfer are not currently exposed. File uploads/edits are not
+implemented; operators place files in managed directories.
 
-MARU checks authorization again when the URL is used. If access was removed or
-the file changed after URL creation, the original URL will no longer download a
-different file version.
+MCP member addition needs no acceptance step; notification failure does not undo
+it. Tool approval hints are not server-enforced approval. Successful additions emit
+`maru.audit` INFO records; configure logging to retain their extra fields. This is
+not a durable audit ledger and does not record rejected attempts. Other team/storage
+mutations are HTTP-only, except external registration, which is CLI-only.
+
+## Search and downloads
+
+**Search:** ripgrep is required; no fallback exists. Searches are path-sorted,
+include hidden files, ignore repository/ambient rg configuration, and do not
+follow symlinks. Regex uses Rust regex syntax. `/health` reports the rg version.
+Search results contain `path`, `line`, `byte_column`, and `text`.
+
+- Output is streamed with a 10-second deadline and an 8 MiB stdout/stderr budget.
+- Result/output limits stop the child and return `truncated: true`; timeouts and
+  execution failures return errors. Repeated result text has an estimated 8 MiB
+  content budget. These are not hard limits on total memory or JSON response size.
+- Newlines in filenames are preserved. Non-UTF-8 text uses replacement characters;
+  columns still refer to original bytes. Non-UTF-8 filenames are skipped.
+- PDF/binary files can be found and downloaded, but their text is not extracted.
+
+**Downloads:** signed URLs default to 5 minutes; tools may request 30–900 seconds.
+Expiry prevents new downloads, not an in-progress transfer. Access and file version
+are checked again when the link is used. Links are bearer credentials too: protect
+them from public logs. They are separate from API tokens.
 
 ## Configuration reference
 
-### Required
-
-| Variable | Description |
-| --- | --- |
-| `MARU_DATABASE_URL` | PostgreSQL connection URL |
-| `MARU_SECRET_KEY` | Download URL signing secret, at least 32 characters |
-| `MARU_FILESYSTEM_ROOT` | Absolute path containing MARU storage |
-
-### Optional
-
-| Variable | Default | Description |
+| YAML key | Environment override | Default / requirement |
 | --- | --- | --- |
-| `MARU_CONFIG` | unset | YAML configuration file path |
-| `MARU_PUBLIC_URL` | `http://localhost:8000` | Public base URL used in MCP metadata and download URLs |
-| `MARU_DOWNLOAD_URL_EXPIRE_SECONDS` | `300` | Default validity of a generated download URL |
-| `MARU_RIPGREP_PATH` | `rg` from `PATH` | Explicit path to the required ripgrep executable |
-| `MARU_ALLOWED_DOMAINS` | unrestricted | Comma-separated allowed user email domains |
-| `MARU_DELETE_FILES_ON_TEAM_DELETE` | `false` | Remove owned files when a team is deleted |
-| `MARU_SMTP_HOST` | unset | SMTP host for token delivery |
-| `MARU_SMTP_PORT` | `587` | SMTP port |
-| `MARU_SMTP_USERNAME` | unset | SMTP username |
-| `MARU_SMTP_PASSWORD` | unset | SMTP password |
-| `MARU_EMAIL_TEMPLATE_DIR` | built in | Custom email-template directory |
+| `database.url` | `MARU_DATABASE_URL` | Required PostgreSQL URL |
+| `auth.secret_key` | `MARU_SECRET_KEY` | Required, ≥32 characters; download signing only |
+| `auth.allowed_domains` | `MARU_ALLOWED_DOMAINS` | Unrestricted; YAML list / env comma-separated |
+| `filesystem.root` | `MARU_FILESYSTEM_ROOT` | Required absolute writable path |
+| `filesystem.ripgrep_path` | `MARU_RIPGREP_PATH` | `rg` from PATH |
+| `filesystem.delete_files_on_team_delete` | `MARU_DELETE_FILES_ON_TEAM_DELETE` | `false` |
+| `server.public_url` | `MARU_PUBLIC_URL` | `http://localhost:8000` |
+| `server.download_url_expire_seconds` | `MARU_DOWNLOAD_URL_EXPIRE_SECONDS` | `300` |
+| `smtp.host` | `MARU_SMTP_HOST` | Unset |
+| `smtp.port` | `MARU_SMTP_PORT` | `587` |
+| `smtp.username` | `MARU_SMTP_USERNAME` | Unset |
+| `smtp.password` | `MARU_SMTP_PASSWORD` | Unset |
+| `smtp.template_dir` | `MARU_EMAIL_TEMPLATE_DIR` | Built-in notification template |
 
-## Security notes
+## Upgrade notes
 
-- MCP and HTTP management requests require an operator-issued Bearer API token.
-- Token expiry (when set) and server-side revocation are checked on every request.
-- Filesystem access requires current team membership and a current storage link.
-- Absolute paths, `..` traversal, and symlink escapes are rejected.
-- Download capability URLs are separate from API tokens and expire quickly.
-- Use HTTPS for every non-local deployment because download URLs are bearer
-  capabilities and may appear in client or proxy logs.
-
-MARU publishes protected-resource metadata for the MCP endpoint, but is not an
-OAuth authorization server. Clients must support a manually configured Bearer
-header; automatic browser login and refresh are not provided.
+- Remove `filesystem.search_backend` from older YAML files; ripgrep is now required.
+- OTP/login/refresh endpoints and JWT user authentication have been removed. Start
+  the updated server, then use `maru token issue` for existing users. Remove old
+  salt and access/refresh lifetime keys from YAML; keep the download signing key.
+- Startup creates missing tables but is not a general schema migration system.
+  Legacy authentication tables are not automatically dropped. Back up before upgrades.
+- Do not use a PostgreSQL 16 data volume with image 17 directly; use a supported
+  upgrade or backup/restore procedure.

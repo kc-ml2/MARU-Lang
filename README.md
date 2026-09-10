@@ -5,83 +5,61 @@
     <img alt="MARU" src="https://ml2-ai-product.s3.ap-northeast-2.amazonaws.com/MARU/MARU_black.png" width="90%">
   </picture>
 </p>
-<p align="center">
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-</p>
 
-# 🦊 MARU-Lang
+# MARU-Lang
 
-**A deterministic, team-scoped filesystem access layer for AI agents.**
+**A team-scoped filesystem MCP server for AI agents.**
 
-Give your AI agent access to the files your team already works with—without
-copying entire documents into a conversation or building an embedding pipeline.
-
-MARU helps agents browse folders, find filenames, search text, and return download
-links to original files. Your agent decides what to look for; MARU returns actual
-paths and matching text, within your team's permissions.
-
-## What can I do with it?
-
-- **Find files:** locate a document by name, folder, or filename pattern.
-- **Check the evidence:** see which file and line contain the text you need.
-- **Get the original:** download a file instead of receiving its contents in chat.
-- **Share with a team:** make a storage available only to the teams you choose.
-- **Manage through your agent:** team admins can inspect their team and add
-  already registered colleagues through MCP.
-
-MARU is a backend for your applications and MCP-compatible agents, not a chat app
-or an answer-generating assistant. It searches explicit filenames and text rather
-than ranking documents by semantic similarity.
-
-## Use new storage or keep your existing files
-
-| | How it works |
-| --- | --- |
-| **MARU-managed storage** | MARU creates a storage directory for your team. An operator currently places files there; uploads are not yet supported. |
-| **Existing storage** | A server operator registers an existing folder and shares it with selected teams. MARU reads the files in place, without copying them. |
-
-External storage is read-only through MARU. Removing its registration does not
-delete the original files. “Shared” means accessible to selected teams—not public
-to everyone.
-
-## What does using it look like?
-
-Once connected, you might ask your agent:
+Connect your agent to your team's files. MARU browses folders, finds filenames,
+searches text with ripgrep, and returns short-lived download links—without an
+embedding pipeline, vector database, or LLM API key.
 
 > Find `report.pdf` in my team's storage and give me a download link.
 
-The agent discovers your teams and storages, finds matching paths, and requests a
-link for the file you choose. For text files, it can also search the contents and
-show the matching lines.
+## How it works
 
-Download links expire after a short period. Expiration prevents new downloads;
-it does not interrupt a download already in progress.
+```text
+MCP client → API token → team permissions → filesystem
+```
 
-## Getting started
+- **Existing folders:** register and share them with selected teams; files stay
+  in place and are read-only through MARU.
+- **Managed storage:** MARU creates team directories; operators place files there.
+- **Simple access:** operators provision users and issue revocable API tokens.
+  Tokens do not expire by default and need no refresh.
 
-**Using a server someone else runs?** Ask your operator for the MARU server URL,
-and a personal API token, then connect your MCP client with that token. Use your own account;
-your team membership determines which storages you can access.
+MARU returns paths and matching text, not generated answers or semantic rankings.
+It currently supports file discovery and downloads, not uploads or file editing.
+PDFs can be found and downloaded, but their contents are not extracted for search.
 
-**Running MARU for your team?** Install PostgreSQL and ripgrep, copy
-`config.example.yaml` to `config.yaml`, replace its credentials, and start MARU:
+## Run a server
+
+Requires **Python 3.11+, PostgreSQL, and ripgrep**. The included Compose file runs
+PostgreSQL 17; MARU runs on the host. SMTP is optional for emailing tokens.
+
+After installing and configuring the database and `config.yaml`:
 
 ```bash
 maru serve
 ```
 
-The command serves both HTTP and MCP on `127.0.0.1:8000` by default. Use
-`maru serve --host 0.0.0.0 --port 8000` when an external bind is required. See
-the [setup and integration guide](docs/guide.md) for user/token provisioning,
-external folders, team sharing, and deployment details.
+MARU reads `./config.yaml` automatically and serves HTTP/MCP on
+`127.0.0.1:8000`. Use an HTTPS reverse proxy for remote access.
 
-## Current scope
+**[Follow the setup guide →](docs/guide.md)**
 
-MARU is under development. File discovery, original-file downloads, external
-storage registration, and basic team management are implemented. File uploads,
-file editing tools, and automatic browser-based MCP authorization are not yet
-available. PDF and other binary files can be found by filename and downloaded;
-MARU does not extract their contents for text search.
+## Connect a client
 
-For developers, operators, and agents integrating MARU, see the
-[technical guide](docs/guide.md).
+Ask your operator for the server URL and your API token. Configure a client that
+supports **Streamable HTTP with a custom Authorization header**:
+
+```text
+URL:           https://maru.example.com/mcp
+Authorization: Bearer maru_<your-token>
+```
+
+Then ask the agent to list your teams and storages. There is no browser login,
+OTP, or automatic OAuth setup; the token grants your current user permissions.
+Keep it private.
+
+[Setup and operations](docs/guide.md) · [MIT license](LICENSE)

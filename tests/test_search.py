@@ -1,4 +1,5 @@
 """Contract tests for the required ripgrep filesystem search engine."""
+import os
 import shutil
 import tempfile
 import unittest
@@ -63,6 +64,39 @@ class RipgrepSearchTests(unittest.TestCase):
     def test_subdirectory_results_remain_storage_relative(self):
         result = self.search.find_files(self.root, path="docs", name_glob="*.txt")
         self.assertEqual(result.results, ({"path": "docs/beta.txt", "type": "file"},))
+
+    def test_newline_filename_is_one_path(self):
+        (self.root / 'line\nbreak.txt').write_text('needle')
+        result = self.search.find_files(self.root, name_glob='line*')
+        self.assertEqual(result.results, ({'path': 'line\nbreak.txt', 'type': 'file'},))
+
+    def test_non_utf8_content_does_not_fail_search(self):
+        (self.root / 'invalid.txt').write_bytes(b'needle \xff\n')
+        result = self.search.search_text(self.root, 'needle', include_globs=('invalid.txt',))
+        self.assertEqual(result.results[0]['text'], 'needle \ufffd')
+
+    def test_non_utf8_filename_is_skipped_without_lossy_path(self):
+        path = os.fsencode(self.root) + b'/invalid-\xff.txt'
+        try:
+            file = open(path, 'wb')
+        except OSError as exc:
+            self.skipTest(f'Filesystem does not support non-UTF-8 filenames: {exc}')
+        with file:
+            file.write(b'needle')
+        files = self.search.find_files(self.root)
+        matches = self.search.search_text(self.root, 'needle')
+        self.assertFalse(any('invalid-' in item['path'] for item in files.results))
+        self.assertFalse(any('invalid-' in item['path'] for item in matches.results))
+
+    def test_output_budget_marks_partial_results(self):
+        (self.root / 'large.txt').write_text('needle ' * 10000)
+        search = RipgrepSearch(max_output_bytes=1024)
+        result = search.search_text(self.root, 'needle', include_globs=('large.txt',))
+        self.assertTrue(result.truncated)
+
+    def test_exact_result_limit_is_not_truncated(self):
+        result = self.search.find_files(self.root, name_glob='alpha.md', max_results=1)
+        self.assertFalse(result.truncated)
 
     def test_missing_executable_fails_fast(self):
         with patch("maru_lang.services.search.shutil.which", return_value=None):

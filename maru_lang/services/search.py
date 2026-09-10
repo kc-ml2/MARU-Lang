@@ -1,15 +1,18 @@
 """Deterministic filesystem search powered exclusively by ripgrep."""
 from __future__ import annotations
 
+import base64
 import fnmatch
 import json
 import shutil
 import subprocess
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, Sequence
 
 from maru_lang.services.filesystem import resolve_within
+from maru_lang.services.search_process import OutputLimitReached, records
 
 SearchMode = Literal["literal", "regex"]
 
@@ -34,7 +37,8 @@ class RipgrepSearch:
 
     name = "ripgrep"
 
-    def __init__(self, executable: str | None = None, timeout_seconds: float = 10.0):
+    def __init__(self, executable: str | None = None, timeout_seconds: float = 10.0,
+                 max_output_bytes: int = 8 * 1024 * 1024):
         resolved = executable or shutil.which("rg")
         if resolved is None:
             raise RuntimeError(
@@ -42,7 +46,10 @@ class RipgrepSearch:
                 "MARU_RIPGREP_PATH"
             )
         self.executable = resolved
+        if timeout_seconds <= 0 or max_output_bytes <= 0:
+            raise ValueError("Search timeout and output budget must be positive")
         self.timeout_seconds = timeout_seconds
+        self.max_output_bytes = max_output_bytes
         completed = self._run(Path.cwd(), ["--version"])
         if completed.returncode != 0:
             raise RuntimeError("failed to execute ripgrep")
@@ -94,31 +101,34 @@ class RipgrepSearch:
         self._validate_limit(max_results)
         storage_root, search_root = self._roots(root, path)
         arguments = [
-            "--no-config", "--files", "--sort", "path", "--hidden", "--no-ignore",
+            "--no-config", "--files", "--null", "--sort", "path", "--hidden", "--no-ignore",
         ]
         for glob in include_globs:
             arguments.extend(("--glob", glob))
         for glob in exclude_globs:
             arguments.extend(("--glob", f"!{glob}"))
         arguments.append(".")
-        completed = self._run(search_root, arguments)
-        if completed.returncode not in (0, 1):
-            raise RuntimeError(completed.stderr.strip() or "ripgrep file search failed")
-
         prefix = search_root.relative_to(storage_root)
         found: list[dict[str, object]] = []
         truncated = False
-        for raw_path in completed.stdout.splitlines():
-            relative = PurePosixPath(raw_path.removeprefix("./"))
-            if name_glob is not None and not fnmatch.fnmatchcase(
-                relative.name, name_glob
-            ):
-                continue
-            if len(found) == max_results:
-                truncated = True
-                break
-            full_path = (PurePosixPath(prefix.as_posix()) / relative).as_posix()
-            found.append({"path": full_path, "type": "file"})
+        try:
+            with closing(self._records(search_root, arguments, b"\0")) as output:
+                for raw_path in output:
+                    try:
+                        decoded = raw_path.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # Never return a lossy path that might name a different file.
+                        continue
+                    relative = PurePosixPath(decoded.removeprefix("./"))
+                    if name_glob is not None and not fnmatch.fnmatchcase(relative.name, name_glob):
+                        continue
+                    if len(found) == max_results:
+                        truncated = True
+                        break
+                    full_path = (PurePosixPath(prefix.as_posix()) / relative).as_posix()
+                    found.append({"path": full_path, "type": "file"})
+        except OutputLimitReached:
+            truncated = True
         return SearchResult(self.name, tuple(found), truncated)
 
     def search_text(
@@ -151,35 +161,49 @@ class RipgrepSearch:
         for glob in exclude_globs:
             arguments.extend(("--glob", f"!{glob}"))
         arguments.extend(("--", pattern, "."))
-        completed = self._run(search_root, arguments)
-        if completed.returncode not in (0, 1):
-            raise ValueError(completed.stderr.strip() or "ripgrep text search failed")
-
         prefix = search_root.relative_to(storage_root)
         matches: list[TextMatch] = []
+        result_bytes = 0
         truncated = False
-        for output_line in completed.stdout.splitlines():
-            event = json.loads(output_line)
-            if event.get("type") != "match":
-                continue
-            data = event["data"]
-            relative = PurePosixPath(data["path"]["text"].removeprefix("./"))
-            full_path = (PurePosixPath(prefix.as_posix()) / relative).as_posix()
-            text = data["lines"]["text"].rstrip("\r\n")
-            for submatch in data["submatches"]:
-                if len(matches) == max_results:
-                    truncated = True
-                    break
-                matches.append(
-                    TextMatch(
-                        full_path,
-                        data["line_number"],
-                        submatch["start"] + 1,
-                        text,
-                    )
-                )
-            if truncated:
-                break
+        try:
+            with closing(self._records(search_root, arguments, b"\n")) as output:
+                for output_line in output:
+                    event = json.loads(output_line)
+                    if event.get("type") != "match":
+                        continue
+                    data = event["data"]
+                    try:
+                        path_text = self._json_text(data["path"], errors="strict")
+                    except UnicodeDecodeError:
+                        continue
+                    relative = PurePosixPath(path_text.removeprefix("./"))
+                    full_path = (PurePosixPath(prefix.as_posix()) / relative).as_posix()
+                    text = self._json_text(data["lines"], errors="replace").rstrip("\r\n")
+                    for submatch in data["submatches"]:
+                        match_bytes = len(full_path.encode("utf-8")) + len(text.encode("utf-8")) + 128
+                        if len(matches) == max_results or result_bytes + match_bytes > self.max_output_bytes:
+                            truncated = True
+                            break
+                        result_bytes += match_bytes
+                        matches.append(TextMatch(
+                            full_path, data["line_number"], submatch["start"] + 1, text,
+                        ))
+                    if truncated:
+                        break
+        except OutputLimitReached:
+            truncated = True
         return SearchResult(
             self.name, tuple(asdict(match) for match in matches), truncated
         )
+
+    def _records(self, root: Path, arguments: Sequence[str], separator: bytes):
+        return records(
+            self.executable, root, arguments, separator=separator,
+            timeout=self.timeout_seconds, max_output_bytes=self.max_output_bytes,
+        )
+
+    @staticmethod
+    def _json_text(value: dict, *, errors: str) -> str:
+        if "text" in value:
+            return value["text"]
+        return base64.b64decode(value["bytes"], validate=True).decode("utf-8", errors=errors)

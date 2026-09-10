@@ -35,6 +35,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with database_context(
             resolved_settings.database_url,
             generate_schemas=True,
+            # Uvicorn request tasks do not inherit lifespan ContextVars.
+            # One app/DB context per worker; shutdown clears the fallback.
+            enable_global_fallback=True,
         ):
             from maru_lang.services.system_storage import (
                 ensure_system_storages,
