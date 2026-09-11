@@ -181,7 +181,11 @@ storage registration/sharing operations; there is no external-path allowlist.
 
 - Put an **HTTPS reverse proxy** in front of MARU for non-local use. Set
   `server.public_url` to that public HTTPS base URL and restart MARU; generated
-  download links use it. Keep PostgreSQL private.
+  download links use it. MCP also allows this URL's Host and Origin, while retaining
+  DNS rebinding protection and localhost access. Preserve the public Host and
+  Authorization headers through the proxy. Use `/mcp` without a trailing slash.
+  A 421 response means the Host is not allowed; a 401 means authentication failed.
+  Keep PostgreSQL private.
 - For a local client test, use `ssh -N -L 8000:127.0.0.1:8000 user@server`, set
   `public_url: http://localhost:8000`, and connect to `http://localhost:8000/mcp`.
   Cloud-hosted clients cannot reach your local SSH tunnel.

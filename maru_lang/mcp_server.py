@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from maru_lang.context import AppContext
@@ -64,6 +66,31 @@ async def _storage_root(
     )
 
 
+def transport_security(public_url: str) -> TransportSecuritySettings:
+    """Allow the configured public endpoint, not arbitrary forwarded hosts."""
+    url = urlsplit(public_url)
+    if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password:
+        raise ValueError("public_url must be an HTTP(S) URL without credentials")
+    host = f"[{url.hostname}]" if ":" in url.hostname else url.hostname
+    default_port = 443 if url.scheme == "https" else 80
+    port = url.port or default_port
+    authorities = [f"{host}:{port}"]
+    if port == default_port:
+        authorities.append(host)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=list(dict.fromkeys([
+            "127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*", "[::1]", "[::1]:*",
+            *authorities,
+        ])),
+        allowed_origins=list(dict.fromkeys([
+            "http://127.0.0.1", "http://127.0.0.1:*", "http://localhost", "http://localhost:*",
+            "http://[::1]", "http://[::1]:*",
+            *(f"{url.scheme}://{authority}" for authority in authorities),
+        ])),
+    )
+
+
 def create_mcp_server(context: AppContext) -> FastMCP:
     """Build MARU's stateless Streamable HTTP MCP resource server."""
     public_url = context.settings.public_url
@@ -75,6 +102,7 @@ def create_mcp_server(context: AppContext) -> FastMCP:
             "list_storage_tree or find_storage_files. Use search_storage_text for evidence."
         ),
         token_verifier=MaruTokenVerifier(context),
+        transport_security=transport_security(public_url),
         auth=AuthSettings(
             issuer_url=f"{public_url}/",
             resource_server_url=f"{public_url}/mcp",
